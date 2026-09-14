@@ -33,3 +33,5 @@ Base local: `http://localhost:3000/api`
 ## Observação sobre frete
 
 `distanceKm` e `estimatedMinutes` são parâmetros técnicos do serviço. No fluxo definitivo, devem ser produzidos pela integração de rotas a partir do estabelecimento e do destino confirmado. Não devem ser digitados pelo cliente.
+
+O objeto `quote` devolve `weightKg`, `distanceKm` e `estimatedMinutes`; a taxa de peso aplicada em `weightCents`; as tarifas `perKmCents` e `perMinuteCents`; as parcelas com frações de centavo em `distanceUnroundedCents` e `timeUnroundedCents`; e o valor final, arredondado uma única vez, em `totalCents`. Os antigos campos `distanceCents` e `timeCents`, que arredondavam cada parcela, foram substituídos para deixar explícito que essas parcelas ainda não são valores monetários finais. O objeto `split` usa `totalCents`.

@@ -18,6 +18,16 @@ export function weightFeeCents(weightKg, config = DEFAULT_FREIGHT_CONFIG) {
   return config.from8To12KgCents;
 }
 
+function decimalParts(value) {
+  const [mantissa, exponent = "0"] = String(value).split("e");
+  const [integer, fraction = ""] = mantissa.split(".");
+  const decimalPlaces = fraction.length - Number(exponent);
+  const digits = BigInt(integer + fraction);
+  return decimalPlaces < 0
+    ? { numerator: digits * 10n ** BigInt(-decimalPlaces), decimalPlaces: 0 }
+    : { numerator: digits, decimalPlaces };
+}
+
 export function calculateFreight({ weightKg, distanceKm, estimatedMinutes, config = DEFAULT_FREIGHT_CONFIG }) {
   const distance = Number(distanceKm);
   const minutes = Number(estimatedMinutes);
@@ -25,17 +35,29 @@ export function calculateFreight({ weightKg, distanceKm, estimatedMinutes, confi
   if (!Number.isFinite(minutes) || minutes < 0) throw new RangeError("O tempo estimado deve ser válido.");
 
   const weightCents = weightFeeCents(weightKg, config);
-  const distanceCents = Math.round(distance * config.perKmCents);
-  const timeCents = Math.round(minutes * config.perMinuteCents);
-  const totalCents = weightCents + distanceCents + timeCents;
+  const distanceParts = decimalParts(distance);
+  const timeParts = decimalParts(minutes);
+  const distanceNumerator = distanceParts.numerator * BigInt(config.perKmCents);
+  const timeNumerator = timeParts.numerator * BigInt(config.perMinuteCents);
+  const distanceUnroundedCents = Number(distanceNumerator) / 10 ** distanceParts.decimalPlaces;
+  const timeUnroundedCents = Number(timeNumerator) / 10 ** timeParts.decimalPlaces;
+
+  const decimalPlaces = Math.max(distanceParts.decimalPlaces, timeParts.decimalPlaces);
+  const scale = 10n ** BigInt(decimalPlaces);
+  const exactTotal = BigInt(weightCents) * scale
+    + distanceNumerator * 10n ** BigInt(decimalPlaces - distanceParts.decimalPlaces)
+    + timeNumerator * 10n ** BigInt(decimalPlaces - timeParts.decimalPlaces);
+  const totalCents = Number((2n * exactTotal + scale) / (2n * scale));
 
   return {
     weightKg: Number(weightKg),
     distanceKm: distance,
     estimatedMinutes: minutes,
     weightCents,
-    distanceCents,
-    timeCents,
+    perKmCents: config.perKmCents,
+    perMinuteCents: config.perMinuteCents,
+    distanceUnroundedCents,
+    timeUnroundedCents,
     totalCents,
     currency: "BRL",
   };

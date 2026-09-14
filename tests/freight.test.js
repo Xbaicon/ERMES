@@ -16,18 +16,35 @@ test("bloqueia peso acima de 12 kg", () => {
   assert.throws(() => weightFeeCents(12.001), /excede o limite/);
 });
 
-test("calcula frete com frações e arredonda somente valores monetários", () => {
+test("calcula frete com frações e arredonda somente o total monetário", () => {
   const quote = calculateFreight({ weightKg: 2.5, distanceKm: 3.75, estimatedMinutes: 12.5 });
   assert.deepEqual(quote, {
     weightKg: 2.5,
     distanceKm: 3.75,
     estimatedMinutes: 12.5,
     weightCents: 500,
-    distanceCents: 188,
-    timeCents: 375,
+    perKmCents: 50,
+    perMinuteCents: 30,
+    distanceUnroundedCents: 187.5,
+    timeUnroundedCents: 375,
     totalCents: 1063,
     currency: "BRL",
   });
+});
+
+test("não soma parcelas arredondadas quando isso adicionaria um centavo", () => {
+  const quote = calculateFreight({ weightKg: 2.5, distanceKm: 3.75, estimatedMinutes: 12.55 });
+  assert.equal(quote.distanceUnroundedCents, 187.5);
+  assert.equal(quote.timeUnroundedCents, 376.5);
+  assert.equal(quote.totalCents, 1064);
+  assert.equal(quote.weightCents + Math.round(quote.distanceUnroundedCents) + Math.round(quote.timeUnroundedCents), 1065);
+});
+
+test("arredonda corretamente um meio centavo exato apesar do ponto flutuante", () => {
+  const quote = calculateFreight({ weightKg: 2.5, distanceKm: 4.012, estimatedMinutes: 0.03 });
+  assert.equal(quote.distanceUnroundedCents, 200.6);
+  assert.equal(quote.timeUnroundedCents, 0.9);
+  assert.equal(quote.totalCents, 702);
 });
 
 test("distribui o frete normal sem perder centavos", () => {
