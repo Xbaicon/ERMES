@@ -85,6 +85,8 @@ function mapProduct(row) {
   return { ...row, isAvailable: Boolean(row.isAvailable) };
 }
 
+const duplicateEmailMessage = "Este e-mail já está cadastrado. Use outro e-mail ou faça login.";
+
 async function api(request, response, url) {
   const { pathname } = url;
   if (request.method === "GET" && pathname === "/api/health") {
@@ -268,10 +270,16 @@ const server = createServer(async (request, response) => {
     }
     await serveStatic(response, url.pathname);
   } catch (error) {
-    const sqliteConflict = String(error.code || "").startsWith("SQLITE_CONSTRAINT");
+    const sqliteCode = String(error.code || "");
+    const sqliteError = sqliteCode === "ERR_SQLITE_ERROR" || sqliteCode.startsWith("SQLITE_");
+    const sqliteConflict = sqliteError && /constraint failed/i.test(String(error.message || ""));
+    const duplicateEmail = sqliteConflict && error.message === "UNIQUE constraint failed: users.email";
     const status = sqliteConflict ? 409 : Number(error.statusCode || 500);
     if (status >= 500) console.error(error);
-    json(response, status, { error: sqliteConflict ? "Já existe um cadastro com esses dados." : error.message || "Erro interno." });
+    const message = duplicateEmail ? duplicateEmailMessage
+      : sqliteConflict ? "Já existe um cadastro com esses dados."
+        : sqliteError ? "Erro interno." : error.message || "Erro interno.";
+    json(response, status, { error: message });
   }
 });
 

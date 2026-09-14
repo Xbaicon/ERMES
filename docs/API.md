@@ -15,6 +15,8 @@ Base local: `http://localhost:3000/api`
 | GET | `/companies` | Listar empresas ativas |
 | GET | `/companies/:id/products` | Listar produtos disponíveis |
 
+O e-mail de acesso é normalizado e único em `users.email`, independentemente do papel. Se já existir, os dois cadastros retornam HTTP `409 Conflict` com `{ "error": "Este e-mail já está cadastrado. Use outro e-mail ou faça login." }`. No cadastro de empresa, essa regra se aplica a `accessEmail`; `companyEmail` é o contato da empresa.
+
 ## Empresa autenticada
 
 | Método | Rota | Finalidade |
