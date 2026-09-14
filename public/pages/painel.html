@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>Painel | ERMES Delivery</title>
+    <link rel="icon" type="image/png" href="../assets/images/ermes-logo.png" />
+    <link rel="stylesheet" href="../css/style.css" />
+    <link rel="stylesheet" href="../css/painel.css" />
+    <script src="../js/painel.js" defer></script>
+  </head>
+  <body class="dashboard-page">
+    <header class="dashboard-header">
+      <a class="brand" href="../index.html"><img src="../assets/images/ermes-logo.png" alt="" /><span>ERMES</span></a>
+      <div class="dashboard-user"><span data-user-name>Carregando…</span><button class="button button-outline button-small" data-logout>Sair</button></div>
+    </header>
+    <main class="dashboard-main">
+      <section class="dashboard-hero">
+        <p class="eyebrow" data-role-label>PAINEL</p>
+        <h1 data-dashboard-title>Bem-vindo ao ERMES</h1>
+        <p data-dashboard-description>Carregando os recursos disponíveis para seu perfil.</p>
+      </section>
+
+      <div class="status-banner" role="status">
+        <strong>Baseline 0.1</strong>
+        <span>Esta é uma fundação executável. Funcionalidades ainda pendentes na especificação não foram presumidas.</span>
+      </div>
+
+      <section class="dashboard-section" data-company-panel hidden>
+        <div class="section-title"><div><p class="eyebrow">CATÁLOGO</p><h2>Produtos</h2></div></div>
+        <div class="dashboard-grid two-columns">
+          <form class="dashboard-card form" data-product-form>
+            <h3>Novo produto</h3>
+            <div class="form-field"><label for="product-name">Nome</label><input id="product-name" name="name" required /></div>
+            <div class="form-field"><label for="product-description">Descrição</label><input id="product-description" name="description" /></div>
+            <div class="form-grid">
+              <div class="form-field"><label for="product-price">Preço (R$)</label><input id="product-price" name="price" type="number" min="0" step="0.01" required /></div>
+              <div class="form-field"><label for="product-weight">Peso unitário (kg)</label><input id="product-weight" name="unitWeightKg" type="number" min="0.001" max="12" step="0.001" required /></div>
+            </div>
+            <div class="form-message" data-product-message hidden></div>
+            <button class="button button-dark" type="submit">Cadastrar produto</button>
+          </form>
+          <div class="dashboard-card"><h3>Produtos cadastrados</h3><div class="item-list" data-products-list></div></div>
+        </div>
+      </section>
+
+      <section class="dashboard-section" data-company-panel hidden>
+        <div class="section-title"><div><p class="eyebrow">EQUIPE</p><h2>Motoboys vinculados</h2></div></div>
+        <div class="dashboard-grid two-columns">
+          <form class="dashboard-card form" data-courier-form>
+            <h3>Novo motoboy</h3>
+            <div class="form-field"><label for="courier-name">Nome completo</label><input id="courier-name" name="fullName" required /></div>
+            <div class="form-grid">
+              <div class="form-field"><label for="courier-email">E-mail</label><input id="courier-email" name="email" type="email" required /></div>
+              <div class="form-field"><label for="courier-cpf">CPF</label><input id="courier-cpf" name="cpf" data-mask="cpf" maxlength="14" required /></div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field"><label for="courier-phone">Telefone</label><input id="courier-phone" name="phone" data-mask="phone" maxlength="15" required /></div>
+              <div class="form-field"><label for="courier-vehicle">Veículo</label><select id="courier-vehicle" name="vehicleType" required><option value="">Selecione</option><option value="motorcycle">Moto</option><option value="bicycle">Bicicleta</option><option value="car">Carro</option><option value="walking">A pé</option></select></div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field"><label for="courier-plate">Placa/identificação</label><input id="courier-plate" name="plate" /></div>
+              <div class="form-field"><label for="courier-password">Senha inicial</label><input id="courier-password" name="password" type="password" minlength="8" required /></div>
+            </div>
+            <div class="form-message" data-courier-message hidden></div>
+            <button class="button button-dark" type="submit">Vincular motoboy</button>
+          </form>
+          <div class="dashboard-card"><h3>Equipe cadastrada</h3><div class="item-list" data-couriers-list></div></div>
+        </div>
+      </section>
+
+      <section class="dashboard-section" data-courier-panel hidden>
+        <div class="dashboard-card availability-card">
+          <div><p class="eyebrow">DISPONIBILIDADE</p><h2 data-availability-title>Você está offline</h2><p>Somente motoboys online e sem entrega ativa poderão aceitar uma entrega.</p></div>
+          <button class="button button-dark button-large" data-availability-toggle>Ficar online</button>
+        </div>
+      </section>
+
+      <section class="dashboard-section" data-client-panel hidden>
+        <div class="dashboard-card empty-state">
+          <p class="eyebrow">PRÓXIMA ETAPA</p>
+          <h2>Catálogo e pedidos</h2>
+          <p>A infraestrutura de usuários, empresas, produtos e frete já está preparada. A jornada completa do pedido será implementada após a definição do provedor de rotas e das pendências indicadas na baseline.</p>
+        </div>
+      </section>
+    </main>
+    <div class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

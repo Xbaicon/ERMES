@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Cadastre uma empresa participante do ERMES." />
+    <title>Cadastro de empresa | ERMES Delivery</title>
+    <link rel="icon" type="image/png" href="../assets/images/ermes-logo.png" />
+    <link rel="stylesheet" href="../css/style.css" />
+    <script src="../js/script.js" defer></script>
+  </head>
+  <body class="auth-page" data-page="empresa">
+    <a class="skip-link" href="#formulario">Ir para o formulário</a>
+    <main class="auth-layout courier-layout">
+      <section class="auth-panel auth-presentation" aria-label="Apresentação para empresas">
+        <a class="auth-logo" href="../index.html" aria-label="Voltar ao início">
+          <img src="../assets/images/ermes-logo.png" alt="" />
+        </a>
+        <div>
+          <p class="eyebrow eyebrow-light">EMPRESA PARTICIPANTE</p>
+          <h1>Gerencie seus produtos e entregas</h1>
+          <p>Cadastre o estabelecimento e o primeiro usuário responsável pela operação.</p>
+        </div>
+        <ul class="feature-list">
+          <li><span>✓</span> Produtos com peso e disponibilidade</li>
+          <li><span>✓</span> Motoboys vinculados à empresa</li>
+          <li><span>✓</span> Parâmetros próprios de frete</li>
+        </ul>
+      </section>
+      <section class="auth-panel auth-form-panel courier-form-panel" id="formulario">
+        <div class="auth-form-wrap">
+          <div class="auth-heading">
+            <a class="back-link" href="../index.html"><span aria-hidden="true">←</span> Voltar ao início</a>
+            <p class="eyebrow">CADASTRO DE EMPRESA</p>
+            <h2>Dados iniciais</h2>
+            <p>Esta etapa cria a empresa e um usuário responsável. O modelo definitivo de múltiplos usuários permanece pendente.</p>
+          </div>
+          <div class="form-message" data-form-message role="alert" hidden></div>
+          <form class="form" id="company-register-form" novalidate>
+            <h3>Empresa</h3>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="company-name">Nome da empresa</label>
+                <input id="company-name" name="companyName" type="text" minlength="2" required />
+              </div>
+              <div class="form-field">
+                <label for="company-cnpj">CNPJ</label>
+                <input id="company-cnpj" name="cnpj" type="text" inputmode="numeric" maxlength="18" data-mask="cnpj" required />
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="company-email">E-mail da empresa</label>
+                <input id="company-email" name="companyEmail" type="email" required />
+              </div>
+              <div class="form-field">
+                <label for="company-phone">Telefone</label>
+                <input id="company-phone" name="phone" type="tel" maxlength="15" data-mask="phone" />
+              </div>
+            </div>
+            <h3>Endereço do estabelecimento</h3>
+            <div class="form-grid">
+              <div class="form-field"><label for="company-postal-code">CEP</label><input id="company-postal-code" name="postalCode" data-mask="postal-code" maxlength="9" required /></div>
+              <div class="form-field"><label for="company-state">UF</label><input id="company-state" name="state" maxlength="2" required /></div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field"><label for="company-city">Cidade</label><input id="company-city" name="city" required /></div>
+              <div class="form-field"><label for="company-neighborhood">Bairro</label><input id="company-neighborhood" name="neighborhood" required /></div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field"><label for="company-street">Logradouro</label><input id="company-street" name="street" required /></div>
+              <div class="form-field"><label for="company-number">Número</label><input id="company-number" name="number" required /></div>
+            </div>
+            <div class="form-field"><label for="company-complement">Complemento</label><input id="company-complement" name="complement" /></div>
+            <h3>Usuário responsável</h3>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="responsible-name">Nome completo</label>
+                <input id="responsible-name" name="responsibleName" type="text" minlength="3" required />
+              </div>
+              <div class="form-field">
+                <label for="responsible-cpf">CPF</label>
+                <input id="responsible-cpf" name="cpf" type="text" inputmode="numeric" maxlength="14" data-mask="cpf" required />
+              </div>
+            </div>
+            <div class="form-field">
+              <label for="access-email">E-mail de acesso</label>
+              <input id="access-email" name="accessEmail" type="email" autocomplete="email" required />
+            </div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="company-password">Senha</label>
+                <div class="password-field">
+                  <input id="company-password" name="password" type="password" minlength="8" autocomplete="new-password" required />
+                  <button class="password-toggle" type="button" data-password-toggle="company-password">Mostrar</button>
+                </div>
+              </div>
+              <div class="form-field">
+                <label for="company-password-confirm">Confirmar senha</label>
+                <div class="password-field">
+                  <input id="company-password-confirm" name="passwordConfirm" type="password" minlength="8" autocomplete="new-password" required />
+                  <button class="password-toggle" type="button" data-password-toggle="company-password-confirm">Mostrar</button>
+                </div>
+              </div>
+            </div>
+            <label class="checkbox-label terms-label" for="company-terms">
+              <input id="company-terms" name="terms" type="checkbox" required />
+              <span>Declaro que os dados são verdadeiros e aceito os termos deste projeto acadêmico.</span>
+            </label>
+            <button class="button button-dark button-full button-large" type="submit" data-submit-button>
+              <span>Cadastrar empresa</span><span class="button-loader" aria-hidden="true"></span>
+            </button>
+          </form>
+          <p class="auth-switch">Já possui cadastro? <a href="login.html">Entrar</a></p>
+        </div>
+      </section>
+    </main>
+    <div class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

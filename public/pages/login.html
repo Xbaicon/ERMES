@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Entre na sua conta do ERMES Delivery." />
+    <title>Entrar | ERMES Delivery</title>
+    <link rel="icon" type="image/png" href="../assets/images/ermes-logo.png" />
+    <link rel="stylesheet" href="../css/style.css" />
+    <script src="../js/script.js" defer></script>
+  </head>
+  <body class="auth-page" data-page="login">
+    <a class="skip-link" href="#formulario">Ir para o formulário</a>
+
+    <main class="auth-layout">
+      <section class="auth-panel auth-presentation" aria-label="Apresentação do ERMES">
+        <a class="auth-logo" href="../index.html" aria-label="Voltar ao início">
+          <img src="../assets/images/ermes-logo.png" alt="" />
+        </a>
+        <div>
+          <p class="eyebrow eyebrow-light">BEM-VINDO(A) AO</p>
+          <h1>ERMES Delivery</h1>
+          <p>Pedidos rápidos, entregas inteligentes e uma experiência simples para o seu dia a dia.</p>
+        </div>
+        <div class="auth-note">
+          <strong>Acesso demonstrativo</strong>
+          <span>empresa@ermes.local</span>
+          <span>Senha: Ermes123!</span>
+        </div>
+      </section>
+
+      <section class="auth-panel auth-form-panel" id="formulario">
+        <div class="auth-form-wrap">
+          <div class="auth-heading">
+            <a class="back-link" href="../index.html"><span aria-hidden="true">←</span> Voltar ao início</a>
+            <p class="eyebrow">ACESSE SUA CONTA</p>
+            <h2>Faça o login</h2>
+            <p>Use seu e-mail e sua senha para entrar no ERMES.</p>
+          </div>
+
+          <div class="form-message" data-form-message role="alert" hidden></div>
+
+          <form class="form" id="login-form" novalidate>
+            <div class="form-field">
+              <label for="login-email">E-mail</label>
+              <input id="login-email" name="email" type="email" autocomplete="email" placeholder="voce@exemplo.com" required />
+              <small class="field-error" data-error-for="login-email"></small>
+            </div>
+
+            <div class="form-field">
+              <label for="login-password">Senha</label>
+              <div class="password-field">
+                <input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="Sua senha" required />
+                <button class="password-toggle" type="button" data-password-toggle="login-password" aria-label="Mostrar senha">Mostrar</button>
+              </div>
+              <small class="field-error" data-error-for="login-password"></small>
+            </div>
+
+            <div class="form-row form-row-between">
+              <label class="checkbox-label" for="remember-me">
+                <input id="remember-me" name="rememberMe" type="checkbox" />
+                <span>Lembrar de mim</span>
+              </label>
+              <button class="link-button" type="button" data-open-reset>Esqueceu a senha?</button>
+            </div>
+
+            <button class="button button-dark button-full button-large" type="submit" data-submit-button>
+              <span>Entrar</span>
+              <span class="button-loader" aria-hidden="true"></span>
+            </button>
+          </form>
+
+          <p class="auth-switch">Não tem conta? <a href="cliente.html">Criar conta</a></p>
+          <p class="auth-secondary-link"><a href="empresa.html">Quero cadastrar uma empresa</a></p>
+        </div>
+      </section>
+    </main>
+
+    <dialog class="modal" id="reset-dialog" aria-labelledby="reset-title">
+      <form class="modal-card" id="reset-form" novalidate>
+        <button class="modal-close" type="button" data-close-reset aria-label="Fechar">×</button>
+        <p class="eyebrow">RECUPERAR ACESSO</p>
+        <h2 id="reset-title">Redefina sua senha</h2>
+        <p class="modal-description">A recuperação segura de senha será implementada quando o serviço de envio de e-mail for definido.</p>
+
+        <div class="form-message" data-reset-message role="alert" hidden></div>
+
+        <div class="form-message error">Funcionalidade pendente. Nenhuma senha será alterada nesta etapa.</div>
+        <button class="button button-dark button-full" type="button" data-close-reset>Entendi</button>
+      </form>
+    </dialog>
+
+    <div class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>
