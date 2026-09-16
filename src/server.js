@@ -85,6 +85,69 @@ function mapProduct(row) {
   return { ...row, isAvailable: Boolean(row.isAvailable) };
 }
 
+const freightConfigFields = Object.freeze({
+  under1Kg: "under_1kg_cents",
+  from1To3Kg: "from_1_to_3kg_cents",
+  from3To8Kg: "from_3_to_8kg_cents",
+  from8To12Kg: "from_8_to_12kg_cents",
+  perKm: "per_km_cents",
+  perMinute: "per_minute_cents",
+});
+
+const freightConfigSelect = `SELECT under_1kg_cents AS under1KgCents,
+                                    from_1_to_3kg_cents AS from1To3KgCents,
+                                    from_3_to_8kg_cents AS from3To8KgCents,
+                                    from_8_to_12kg_cents AS from8To12KgCents,
+                                    per_km_cents AS perKmCents,
+                                    per_minute_cents AS perMinuteCents
+                             FROM freight_configs WHERE company_id = ?`;
+
+function badRequest(message) {
+  return Object.assign(new Error(message), { statusCode: 400 });
+}
+
+function centsToReais(cents) {
+  return (Number(cents) / 100).toFixed(2);
+}
+
+function mapFreightConfig(row) {
+  return {
+    under1Kg: centsToReais(row.under1KgCents),
+    from1To3Kg: centsToReais(row.from1To3KgCents),
+    from3To8Kg: centsToReais(row.from3To8KgCents),
+    from8To12Kg: centsToReais(row.from8To12KgCents),
+    perKm: centsToReais(row.perKmCents),
+    perMinute: centsToReais(row.perMinuteCents),
+  };
+}
+
+function reaisToCents(value, field) {
+  if (typeof value !== "string" && typeof value !== "number") {
+    throw badRequest(`O campo ${field} deve ser um valor monetário em reais.`);
+  }
+  const decimal = String(value).trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(decimal)) {
+    throw badRequest(`O campo ${field} deve ser um valor não negativo com no máximo duas casas decimais.`);
+  }
+  const [integer, fraction = ""] = decimal.split(".");
+  const cents = BigInt(integer) * 100n + BigInt((fraction + "00").slice(0, 2));
+  if (cents > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw badRequest(`O campo ${field} excede o valor máximo permitido.`);
+  }
+  return Number(cents);
+}
+
+function parseFreightConfigPatch(body) {
+  if (!body || Array.isArray(body) || typeof body !== "object") {
+    throw badRequest("O corpo da requisição deve ser um objeto com parâmetros tarifários.");
+  }
+  const keys = Object.keys(body);
+  const unexpected = keys.filter((key) => !Object.hasOwn(freightConfigFields, key));
+  if (unexpected.length) throw badRequest(`Campos não permitidos: ${unexpected.join(", ")}.`);
+  if (!keys.length) throw badRequest("Informe ao menos um parâmetro tarifário válido.");
+  return keys.map((key) => ({ column: freightConfigFields[key], value: reaisToCents(body[key], key) }));
+}
+
 const duplicateEmailMessage = "Este e-mail já está cadastrado. Use outro e-mail ou faça login.";
 
 async function api(request, response, url) {
@@ -166,6 +229,22 @@ async function api(request, response, url) {
       .all(user.companyId).map(mapProduct);
     return json(response, 200, { products: rows });
   }
+  if (request.method === "GET" && pathname === "/api/company/freight-config") {
+    const user = requireUser(request, ["company"]);
+    const config = db.prepare(freightConfigSelect).get(user.companyId);
+    if (!config) throw Object.assign(new Error("Configuração tarifária não encontrada."), { statusCode: 404 });
+    return json(response, 200, { freightConfig: mapFreightConfig(config) });
+  }
+  if (request.method === "PATCH" && pathname === "/api/company/freight-config") {
+    const user = requireUser(request, ["company"]);
+    const updates = parseFreightConfigPatch(await readJson(request));
+    const setClause = updates.map(({ column }) => `${column} = ?`).join(", ");
+    const result = db.prepare(`UPDATE freight_configs SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE company_id = ?`)
+      .run(...updates.map(({ value }) => value), user.companyId);
+    if (!result.changes) throw Object.assign(new Error("Configuração tarifária não encontrada."), { statusCode: 404 });
+    const config = db.prepare(freightConfigSelect).get(user.companyId);
+    return json(response, 200, { freightConfig: mapFreightConfig(config) });
+  }
   if (request.method === "POST" && pathname === "/api/company/products") {
     const user = requireUser(request, ["company"]);
     const body = await readJson(request);
@@ -229,12 +308,14 @@ async function api(request, response, url) {
     const user = requireUser(request, ["company"]);
     const body = await readJson(request);
     requireFields(body, ["weightKg", "distanceKm", "estimatedMinutes"]);
-    const configRow = db.prepare(`SELECT under_1kg_cents AS under1KgCents, from_1_to_3kg_cents AS from1To3KgCents,
-                                         from_3_to_8kg_cents AS from3To8KgCents, from_8_to_12kg_cents AS from8To12KgCents,
-                                         per_km_cents AS perKmCents, per_minute_cents AS perMinuteCents,
-                                         max_weight_kg AS maxWeightKg
-                                  FROM freight_configs WHERE company_id = ?`).get(user.companyId);
-    const quote = calculateFreight({ ...body, config: configRow });
+    const configRow = db.prepare(freightConfigSelect).get(user.companyId);
+    let quote;
+    try {
+      quote = calculateFreight({ ...body, config: configRow });
+    } catch (error) {
+      if (error instanceof RangeError) error.statusCode = 400;
+      throw error;
+    }
     return json(response, 200, { quote, split: splitNormalFreight(quote.totalCents), note: "Distância e tempo devem vir do futuro provedor de rotas, nunca do cliente." });
   }
   return false;

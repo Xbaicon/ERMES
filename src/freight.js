@@ -8,10 +8,12 @@ export const DEFAULT_FREIGHT_CONFIG = Object.freeze({
   maxWeightKg: 12,
 });
 
+export const MAX_ORDER_WEIGHT_KG = 12;
+
 export function weightFeeCents(weightKg, config = DEFAULT_FREIGHT_CONFIG) {
   const weight = Number(weightKg);
   if (!Number.isFinite(weight) || weight <= 0) throw new RangeError("O peso deve ser maior que zero.");
-  if (weight > config.maxWeightKg) throw new RangeError("O pedido excede o limite de 12 kg.");
+  if (weight > MAX_ORDER_WEIGHT_KG) throw new RangeError("O pedido excede o limite de 12 kg.");
   if (weight < 1) return config.under1KgCents;
   if (weight < 3) return config.from1To3KgCents;
   if (weight < 8) return config.from3To8KgCents;

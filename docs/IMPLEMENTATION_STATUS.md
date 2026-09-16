@@ -17,6 +17,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Endereço padrão do cliente | Não implementado | Deve preservar snapshots nas entregas futuras |
 | Itens e snapshots históricos | Banco preparado | Regras completas aguardam fluxo de pedido |
 | Cálculo do frete | Regra e testes implementados | Integração com rota ainda não implementada |
+| Parâmetros tarifários da empresa | Implementado inicialmente | Consulta e edição isoladas por sessão; seis tarifas monetárias persistidas em centavos; limite de 12 kg permanece fixo na aplicação |
 | Geocodificação e rotas | Não implementado | Não calcular valor real sem provedor confiável |
 | Pagamento | Não implementado | Integração real é opcional; simulação ainda não criada |
 | Divisão 70/25/5 | Regra e testes implementados | Persistência financeira será ligada ao fluxo da entrega |

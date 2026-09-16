@@ -28,6 +28,23 @@
       </div>
 
       <section class="dashboard-section" data-company-panel hidden>
+        <div class="section-title"><div><p class="eyebrow">FRETE</p><h2>Parâmetros tarifários</h2></div></div>
+        <form class="dashboard-card form" data-freight-config-form>
+          <p class="form-copy">Configure as taxas aplicadas ao peso, à distância e ao tempo estimado. O limite máximo por pedido é fixo em 12 kg.</p>
+          <div class="form-grid three-columns">
+            <div class="form-field"><label for="freight-under-1kg">Abaixo de 1 kg (R$)</label><input id="freight-under-1kg" name="under1Kg" inputmode="decimal" required /></div>
+            <div class="form-field"><label for="freight-1-to-3kg">De 1 a menos de 3 kg (R$)</label><input id="freight-1-to-3kg" name="from1To3Kg" inputmode="decimal" required /></div>
+            <div class="form-field"><label for="freight-3-to-8kg">De 3 a menos de 8 kg (R$)</label><input id="freight-3-to-8kg" name="from3To8Kg" inputmode="decimal" required /></div>
+            <div class="form-field"><label for="freight-8-to-12kg">De 8 a 12 kg (R$)</label><input id="freight-8-to-12kg" name="from8To12Kg" inputmode="decimal" required /></div>
+            <div class="form-field"><label for="freight-per-km">Por quilômetro (R$)</label><input id="freight-per-km" name="perKm" inputmode="decimal" required /></div>
+            <div class="form-field"><label for="freight-per-minute">Por minuto estimado (R$)</label><input id="freight-per-minute" name="perMinute" inputmode="decimal" required /></div>
+          </div>
+          <div class="form-message" data-freight-config-message hidden></div>
+          <button class="button button-dark" type="submit">Salvar parâmetros</button>
+        </form>
+      </section>
+
+      <section class="dashboard-section" data-company-panel hidden>
         <div class="section-title"><div><p class="eyebrow">CATÁLOGO</p><h2>Produtos</h2></div></div>
         <div class="dashboard-grid two-columns">
           <form class="dashboard-card form" data-product-form>

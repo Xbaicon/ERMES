@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { calculateFreight, splitNormalFreight, weightFeeCents } from "../src/freight.js";
+import { calculateFreight, DEFAULT_FREIGHT_CONFIG, splitNormalFreight, weightFeeCents } from "../src/freight.js";
 
 test("aplica todas as fronteiras das faixas de peso", () => {
   assert.equal(weightFeeCents(0.999), 300);
@@ -14,6 +14,7 @@ test("aplica todas as fronteiras das faixas de peso", () => {
 
 test("bloqueia peso acima de 12 kg", () => {
   assert.throws(() => weightFeeCents(12.001), /excede o limite/);
+  assert.throws(() => weightFeeCents(12.001, { ...DEFAULT_FREIGHT_CONFIG, maxWeightKg: 99 }), /excede o limite/);
 });
 
 test("calcula frete com frações e arredonda somente o total monetário", () => {
