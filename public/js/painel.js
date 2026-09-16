@@ -54,6 +54,12 @@
       <article class="list-item"><div><strong>${escapeHtml(courier.fullName)}</strong><small>${escapeHtml(courier.vehicleType)} · ${escapeHtml(courier.email)}</small></div><span class="status-pill ${courier.isOnline ? "active" : ""}">${courier.isOnline ? "Online" : "Offline"}</span></article>`).join("") : '<p class="empty-copy">Nenhum motoboy vinculado.</p>';
   }
 
+  async function loadFreightConfig() {
+    const form = document.querySelector("[data-freight-config-form]");
+    const { freightConfig } = await api("/api/company/freight-config");
+    Object.entries(freightConfig).forEach(([field, value]) => { form.elements[field].value = value; });
+  }
+
   function setupCompany() {
     document.querySelectorAll("[data-company-panel]").forEach((element) => { element.hidden = false; });
     const productForm = document.querySelector("[data-product-form]");
@@ -81,7 +87,19 @@
         await loadCouriers();
       } catch (error) { showMessage(message, error.message); }
     });
-    Promise.all([loadProducts(), loadCouriers()]).catch(console.error);
+
+    const freightConfigForm = document.querySelector("[data-freight-config-form]");
+    freightConfigForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = document.querySelector("[data-freight-config-message]");
+      try {
+        const freightConfig = Object.fromEntries(new FormData(freightConfigForm));
+        const result = await api("/api/company/freight-config", { method: "PATCH", body: JSON.stringify(freightConfig) });
+        Object.entries(result.freightConfig).forEach(([field, value]) => { freightConfigForm.elements[field].value = value; });
+        showMessage(message, "Parâmetros tarifários atualizados.", "success");
+      } catch (error) { showMessage(message, error.message); }
+    });
+    Promise.all([loadProducts(), loadCouriers(), loadFreightConfig()]).catch(console.error);
   }
 
   async function setupCourier() {
