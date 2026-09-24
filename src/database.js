@@ -47,6 +47,18 @@ db.exec(`
     is_online INTEGER NOT NULL DEFAULT 0 CHECK(is_online IN (0, 1))
   );
 
+  CREATE TABLE IF NOT EXISTS client_default_addresses (
+    client_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    postal_code TEXT NOT NULL CHECK(length(postal_code) = 8 AND postal_code NOT GLOB '*[^0-9]*'),
+    state TEXT NOT NULL CHECK(length(state) = 2 AND state = upper(state)),
+    city TEXT NOT NULL CHECK(length(trim(city)) > 0),
+    neighborhood TEXT NOT NULL CHECK(length(trim(neighborhood)) > 0),
+    street TEXT NOT NULL CHECK(length(trim(street)) > 0),
+    number TEXT NOT NULL CHECK(length(trim(number)) > 0),
+    complement TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS freight_configs (
     company_id INTEGER PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
     under_1kg_cents INTEGER NOT NULL DEFAULT 300,

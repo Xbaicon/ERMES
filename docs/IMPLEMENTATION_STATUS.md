@@ -14,7 +14,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Motoboy vinculado à empresa | Implementado inicialmente | Criado pela área da empresa; não autônomo |
 | Online/offline do motoboy | Implementado inicialmente | Persistido no banco |
 | Estrutura de pedidos | Banco preparado | Interface e API completas ainda não implementadas |
-| Endereço padrão do cliente | Não implementado | Deve preservar snapshots nas entregas futuras |
+| Endereço padrão do cliente | Implementado inicialmente | Consulta, cadastro e substituição isolados por sessão; sem geocodificação; snapshots de pedidos permanecem independentes |
 | Itens e snapshots históricos | Banco preparado | Regras completas aguardam fluxo de pedido |
 | Cálculo do frete | Regra e testes implementados | Integração com rota ainda não implementada |
 | Parâmetros tarifários da empresa | Implementado inicialmente | Consulta e edição isoladas por sessão; seis tarifas monetárias persistidas em centavos; limite de 12 kg permanece fixo na aplicação |
