@@ -37,3 +37,9 @@ test("arquivos JavaScript referenciados usam a extensão correta", async () => {
     assert.ok(scripts.every((script) => extname(script) === ".js"));
   }
 });
+
+test("formulário de endereço inicia bloqueado e expõe mensagens acessíveis", async () => {
+  const html = await readFile(resolve(publicRoot, "pages/painel.html"), "utf8");
+  assert.match(html, /data-default-address-submit disabled/);
+  assert.match(html, /data-default-address-message role="status" aria-live="polite"/);
+});

@@ -95,11 +95,26 @@
       </section>
 
       <section class="dashboard-section" data-client-panel hidden>
-        <div class="dashboard-card empty-state">
-          <p class="eyebrow">PRÓXIMA ETAPA</p>
-          <h2>Catálogo e pedidos</h2>
-          <p>A infraestrutura de usuários, empresas, produtos e frete já está preparada. A jornada completa do pedido será implementada após a definição do provedor de rotas e das pendências indicadas na baseline.</p>
-        </div>
+        <div class="section-title"><div><p class="eyebrow">SEUS DADOS</p><h2>Endereço padrão</h2></div></div>
+        <form class="dashboard-card form address-form" data-default-address-form>
+          <p class="form-copy">Cadastre o endereço usado como padrão. Você poderá substituí-lo integralmente pelo mesmo formulário.</p>
+          <div class="form-grid">
+            <div class="form-field"><label for="client-postal-code">CEP</label><input id="client-postal-code" name="postalCode" data-mask="postal-code" inputmode="numeric" autocomplete="postal-code" maxlength="9" required /></div>
+            <div class="form-field"><label for="client-state">Estado (UF)</label><input id="client-state" name="state" autocomplete="address-level1" maxlength="2" required /></div>
+          </div>
+          <div class="form-grid">
+            <div class="form-field"><label for="client-city">Cidade</label><input id="client-city" name="city" autocomplete="address-level2" required /></div>
+            <div class="form-field"><label for="client-neighborhood">Bairro</label><input id="client-neighborhood" name="neighborhood" autocomplete="address-level3" required /></div>
+          </div>
+          <div class="form-field"><label for="client-street">Rua/Avenida</label><input id="client-street" name="street" autocomplete="address-line1" required /></div>
+          <div class="form-grid">
+            <div class="form-field"><label for="client-number">Número</label><input id="client-number" name="number" autocomplete="address-line2" required /></div>
+            <div class="form-field"><label for="client-complement">Complemento (opcional)</label><input id="client-complement" name="complement" autocomplete="address-line3" /></div>
+          </div>
+          <p class="form-copy">O endereço é salvo conforme informado, sem consulta de CEP, geocodificação ou validação em serviços externos.</p>
+          <div class="form-message" data-default-address-message role="status" aria-live="polite" hidden></div>
+          <button class="button button-dark" type="submit" data-default-address-submit disabled>Carregando endereço…</button>
+        </form>
       </section>
     </main>
     <div class="toast-region" aria-live="polite" aria-atomic="true"></div>

@@ -23,6 +23,8 @@ Não há dependências npm externas nesta etapa.
 - `Pedido` e `Entrega` são entidades distintas.
 - Produto, preço e peso são preservados em `order_items` para impedir alterações retroativas.
 - Endereço e rota possuem espaço para snapshots históricos no pedido.
+- O endereço padrão atual do cliente fica em `client_default_addresses`, com uma linha por usuário; pedidos preservam cópias independentes em `orders.destination_snapshot_json`.
+- O contrato puro de validação e normalização de endereços fica em `src/address.js`; transporte HTTP e persistência continuam centralizados nas camadas existentes.
 - Existe índice parcial no banco para impedir mais de uma entrega ativa por motoboy.
 - Dinheiro é representado em centavos inteiros.
 - Empresa e usuário responsável são entidades distintas.

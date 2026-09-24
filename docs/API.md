@@ -51,6 +51,41 @@ As duas rotas de parâmetros tarifários exigem sessão com papel `company`. A e
 
 O limite máximo por pedido é uma regra fixa de 12 kg. Ele não é retornado nem editável nessas rotas, e a cotação aplica esse limite independentemente da coluna legada `max_weight_kg`.
 
+## Cliente autenticado
+
+| Método | Rota | Finalidade |
+| --- | --- | --- |
+| GET | `/client/default-address` | Consultar o endereço padrão do próprio cliente |
+| PUT | `/client/default-address` | Cadastrar ou substituir integralmente o endereço padrão do próprio cliente |
+
+As duas rotas exigem sessão com papel `client`. O proprietário é identificado exclusivamente pelo `id` da sessão no servidor; a API não aceita `clientId`, `userId` nem qualquer outro identificador externo no corpo ou na URL.
+
+`GET /client/default-address` retorna HTTP `200`. Quando o cliente ainda não possui endereço, a resposta é:
+
+```json
+{
+  "defaultAddress": null
+}
+```
+
+`PUT /client/default-address` recebe a representação completa do endereço com `postalCode`, `state`, `city`, `neighborhood`, `street`, `number` e, opcionalmente, `complement`. O CEP é normalizado para oito dígitos, a UF para duas letras maiúsculas e os textos têm espaços externos removidos. O mesmo contrato é usado tanto no primeiro cadastro quanto na substituição:
+
+```json
+{
+  "postalCode": "01001000",
+  "state": "SP",
+  "city": "São Paulo",
+  "neighborhood": "Sé",
+  "street": "Praça da Sé",
+  "number": "10",
+  "complement": "Apto 2"
+}
+```
+
+Campos obrigatórios ausentes ou vazios, formatos inválidos e campos inesperados retornam HTTP `400`. Ausência de sessão retorna `401`, e papéis diferentes de `client` retornam `403`.
+
+O endereço padrão é um cadastro atual em `client_default_addresses`. Substituí-lo não atualiza nem relaciona automaticamente `orders.destination_snapshot_json`, que permanece como registro histórico independente do destino usado em cada pedido.
+
 ## Motoboy autenticado
 
 | Método | Rota | Finalidade |

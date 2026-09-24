@@ -30,6 +30,7 @@
       const raw = digits(input.value);
       if (input.dataset.mask === "cpf") input.value = raw.slice(0, 11).replace(/(\d{3})(\d)/, "$1.$2").replace(/(\d{3})(\d)/, "$1.$2").replace(/(\d{3})(\d{1,2})$/, "$1-$2");
       if (input.dataset.mask === "phone") input.value = raw.slice(0, 11).replace(/(\d{2})(\d)/, "($1) $2").replace(/(\d{5})(\d{1,4})$/, "$1-$2");
+      if (input.dataset.mask === "postal-code") input.value = raw.slice(0, 8).replace(/(\d{5})(\d)/, "$1-$2");
     }));
   }
 
@@ -120,6 +121,57 @@
     });
   }
 
+  async function setupClient() {
+    const panel = document.querySelector("[data-client-panel]");
+    const form = document.querySelector("[data-default-address-form]");
+    const message = document.querySelector("[data-default-address-message]");
+    const button = document.querySelector("[data-default-address-submit]");
+    let isReady = false;
+    let isSaving = false;
+    const setFormState = ({ disabled, busy, buttonText }) => {
+      form.setAttribute("aria-busy", String(busy));
+      Array.from(form.elements).forEach((element) => { element.disabled = disabled; });
+      button.textContent = buttonText;
+    };
+    const fillForm = (address) => {
+      if (!address) return;
+      Object.entries(address).forEach(([field, value]) => { form.elements[field].value = value; });
+    };
+
+    setFormState({ disabled: true, busy: true, buttonText: "Carregando endereço…" });
+    panel.hidden = false;
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!isReady || isSaving) return;
+      message.hidden = true;
+      if (!form.reportValidity()) return;
+      const address = Object.fromEntries(new FormData(form));
+      isSaving = true;
+      setFormState({ disabled: true, busy: true, buttonText: "Salvando…" });
+      try {
+        const result = await api("/api/client/default-address", { method: "PUT", body: JSON.stringify(address) });
+        fillForm(result.defaultAddress);
+        showMessage(message, "Endereço padrão salvo com sucesso.", "success");
+      } catch (error) {
+        showMessage(message, error.message);
+      } finally {
+        isSaving = false;
+        setFormState({ disabled: false, busy: false, buttonText: "Salvar endereço" });
+      }
+    });
+
+    try {
+      const { defaultAddress } = await api("/api/client/default-address");
+      fillForm(defaultAddress);
+      isReady = true;
+      setFormState({ disabled: false, busy: false, buttonText: "Salvar endereço" });
+    } catch (error) {
+      showMessage(message, `Não foi possível carregar o endereço. Recarregue a página antes de salvar. ${error.message}`);
+      setFormState({ disabled: true, busy: false, buttonText: "Endereço indisponível" });
+    }
+  }
+
   async function main() {
     masks();
     const { user } = await api("/api/auth/me");
@@ -128,14 +180,14 @@
     const copy = {
       company: ["ÁREA DA EMPRESA", "Operação da empresa", "Gerencie o catálogo e os motoboys vinculados ao estabelecimento."],
       courier: ["ÁREA DO MOTOBOY", "Sua jornada de entregas", "Controle sua disponibilidade e acompanhe as próximas etapas do fluxo."],
-      client: ["ÁREA DO CLIENTE", "Seus pedidos", "Consulte empresas e acompanhe suas solicitações de entrega."],
+      client: ["ÁREA DO CLIENTE", "Seus dados", "Mantenha seu endereço padrão atualizado para as próximas etapas da jornada."],
     }[user.role] || ["PAINEL", "ERMES", "Acesso autenticado."];
     document.querySelector("[data-role-label]").textContent = copy[0];
     document.querySelector("[data-dashboard-title]").textContent = copy[1];
     document.querySelector("[data-dashboard-description]").textContent = copy[2];
     if (user.role === "company") setupCompany();
     if (user.role === "courier") setupCourier();
-    if (user.role === "client") document.querySelector("[data-client-panel]").hidden = false;
+    if (user.role === "client") await setupClient();
   }
 
   document.querySelector("[data-logout]").addEventListener("click", async () => {

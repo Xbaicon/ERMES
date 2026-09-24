@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeAddress } from "./address.js";
 import { db, seedDevelopmentData, transaction } from "./database.js";
 import { calculateFreight, splitNormalFreight } from "./freight.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
@@ -84,6 +85,10 @@ function requireUser(request, roles = []) {
 function mapProduct(row) {
   return { ...row, isAvailable: Boolean(row.isAvailable) };
 }
+
+const defaultAddressSelect = `SELECT postal_code AS postalCode, state, city, neighborhood,
+                                      street, number, complement
+                               FROM client_default_addresses WHERE client_id = ?`;
 
 const freightConfigFields = Object.freeze({
   under1Kg: "under_1kg_cents",
@@ -220,6 +225,31 @@ async function api(request, response, url) {
                              FROM products WHERE company_id = ? AND is_available = 1 ORDER BY name`)
       .all(Number(publicProducts[1])).map(mapProduct);
     return json(response, 200, { products: rows });
+  }
+  if (request.method === "GET" && pathname === "/api/client/default-address") {
+    const user = requireUser(request, ["client"]);
+    const defaultAddress = db.prepare(defaultAddressSelect).get(user.id) || null;
+    return json(response, 200, { defaultAddress });
+  }
+  if (request.method === "PUT" && pathname === "/api/client/default-address") {
+    const user = requireUser(request, ["client"]);
+    const address = normalizeAddress(await readJson(request));
+    db.prepare(`INSERT INTO client_default_addresses
+                  (client_id, postal_code, state, city, neighborhood, street, number, complement)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(client_id) DO UPDATE SET
+                  postal_code = excluded.postal_code,
+                  state = excluded.state,
+                  city = excluded.city,
+                  neighborhood = excluded.neighborhood,
+                  street = excluded.street,
+                  number = excluded.number,
+                  complement = excluded.complement,
+                  updated_at = CURRENT_TIMESTAMP`)
+      .run(user.id, address.postalCode, address.state, address.city, address.neighborhood,
+        address.street, address.number, address.complement);
+    const defaultAddress = db.prepare(defaultAddressSelect).get(user.id);
+    return json(response, 200, { defaultAddress });
   }
   if (request.method === "GET" && pathname === "/api/company/products") {
     const user = requireUser(request, ["company"]);

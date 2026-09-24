@@ -27,6 +27,7 @@
 .empty-state { max-width: 760px; }
 .empty-state p:last-child { color: var(--muted); }
 .form-copy { margin: 0; color: var(--muted); }
+.address-form { max-width: 860px; }
 @media (max-width: 760px) {
   .dashboard-header, .dashboard-user, .status-banner, .availability-card { align-items: flex-start; flex-direction: column; }
   .two-columns { grid-template-columns: 1fr; }
