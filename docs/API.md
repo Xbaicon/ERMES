@@ -12,8 +12,6 @@ Base local: `http://localhost:3000/api`
 | POST | `/auth/login` | Criar sessão |
 | POST | `/auth/logout` | Encerrar sessão |
 | GET | `/auth/me` | Consultar sessão atual |
-| GET | `/companies` | Listar empresas ativas |
-| GET | `/companies/:id/products` | Listar produtos disponíveis |
 
 O e-mail de acesso é normalizado e único em `users.email`, independentemente do papel. Se já existir, os dois cadastros retornam HTTP `409 Conflict` com `{ "error": "Este e-mail já está cadastrado. Use outro e-mail ou faça login." }`. No cadastro de empresa, essa regra se aplica a `accessEmail`; `companyEmail` é o contato da empresa.
 
@@ -55,10 +53,48 @@ O limite máximo por pedido é uma regra fixa de 12 kg. Ele não é retornado ne
 
 | Método | Rota | Finalidade |
 | --- | --- | --- |
+| GET | `/client/companies` | Listar empresas ativas disponíveis para consulta |
+| GET | `/client/companies/:companyId/products` | Listar produtos disponíveis da empresa escolhida |
 | GET | `/client/default-address` | Consultar o endereço padrão do próprio cliente |
 | PUT | `/client/default-address` | Cadastrar ou substituir integralmente o endereço padrão do próprio cliente |
 
-As duas rotas exigem sessão com papel `client`. O proprietário é identificado exclusivamente pelo `id` da sessão no servidor; a API não aceita `clientId`, `userId` nem qualquer outro identificador externo no corpo ou na URL.
+Todas as rotas desta seção exigem sessão com papel `client`. Ausência de sessão retorna `401`, e papéis diferentes de `client` retornam `403`.
+
+### Consulta do catálogo
+
+`GET /client/companies` retorna apenas `id` e `name` das empresas com estado `active`, ordenadas por nome. Quando não existe nenhuma, a resposta continua sendo HTTP `200` e contém uma lista vazia:
+
+```json
+{
+  "companies": []
+}
+```
+
+`GET /client/companies/:companyId/products` exige um identificador decimal inteiro, positivo e seguro. Um identificador malformado retorna `400`; uma empresa inexistente ou que não esteja ativa retorna `404`. A resposta contém a empresa selecionada e somente os produtos que pertencem simultaneamente a ela e têm `is_available = 1`:
+
+```json
+{
+  "company": {
+    "id": 1,
+    "name": "Empresa Demonstrativa"
+  },
+  "products": [
+    {
+      "id": 1,
+      "name": "Produto demonstrativo",
+      "description": "Item cadastrado para validar o fluxo inicial.",
+      "priceCents": 1990,
+      "unitWeightKg": 0.5
+    }
+  ]
+}
+```
+
+Uma empresa ativa sem produtos disponíveis retorna HTTP `200` com `products: []`. A API não recebe disponibilidade nem propriedade do navegador: os dois critérios são aplicados na consulta ao banco. Os dados retornados são uma projeção mínima para consulta; não incluem CNPJ, e-mail, telefone, endereço, estado interno da empresa ou o campo interno de disponibilidade. Estas rotas não criam carrinho nem pedido.
+
+### Endereço padrão
+
+O proprietário do endereço é identificado exclusivamente pelo `id` da sessão no servidor; a API não aceita `clientId`, `userId` nem qualquer outro identificador externo no corpo ou na URL.
 
 `GET /client/default-address` retorna HTTP `200`. Quando o cliente ainda não possui endereço, a resposta é:
 
@@ -82,7 +118,7 @@ As duas rotas exigem sessão com papel `client`. O proprietário é identificado
 }
 ```
 
-Campos obrigatórios ausentes ou vazios, formatos inválidos e campos inesperados retornam HTTP `400`. Ausência de sessão retorna `401`, e papéis diferentes de `client` retornam `403`.
+Campos obrigatórios ausentes ou vazios, formatos inválidos e campos inesperados retornam HTTP `400`.
 
 O endereço padrão é um cadastro atual em `client_default_addresses`. Substituí-lo não atualiza nem relaciona automaticamente `orders.destination_snapshot_json`, que permanece como registro histórico independente do destino usado em cada pedido.
 

@@ -95,6 +95,22 @@
       </section>
 
       <section class="dashboard-section" data-client-panel hidden>
+        <div class="section-title"><div><p class="eyebrow">CATÁLOGO</p><h2>Empresas e produtos</h2></div></div>
+        <div class="dashboard-grid client-catalog">
+          <div class="dashboard-card">
+            <h3>Empresas disponíveis</h3>
+            <p class="catalog-status" data-client-companies-status role="status" aria-live="polite">Carregando empresas…</p>
+            <div class="catalog-company-list" data-client-companies-list aria-label="Empresas disponíveis"></div>
+          </div>
+          <div class="dashboard-card" aria-labelledby="client-products-title">
+            <h3 id="client-products-title" data-client-products-title>Selecione uma empresa</h3>
+            <p class="catalog-status" data-client-products-status role="status" aria-live="polite">Escolha uma empresa para consultar seus produtos disponíveis.</p>
+            <div class="catalog-product-grid" data-client-products-list></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard-section" data-client-panel hidden>
         <div class="section-title"><div><p class="eyebrow">SEUS DADOS</p><h2>Endereço padrão</h2></div></div>
         <form class="dashboard-card form address-form" data-default-address-form>
           <p class="form-copy">Cadastre o endereço usado como padrão. Você poderá substituí-lo integralmente pelo mesmo formulário.</p>

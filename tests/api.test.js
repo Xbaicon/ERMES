@@ -10,6 +10,7 @@ test("servidor responde, autentica e protege rotas da empresa", async (context) 
   process.env.NODE_ENV = "development";
 
   const { server, startServer } = await import(`../src/server.js?test=${Date.now()}`);
+  const { db } = await import("../src/database.js");
   await startServer(0);
   context.after(() => new Promise((resolveClose) => server.close(resolveClose)));
   const { port } = server.address();
@@ -54,7 +55,7 @@ test("servidor responde, autentica e protege rotas da empresa", async (context) 
   });
 
   await context.test("cadastro de empresa rejeita e-mail de acesso existente sem criar empresa", async () => {
-    const companiesBefore = await (await fetch(`${base}/api/companies`)).json();
+    const companiesBefore = db.prepare("SELECT id, name FROM companies ORDER BY id").all();
     const response = await fetch(`${base}/api/auth/register/company`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -73,7 +74,7 @@ test("servidor responde, autentica e protege rotas da empresa", async (context) 
     const body = await response.json();
     assert.deepEqual(body, { error: duplicateEmailMessage });
     assert.doesNotMatch(JSON.stringify(body), /sqlite|constraint failed|users\.email/i);
-    const companiesAfter = await (await fetch(`${base}/api/companies`)).json();
+    const companiesAfter = db.prepare("SELECT id, name FROM companies ORDER BY id").all();
     assert.deepEqual(companiesAfter, companiesBefore);
   });
 
