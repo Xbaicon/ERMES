@@ -41,9 +41,22 @@
 .catalog-product h4 { margin: 0; overflow-wrap: anywhere; }
 .catalog-product p { margin: 8px 0 0; color: var(--muted); overflow-wrap: anywhere; }
 .catalog-product-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: .9rem; font-weight: 800; }
+.catalog-product .button { margin-top: 12px; }
+.client-cart { margin-top: 22px; display: grid; gap: 16px; }
+.cart-heading, .cart-totals, .cart-item, .cart-item-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.cart-heading h3 { margin-bottom: 4px; }
+.cart-items { display: grid; gap: 10px; }
+.cart-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.cart-item > div:first-child { min-width: 0; display: grid; gap: 4px; }
+.cart-item strong, .cart-item small { overflow-wrap: anywhere; }
+.cart-item small { color: var(--muted); }
+.cart-item-actions { justify-content: flex-end; flex-wrap: wrap; }
+.cart-totals { justify-content: flex-start; flex-wrap: wrap; gap: 8px 28px; }
+.client-cart > [data-client-cart-submit] { justify-self: start; }
 @media (max-width: 760px) {
   .dashboard-header, .dashboard-user, .status-banner, .availability-card { align-items: flex-start; flex-direction: column; }
   .two-columns, .client-catalog, .catalog-product-grid { grid-template-columns: 1fr; }
   .three-columns { grid-template-columns: 1fr; }
   .dashboard-user { width: 100%; }
+  .cart-heading, .cart-item { align-items: flex-start; flex-direction: column; }
 }

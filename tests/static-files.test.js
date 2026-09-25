@@ -44,16 +44,22 @@ test("formulário de endereço inicia bloqueado e expõe mensagens acessíveis",
   assert.match(html, /data-default-address-message role="status" aria-live="polite"/);
 });
 
-test("painel do cliente conecta a consulta acessível e somente leitura do catálogo", async () => {
+test("painel do cliente conecta catálogo e carrinho acessíveis à criação draft", async () => {
   const html = await readFile(resolve(publicRoot, "pages/painel.html"), "utf8");
   const script = await readFile(resolve(publicRoot, "js/painel.js"), "utf8");
+  const cart = await readFile(resolve(publicRoot, "js/client-cart.js"), "utf8");
 
   assert.match(html, /data-client-companies-status role="status" aria-live="polite"/);
   assert.match(html, /data-client-products-status role="status" aria-live="polite"/);
   assert.match(html, /data-client-companies-list/);
   assert.match(html, /data-client-products-list/);
-  assert.match(script, /api\("\/api\/client\/companies"\)/);
-  assert.match(script, /api\(`\/api\/client\/companies\/\$\{company\.id\}\/products`\)/);
-  assert.match(script, /if \(productsLoading \|\| company\.id === selectedCompanyId\) return;/);
-  assert.doesNotMatch(html, /carrinho|comprar|adicionar produto/i);
+  assert.match(html, /data-client-cart-status role="status" aria-live="polite"/);
+  assert.match(html, /data-client-cart-message role="status" aria-live="polite" hidden/);
+  assert.match(html, /data-client-cart-submit disabled/);
+  assert.match(html, /src="\.\.\/js\/painel\.js" type="module"/);
+  assert.match(script, /import \{ setupClientCatalog \} from "\.\/client-cart\.js"/);
+  assert.match(cart, /api\("\/api\/client\/companies"\)/);
+  assert.match(cart, /api\(`\/api\/client\/companies\/\$\{company\.id\}\/products`\)/);
+  assert.match(cart, /api\("\/api\/client\/orders"/);
+  assert.doesNotMatch(html, /pagamento|finalizar entrega|confirmar pedido/i);
 });

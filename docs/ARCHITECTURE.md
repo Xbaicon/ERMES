@@ -26,6 +26,7 @@ Não há dependências npm externas nesta etapa.
 - O endereço padrão atual do cliente fica em `client_default_addresses`, com uma linha por usuário; pedidos preservam cópias independentes em `orders.destination_snapshot_json`.
 - O contrato puro de validação e normalização de endereços fica em `src/address.js`; transporte HTTP e persistência continuam centralizados nas camadas existentes.
 - O catálogo de consulta fica sob `/api/client`: a sessão limita o acesso ao papel `client`, empresas bloqueadas não são elegíveis e a consulta de produtos combina `company_id` com `is_available = 1`; as antigas rotas públicas de catálogo não fazem parte do contrato.
+- `src/orders.js` concentra validação, recálculo decimal do peso, subtotal seguro e criação transacional do pedido `draft`; `src/server.js` mantém a autorização e o contrato HTTP. O carrinho e a interação do catálogo ficam em `public/js/client-cart.js`, sem persistência no navegador. As tabelas existentes `orders` e `order_items` já armazenam os snapshots exigidos, sem migração nesta etapa.
 - Existe índice parcial no banco para impedir mais de uma entrega ativa por motoboy.
 - Dinheiro é representado em centavos inteiros.
 - Empresa e usuário responsável são entidades distintas.
