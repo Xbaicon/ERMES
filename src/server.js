@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeAddress } from "./address.js";
 import { db, seedDevelopmentData, transaction } from "./database.js";
 import { calculateFreight, splitNormalFreight } from "./freight.js";
+import { createDraftOrder } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
 import { assertPassword, isEmail, isValidCnpj, isValidCpf, normalizeEmail, onlyDigits, requireFields } from "./validation.js";
 
@@ -264,6 +265,11 @@ async function api(request, response, url) {
         address.street, address.number, address.complement);
     const defaultAddress = db.prepare(defaultAddressSelect).get(user.id);
     return json(response, 200, { defaultAddress });
+  }
+  if (request.method === "POST" && pathname === "/api/client/orders") {
+    const user = requireUser(request, ["client"]);
+    const order = createDraftOrder(user.id, await readJson(request));
+    return json(response, 201, { order });
   }
   if (request.method === "GET" && pathname === "/api/company/products") {
     const user = requireUser(request, ["company"]);

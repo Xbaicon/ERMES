@@ -11,12 +11,13 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Login e sessão | Implementado inicialmente | Cookie `HttpOnly`; sem autorização por token no navegador |
 | Recuperação de senha | Bloqueado | Serviço de e-mail e fluxo seguro ainda não definidos |
 | Produtos da empresa | Implementado inicialmente | Cadastro, peso, preço e disponibilidade |
-| Consulta do catálogo pelo cliente | Implementado inicialmente | Lista empresas ativas e, por empresa, somente produtos disponíveis; acesso exclusivo do papel `client`; sem carrinho ou pedidos |
+| Consulta do catálogo pelo cliente | Implementado inicialmente | Lista empresas ativas e, por empresa, somente produtos disponíveis; acesso exclusivo do papel `client` |
+| Carrinho e criação de pedido draft | Implementado inicialmente | Carrinho em memória para uma empresa; servidor recalcula subtotal e peso, exige endereço padrão, grava snapshots e não cria entrega ou frete |
 | Motoboy vinculado à empresa | Implementado inicialmente | Criado pela área da empresa; não autônomo |
 | Online/offline do motoboy | Implementado inicialmente | Persistido no banco |
-| Estrutura de pedidos | Banco preparado | Interface e API completas ainda não implementadas |
+| Estrutura de pedidos | Implementado parcialmente | Criação de `draft` disponível; análise, confirmação, cancelamento e gestão ainda não implementados |
 | Endereço padrão do cliente | Implementado inicialmente | Consulta, cadastro e substituição isolados por sessão; sem geocodificação; snapshots de pedidos permanecem independentes |
-| Itens e snapshots históricos | Banco preparado | Regras completas aguardam fluxo de pedido |
+| Itens e snapshots históricos | Implementado parcialmente | Draft preserva preço e peso unitários, subtotal e endereço de destino; rota, frete e divisão financeira aguardam etapas futuras |
 | Cálculo do frete | Regra e testes implementados | Integração com rota ainda não implementada |
 | Parâmetros tarifários da empresa | Implementado inicialmente | Consulta e edição isoladas por sessão; seis tarifas monetárias persistidas em centavos; limite de 12 kg permanece fixo na aplicação |
 | Geocodificação e rotas | Não implementado | Não calcular valor real sem provedor confiável |

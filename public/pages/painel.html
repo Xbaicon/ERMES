@@ -8,7 +8,7 @@
     <link rel="icon" type="image/png" href="../assets/images/ermes-logo.png" />
     <link rel="stylesheet" href="../css/style.css" />
     <link rel="stylesheet" href="../css/painel.css" />
-    <script src="../js/painel.js" defer></script>
+    <script src="../js/painel.js" type="module"></script>
   </head>
   <body class="dashboard-page">
     <header class="dashboard-header">
@@ -107,6 +107,18 @@
             <p class="catalog-status" data-client-products-status role="status" aria-live="polite">Escolha uma empresa para consultar seus produtos disponíveis.</p>
             <div class="catalog-product-grid" data-client-products-list></div>
           </div>
+        </div>
+        <div class="dashboard-card client-cart" aria-labelledby="client-cart-title">
+          <div class="cart-heading">
+            <div><h3 id="client-cart-title">Seu carrinho</h3><p class="form-copy" data-client-cart-company>Nenhuma empresa selecionada para o carrinho.</p></div>
+            <button class="button button-outline button-small" type="button" data-client-cart-clear disabled>Esvaziar carrinho</button>
+          </div>
+          <p class="catalog-status" data-client-cart-status role="status" aria-live="polite">Carrinho vazio.</p>
+          <div class="cart-items" data-client-cart-items></div>
+          <div class="cart-totals"><span>Subtotal: <strong data-client-cart-subtotal>R$ 0,00</strong></span><span>Peso total: <strong data-client-cart-weight>0 kg</strong></span></div>
+          <p class="form-copy">Limite de 12 kg por pedido. Subtotal e peso exibidos são uma prévia; o servidor recalcula com os dados atuais ao criar o pedido. Frete ainda não é calculado.</p>
+          <div class="form-message" data-client-cart-message role="status" aria-live="polite" hidden></div>
+          <button class="button button-dark" type="button" data-client-cart-submit disabled>Criar pedido draft</button>
         </div>
       </section>
 

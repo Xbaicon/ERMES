@@ -57,6 +57,7 @@ O limite máximo por pedido é uma regra fixa de 12 kg. Ele não é retornado ne
 | GET | `/client/companies/:companyId/products` | Listar produtos disponíveis da empresa escolhida |
 | GET | `/client/default-address` | Consultar o endereço padrão do próprio cliente |
 | PUT | `/client/default-address` | Cadastrar ou substituir integralmente o endereço padrão do próprio cliente |
+| POST | `/client/orders` | Criar pedido em estado `draft` a partir do carrinho |
 
 Todas as rotas desta seção exigem sessão com papel `client`. Ausência de sessão retorna `401`, e papéis diferentes de `client` retornam `403`.
 
@@ -90,7 +91,7 @@ Todas as rotas desta seção exigem sessão com papel `client`. Ausência de ses
 }
 ```
 
-Uma empresa ativa sem produtos disponíveis retorna HTTP `200` com `products: []`. A API não recebe disponibilidade nem propriedade do navegador: os dois critérios são aplicados na consulta ao banco. Os dados retornados são uma projeção mínima para consulta; não incluem CNPJ, e-mail, telefone, endereço, estado interno da empresa ou o campo interno de disponibilidade. Estas rotas não criam carrinho nem pedido.
+Uma empresa ativa sem produtos disponíveis retorna HTTP `200` com `products: []`. A API não recebe disponibilidade nem propriedade do navegador: os dois critérios são aplicados na consulta ao banco. Os dados retornados são uma projeção mínima para consulta; não incluem CNPJ, e-mail, telefone, endereço, estado interno da empresa ou o campo interno de disponibilidade.
 
 ### Endereço padrão
 
@@ -121,6 +122,47 @@ O proprietário do endereço é identificado exclusivamente pelo `id` da sessão
 Campos obrigatórios ausentes ou vazios, formatos inválidos e campos inesperados retornam HTTP `400`.
 
 O endereço padrão é um cadastro atual em `client_default_addresses`. Substituí-lo não atualiza nem relaciona automaticamente `orders.destination_snapshot_json`, que permanece como registro histórico independente do destino usado em cada pedido.
+
+### Criação de pedido draft
+
+`POST /client/orders` recebe somente `companyId` e `items`; cada item recebe somente `productId` e `quantity`:
+
+```json
+{
+  "companyId": 1,
+  "items": [
+    { "productId": 10, "quantity": 2 }
+  ]
+}
+```
+
+Identificadores e quantidades devem ser números inteiros positivos dentro do intervalo seguro do JavaScript. O pedido exige ao menos um item e não aceita o mesmo produto duas vezes; aumente a quantidade do item existente. Campos inesperados em qualquer nível são rejeitados com `400`, inclusive identificadores de cliente, preços, pesos, status, frete, rota e endereços enviados pelo navegador.
+
+O cliente é identificado exclusivamente pela sessão. A empresa precisa estar ativa e cada produto deve existir, pertencer a ela e estar disponível. É necessário um endereço padrão cadastrado. O servidor lê preço e peso atuais dos produtos, calcula `itemsTotalCents` em centavos inteiros e `weightKg` com comparação decimal exata ao limite de 12 kg, e copia o endereço atual para o snapshot do pedido. O subtotal deve caber em inteiro seguro. Erros de validação retornam `400`; ausência de endereço, produto indisponível ou de outra empresa retorna `409`; empresa ou produto inexistente retorna `404`. Ausência de sessão retorna `401`, e outro papel retorna `403`.
+
+Em sucesso, retorna `201`:
+
+```json
+{
+  "order": {
+    "id": 1,
+    "status": "draft",
+    "company": { "id": 1, "name": "Empresa Demonstrativa" },
+    "items": [
+      { "productId": 10, "name": "Produto demonstrativo", "quantity": 2,
+        "unitPriceCents": 1990, "unitWeightKg": 0.5 }
+    ],
+    "itemsTotalCents": 3980,
+    "weightKg": 1,
+    "destinationSnapshot": {
+      "postalCode": "01001000", "state": "SP", "city": "São Paulo",
+      "neighborhood": "Sé", "street": "Praça da Sé", "number": "10", "complement": "Apto 2"
+    }
+  }
+}
+```
+
+Pedido, subtotal, endereço e snapshots unitários dos itens são gravados numa única transação. `route_snapshot_json` e `freight_total_cents` permanecem `NULL`; nenhuma entrega é criada. O carrinho no painel existe apenas na memória da página, portanto desaparece ao recarregá-la. A prévia de subtotal e peso no navegador não é autoritativa e pode diferir se o produto mudar antes do envio. A criação não confirma o pedido nem inicia pagamento ou entrega.
 
 ## Motoboy autenticado
 
