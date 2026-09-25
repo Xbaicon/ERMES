@@ -111,6 +111,13 @@ function badRequest(message) {
   return Object.assign(new Error(message), { statusCode: 400 });
 }
 
+function parseCompanyId(value) {
+  if (!/^[1-9]\d*$/.test(value)) throw badRequest("Identificador de empresa inválido.");
+  const companyId = Number(value);
+  if (!Number.isSafeInteger(companyId)) throw badRequest("Identificador de empresa inválido.");
+  return companyId;
+}
+
 function centsToReais(cents) {
   return (Number(cents) / 100).toFixed(2);
 }
@@ -214,17 +221,24 @@ async function api(request, response, url) {
     if (token) db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(hashToken(token));
     return json(response, 200, { message: "Sessão encerrada." }, { "Set-Cookie": "ermes_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0" });
   }
-  if (request.method === "GET" && pathname === "/api/companies") {
+  if (request.method === "GET" && pathname === "/api/client/companies") {
+    requireUser(request, ["client"]);
     const rows = db.prepare("SELECT id, name FROM companies WHERE status = 'active' ORDER BY name").all();
     return json(response, 200, { companies: rows });
   }
-  const publicProducts = pathname.match(/^\/api\/companies\/(\d+)\/products$/);
-  if (request.method === "GET" && publicProducts) {
+  const clientCompanyProducts = pathname.match(/^\/api\/client\/companies\/([^/]+)\/products$/);
+  if (request.method === "GET" && clientCompanyProducts) {
+    requireUser(request, ["client"]);
+    const companyId = parseCompanyId(clientCompanyProducts[1]);
+    const company = db.prepare("SELECT id, name FROM companies WHERE id = ? AND status = 'active'").get(companyId);
+    if (!company) throw Object.assign(new Error("Empresa não encontrada."), { statusCode: 404 });
     const rows = db.prepare(`SELECT id, name, description, price_cents AS priceCents,
-                                    unit_weight_kg AS unitWeightKg, is_available AS isAvailable
-                             FROM products WHERE company_id = ? AND is_available = 1 ORDER BY name`)
-      .all(Number(publicProducts[1])).map(mapProduct);
-    return json(response, 200, { products: rows });
+                                    unit_weight_kg AS unitWeightKg
+                             FROM products
+                             WHERE company_id = ? AND is_available = 1
+                             ORDER BY name, id`)
+      .all(companyId);
+    return json(response, 200, { company, products: rows });
   }
   if (request.method === "GET" && pathname === "/api/client/default-address") {
     const user = requireUser(request, ["client"]);

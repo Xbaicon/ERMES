@@ -11,6 +11,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Login e sessão | Implementado inicialmente | Cookie `HttpOnly`; sem autorização por token no navegador |
 | Recuperação de senha | Bloqueado | Serviço de e-mail e fluxo seguro ainda não definidos |
 | Produtos da empresa | Implementado inicialmente | Cadastro, peso, preço e disponibilidade |
+| Consulta do catálogo pelo cliente | Implementado inicialmente | Lista empresas ativas e, por empresa, somente produtos disponíveis; acesso exclusivo do papel `client`; sem carrinho ou pedidos |
 | Motoboy vinculado à empresa | Implementado inicialmente | Criado pela área da empresa; não autônomo |
 | Online/offline do motoboy | Implementado inicialmente | Persistido no banco |
 | Estrutura de pedidos | Banco preparado | Interface e API completas ainda não implementadas |

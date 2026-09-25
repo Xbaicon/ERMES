@@ -121,8 +121,7 @@
     });
   }
 
-  async function setupClient() {
-    const panel = document.querySelector("[data-client-panel]");
+  async function setupDefaultAddress() {
     const form = document.querySelector("[data-default-address-form]");
     const message = document.querySelector("[data-default-address-message]");
     const button = document.querySelector("[data-default-address-submit]");
@@ -139,7 +138,6 @@
     };
 
     setFormState({ disabled: true, busy: true, buttonText: "Carregando endereço…" });
-    panel.hidden = false;
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -172,6 +170,96 @@
     }
   }
 
+  async function setupClientCatalog() {
+    const companiesList = document.querySelector("[data-client-companies-list]");
+    const companiesStatus = document.querySelector("[data-client-companies-status]");
+    const productsList = document.querySelector("[data-client-products-list]");
+    const productsStatus = document.querySelector("[data-client-products-status]");
+    const productsTitle = document.querySelector("[data-client-products-title]");
+    let companies = [];
+    let selectedCompanyId = null;
+    let productsLoading = false;
+
+    const setStatus = (element, message, type = "") => {
+      element.textContent = message;
+      element.className = `catalog-status${type ? ` ${type}` : ""}`;
+    };
+    const setCompanyButtonsDisabled = (disabled) => {
+      companiesList.querySelectorAll("button").forEach((button) => { button.disabled = disabled; });
+    };
+    const renderCompanies = () => {
+      companiesList.innerHTML = companies.map((company) => `
+        <button class="catalog-company-button${company.id === selectedCompanyId ? " selected" : ""}"
+                type="button" data-client-company-id="${company.id}"
+                aria-pressed="${company.id === selectedCompanyId}">${escapeHtml(company.name)}</button>`).join("");
+      companiesList.querySelectorAll("[data-client-company-id]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const company = companies.find(({ id }) => id === Number(button.dataset.clientCompanyId));
+          if (company) loadCompanyProducts(company);
+        });
+      });
+    };
+    const renderProducts = (products) => {
+      productsList.innerHTML = products.map((product) => `
+        <article class="catalog-product">
+          <h4>${escapeHtml(product.name)}</h4>
+          ${product.description ? `<p>${escapeHtml(product.description)}</p>` : ""}
+          <p class="catalog-product-meta"><span>${money(product.priceCents)}</span><span>${Number(product.unitWeightKg).toLocaleString("pt-BR")} kg</span></p>
+        </article>`).join("");
+    };
+    async function loadCompanyProducts(company) {
+      if (productsLoading || company.id === selectedCompanyId) return;
+      selectedCompanyId = company.id;
+      productsLoading = true;
+      renderCompanies();
+      setCompanyButtonsDisabled(true);
+      productsList.innerHTML = "";
+      productsTitle.textContent = `Produtos de ${company.name}`;
+      setStatus(productsStatus, "Carregando produtos…");
+      try {
+        const result = await api(`/api/client/companies/${company.id}/products`);
+        renderProducts(result.products);
+        setStatus(productsStatus, result.products.length
+          ? `${result.products.length} produto(s) disponível(is).`
+          : "Esta empresa não possui produtos disponíveis no momento.");
+      } catch (error) {
+        selectedCompanyId = null;
+        renderCompanies();
+        productsTitle.textContent = "Não foi possível carregar os produtos";
+        setStatus(productsStatus, error.message, "error");
+      } finally {
+        productsLoading = false;
+        setCompanyButtonsDisabled(false);
+      }
+    }
+
+    companiesList.setAttribute("aria-busy", "true");
+    try {
+      ({ companies } = await api("/api/client/companies"));
+      renderCompanies();
+      if (companies.length) {
+        setStatus(companiesStatus, `${companies.length} empresa(s) disponível(is).`);
+      } else {
+        setStatus(companiesStatus, "Nenhuma empresa está disponível no momento.");
+        productsTitle.textContent = "Nenhuma empresa disponível";
+        setStatus(productsStatus, "Não há catálogo para consultar no momento.");
+      }
+    } catch (error) {
+      companies = [];
+      companiesList.innerHTML = "";
+      setStatus(companiesStatus, `Não foi possível carregar as empresas. ${error.message}`, "error");
+      productsTitle.textContent = "Catálogo indisponível";
+      setStatus(productsStatus, "Recarregue a página para tentar novamente.", "error");
+    } finally {
+      companiesList.setAttribute("aria-busy", "false");
+    }
+  }
+
+  async function setupClient() {
+    document.querySelectorAll("[data-client-panel]").forEach((element) => { element.hidden = false; });
+    await Promise.all([setupDefaultAddress(), setupClientCatalog()]);
+  }
+
   async function main() {
     masks();
     const { user } = await api("/api/auth/me");
@@ -180,7 +268,7 @@
     const copy = {
       company: ["ÁREA DA EMPRESA", "Operação da empresa", "Gerencie o catálogo e os motoboys vinculados ao estabelecimento."],
       courier: ["ÁREA DO MOTOBOY", "Sua jornada de entregas", "Controle sua disponibilidade e acompanhe as próximas etapas do fluxo."],
-      client: ["ÁREA DO CLIENTE", "Seus dados", "Mantenha seu endereço padrão atualizado para as próximas etapas da jornada."],
+      client: ["ÁREA DO CLIENTE", "Empresas e seus produtos", "Consulte o catálogo disponível e mantenha seu endereço padrão atualizado."],
     }[user.role] || ["PAINEL", "ERMES", "Acesso autenticado."];
     document.querySelector("[data-role-label]").textContent = copy[0];
     document.querySelector("[data-dashboard-title]").textContent = copy[1];

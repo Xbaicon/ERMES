@@ -43,3 +43,17 @@ test("formulário de endereço inicia bloqueado e expõe mensagens acessíveis",
   assert.match(html, /data-default-address-submit disabled/);
   assert.match(html, /data-default-address-message role="status" aria-live="polite"/);
 });
+
+test("painel do cliente conecta a consulta acessível e somente leitura do catálogo", async () => {
+  const html = await readFile(resolve(publicRoot, "pages/painel.html"), "utf8");
+  const script = await readFile(resolve(publicRoot, "js/painel.js"), "utf8");
+
+  assert.match(html, /data-client-companies-status role="status" aria-live="polite"/);
+  assert.match(html, /data-client-products-status role="status" aria-live="polite"/);
+  assert.match(html, /data-client-companies-list/);
+  assert.match(html, /data-client-products-list/);
+  assert.match(script, /api\("\/api\/client\/companies"\)/);
+  assert.match(script, /api\(`\/api\/client\/companies\/\$\{company\.id\}\/products`\)/);
+  assert.match(script, /if \(productsLoading \|\| company\.id === selectedCompanyId\) return;/);
+  assert.doesNotMatch(html, /carrinho|comprar|adicionar produto/i);
+});
