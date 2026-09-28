@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeAddress } from "./address.js";
 import { db, seedDevelopmentData, transaction } from "./database.js";
 import { calculateFreight, splitNormalFreight } from "./freight.js";
-import { createDraftOrder } from "./orders.js";
+import { createDraftOrder, getDraftOrder, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
 import { assertPassword, isEmail, isValidCnpj, isValidCpf, normalizeEmail, onlyDigits, requireFields } from "./validation.js";
 
@@ -271,6 +271,23 @@ async function api(request, response, url) {
     const order = createDraftOrder(user.id, await readJson(request));
     return json(response, 201, { order });
   }
+  if (request.method === "GET" && pathname === "/api/client/orders/drafts") {
+    const user = requireUser(request, ["client"]);
+    return json(response, 200, { drafts: listDraftOrders(user.id) });
+  }
+  const clientOrderMatch = pathname.match(/^\/api\/client\/orders\/([^/]+)$/);
+  if (request.method === "GET" && clientOrderMatch) {
+    const user = requireUser(request, ["client"]);
+    const order = getDraftOrder(user.id, parseOrderId(clientOrderMatch[1]));
+    return json(response, 200, { order });
+  }
+  const clientOrderItemsMatch = pathname.match(/^\/api\/client\/orders\/([^/]+)\/items$/);
+  if (request.method === "PUT" && clientOrderItemsMatch) {
+    const user = requireUser(request, ["client"]);
+    const orderId = parseOrderId(clientOrderItemsMatch[1]);
+    const order = updateDraftOrderItems(user.id, orderId, await readJson(request));
+    return json(response, 200, { order });
+  }
   if (request.method === "GET" && pathname === "/api/company/products") {
     const user = requireUser(request, ["company"]);
     const rows = db.prepare(`SELECT id, name, description, price_cents AS priceCents,
@@ -407,9 +424,10 @@ const server = createServer(async (request, response) => {
     const duplicateEmail = sqliteConflict && error.message === "UNIQUE constraint failed: users.email";
     const status = sqliteConflict ? 409 : Number(error.statusCode || 500);
     if (status >= 500) console.error(error);
-    const message = duplicateEmail ? duplicateEmailMessage
-      : sqliteConflict ? "Já existe um cadastro com esses dados."
-        : sqliteError ? "Erro interno." : error.message || "Erro interno.";
+    const message = status >= 500 ? "Erro interno."
+      : duplicateEmail ? duplicateEmailMessage
+        : sqliteConflict ? "Já existe um cadastro com esses dados."
+          : error.message || "Erro interno.";
     json(response, status, { error: message });
   }
 });

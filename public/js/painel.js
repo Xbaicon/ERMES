@@ -1,4 +1,5 @@
 import { setupClientCatalog } from "./client-cart.js";
+import { setupClientDrafts } from "./client-drafts.js";
 
 (function () {
   "use strict";
@@ -174,7 +175,8 @@ import { setupClientCatalog } from "./client-cart.js";
 
   async function setupClient() {
     document.querySelectorAll("[data-client-panel]").forEach((element) => { element.hidden = false; });
-    await Promise.all([setupDefaultAddress(), setupClientCatalog({ api, money, escapeHtml, showMessage })]);
+    const dependencies = { api, money, escapeHtml, showMessage };
+    await Promise.all([setupDefaultAddress(), setupClientCatalog(dependencies), setupClientDrafts(dependencies)]);
   }
 
   async function main() {

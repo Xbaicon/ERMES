@@ -95,6 +95,36 @@
       </section>
 
       <section class="dashboard-section" data-client-panel hidden>
+        <div class="section-title">
+          <div><p class="eyebrow">PEDIDOS</p><h2>Rascunhos</h2></div>
+          <button class="button button-outline button-small" type="button" data-client-drafts-reload>Recarregar lista</button>
+        </div>
+        <div class="dashboard-grid client-drafts">
+          <div class="dashboard-card">
+            <h3>Pedidos em rascunho</h3>
+            <p class="catalog-status" data-client-drafts-status role="status" aria-live="polite">Carregando pedidos em rascunho…</p>
+            <div class="catalog-company-list draft-list" data-client-drafts-list aria-label="Pedidos em rascunho"></div>
+          </div>
+          <div class="dashboard-card draft-editor" data-client-draft-detail aria-busy="false" hidden>
+            <h3 data-client-draft-title tabindex="-1">Selecione um pedido</h3>
+            <p class="form-copy"><strong>Empresa:</strong> <span data-client-draft-company></span></p>
+            <p class="form-copy"><strong>Destino preservado:</strong> <span data-client-draft-address></span></p>
+            <p class="catalog-status" data-client-draft-editor-status role="status" aria-live="polite"></p>
+            <div class="cart-items" data-client-draft-items></div>
+            <div class="cart-totals"><span>Subtotal: <strong data-client-draft-subtotal>R$ 0,00</strong></span><span>Peso total: <strong data-client-draft-weight>0 kg</strong></span></div>
+            <p class="form-copy">Os valores dos itens que já pertencem ao pedido são preservados. Produtos novos usam preço e peso atuais, validados pelo servidor. Limite de 12 kg.</p>
+            <div class="draft-products">
+              <h4>Adicionar produtos disponíveis da mesma empresa</h4>
+              <p class="catalog-status" data-client-draft-products-status role="status" aria-live="polite"></p>
+              <div class="catalog-product-grid" data-client-draft-products></div>
+            </div>
+            <div class="form-message" data-client-draft-message role="status" aria-live="polite" hidden></div>
+            <button class="button button-dark" type="button" data-client-draft-save disabled>Salvar alterações</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard-section" data-client-panel hidden>
         <div class="section-title"><div><p class="eyebrow">CATÁLOGO</p><h2>Empresas e produtos</h2></div></div>
         <div class="dashboard-grid client-catalog">
           <div class="dashboard-card">

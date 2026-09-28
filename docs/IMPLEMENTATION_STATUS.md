@@ -12,10 +12,10 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Recuperação de senha | Bloqueado | Serviço de e-mail e fluxo seguro ainda não definidos |
 | Produtos da empresa | Implementado inicialmente | Cadastro, peso, preço e disponibilidade |
 | Consulta do catálogo pelo cliente | Implementado inicialmente | Lista empresas ativas e, por empresa, somente produtos disponíveis; acesso exclusivo do papel `client` |
-| Carrinho e criação de pedido draft | Implementado inicialmente | Carrinho em memória para uma empresa; servidor recalcula subtotal e peso, exige endereço padrão, grava snapshots e não cria entrega ou frete |
+| Carrinho e pedidos draft do cliente | Implementado inicialmente | Carrinho em memória cria drafts; cliente lista, consulta e substitui itens dos próprios drafts com recálculo e snapshots preservados; não cria entrega ou frete |
 | Motoboy vinculado à empresa | Implementado inicialmente | Criado pela área da empresa; não autônomo |
 | Online/offline do motoboy | Implementado inicialmente | Persistido no banco |
-| Estrutura de pedidos | Implementado parcialmente | Criação de `draft` disponível; análise, confirmação, cancelamento e gestão ainda não implementados |
+| Estrutura de pedidos | Implementado parcialmente | Criação, consulta e edição de `draft` pelo cliente disponíveis; análise, confirmação, cancelamento e gestão pela empresa ainda não implementados |
 | Endereço padrão do cliente | Implementado inicialmente | Consulta, cadastro e substituição isolados por sessão; sem geocodificação; snapshots de pedidos permanecem independentes |
 | Itens e snapshots históricos | Implementado parcialmente | Draft preserva preço e peso unitários, subtotal e endereço de destino; rota, frete e divisão financeira aguardam etapas futuras |
 | Cálculo do frete | Regra e testes implementados | Integração com rota ainda não implementada |

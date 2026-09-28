@@ -63,3 +63,21 @@ test("painel do cliente conecta catálogo e carrinho acessíveis à criação dr
   assert.match(cart, /api\("\/api\/client\/orders"/);
   assert.doesNotMatch(html, /pagamento|finalizar entrega|confirmar pedido/i);
 });
+
+test("painel conecta consulta e edição acessíveis dos pedidos draft", async () => {
+  const html = await readFile(resolve(publicRoot, "pages/painel.html"), "utf8");
+  const panel = await readFile(resolve(publicRoot, "js/painel.js"), "utf8");
+  const drafts = await readFile(resolve(publicRoot, "js/client-drafts.js"), "utf8");
+
+  assert.match(html, /data-client-drafts-status role="status" aria-live="polite"/);
+  assert.match(html, /data-client-draft-editor-status role="status" aria-live="polite"/);
+  assert.match(html, /data-client-draft-products-status role="status" aria-live="polite"/);
+  assert.match(html, /data-client-draft-message role="status" aria-live="polite" hidden/);
+  assert.match(html, /data-client-draft-save disabled/);
+  assert.match(html, /data-client-draft-title tabindex="-1"/);
+  assert.match(panel, /import \{ setupClientDrafts \} from "\.\/client-drafts\.js"/);
+  assert.match(panel, /setupClientDrafts\(dependencies\)/);
+  assert.match(drafts, /api\("\/api\/client\/orders\/drafts"\)/);
+  assert.match(drafts, /api\(`\/api\/client\/orders\/\$\{orderId\}`\)/);
+  assert.match(drafts, /method: "PUT"/);
+});

@@ -16,6 +16,11 @@ function allowOnly(value, fields) {
   if (unexpected.length) throw orderError(`Campos não permitidos: ${unexpected.join(", ")}.`);
 }
 
+function requireOwn(value, field) {
+  if (!Object.hasOwn(value, field)) throw orderError(`O campo ${field} é obrigatório.`);
+  return value[field];
+}
+
 function positiveSafeInteger(value, field) {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw orderError(`O campo ${field} deve ser um inteiro positivo e seguro.`);
@@ -26,21 +31,40 @@ function positiveSafeInteger(value, field) {
 export function parseDraftOrder(body) {
   if (!isObject(body)) throw orderError("O corpo deve ser um objeto JSON de pedido.");
   allowOnly(body, ["companyId", "items"]);
-  const companyId = positiveSafeInteger(body.companyId, "companyId");
-  if (!Array.isArray(body.items) || body.items.length === 0) {
+  const companyId = positiveSafeInteger(requireOwn(body, "companyId"), "companyId");
+  const items = parseItems(requireOwn(body, "items"));
+  return { companyId, items };
+}
+
+function parseItems(items) {
+  if (!Array.isArray(items) || items.length === 0) {
     throw orderError("O pedido deve conter ao menos um produto.");
   }
   const seen = new Set();
-  const items = body.items.map((item) => {
+  return items.map((item) => {
     if (!isObject(item)) throw orderError("Cada item deve ser um objeto JSON.");
     allowOnly(item, ["productId", "quantity"]);
-    const productId = positiveSafeInteger(item.productId, "productId");
-    const quantity = positiveSafeInteger(item.quantity, "quantity");
+    const productId = positiveSafeInteger(requireOwn(item, "productId"), "productId");
+    const quantity = positiveSafeInteger(requireOwn(item, "quantity"), "quantity");
     if (seen.has(productId)) throw orderError("Produto repetido no pedido. Ajuste a quantidade de um único item.");
     seen.add(productId);
     return { productId, quantity };
   });
-  return { companyId, items };
+}
+
+export function parseDraftItemsUpdate(body) {
+  if (!isObject(body)) throw orderError("O corpo deve ser um objeto JSON de pedido.");
+  allowOnly(body, ["items"]);
+  return { items: parseItems(requireOwn(body, "items")) };
+}
+
+export function parseOrderId(value) {
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
+    throw orderError("Identificador de pedido inválido.");
+  }
+  const orderId = Number(value);
+  if (!Number.isSafeInteger(orderId)) throw orderError("Identificador de pedido inválido.");
+  return orderId;
 }
 
 function decimalWeight(value) {
@@ -87,6 +111,140 @@ export function calculateDraftTotals(items) {
   };
 }
 
+function priceSnapshot(value) {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    throw orderError("O preço cadastrado do produto é inválido.", 409);
+  }
+  return BigInt(value);
+}
+
+function findOwnedOrder(clientId, orderId) {
+  const order = db.prepare(`SELECT o.id, o.client_id AS clientId, o.company_id AS companyId,
+                                   o.status, o.destination_snapshot_json AS destinationSnapshotJson,
+                                   o.created_at AS createdAt, o.updated_at AS updatedAt,
+                                   c.name AS companyName
+                            FROM orders o
+                            JOIN companies c ON c.id = o.company_id
+                            WHERE o.id = ? AND o.client_id = ?`).get(orderId, clientId);
+  if (!order) throw orderError("Pedido não encontrado.", 404);
+  if (order.status !== "draft") throw orderError("Este pedido não está mais em estado draft.", 409);
+  return order;
+}
+
+function loadStoredItems(orderId) {
+  return db.prepare(`SELECT oi.product_id AS productId, p.name, oi.quantity,
+                            CAST(oi.unit_price_cents AS TEXT) AS unitPriceCents,
+                            oi.unit_weight_kg AS unitWeightKg
+                     FROM order_items oi
+                     JOIN products p ON p.id = oi.product_id
+                     WHERE oi.order_id = ?
+                     ORDER BY oi.id`).all(orderId).map((item) => ({
+    ...item,
+    unitPriceCents: priceSnapshot(item.unitPriceCents),
+  }));
+}
+
+function destinationSnapshot(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw orderError("O endereço preservado do pedido é inválido.", 500);
+  }
+}
+
+function mapDraftOrder(order, items) {
+  const totals = calculateDraftTotals(items);
+  return {
+    id: order.id,
+    status: order.status,
+    company: { id: order.companyId, name: order.companyName },
+    items: items.map(({ productId, name, quantity, unitPriceCents, unitWeightKg }) => ({
+      productId, name, quantity, unitPriceCents: Number(unitPriceCents), unitWeightKg,
+    })),
+    ...totals,
+    destinationSnapshot: destinationSnapshot(order.destinationSnapshotJson),
+  };
+}
+
+export function listDraftOrders(clientId) {
+  return db.prepare(`SELECT o.id, o.company_id AS companyId, o.status,
+                            o.destination_snapshot_json AS destinationSnapshotJson,
+                            o.created_at AS createdAt, o.updated_at AS updatedAt,
+                            c.name AS companyName
+                     FROM orders o
+                     JOIN companies c ON c.id = o.company_id
+                     WHERE o.client_id = ? AND o.status = 'draft'
+                     ORDER BY o.updated_at DESC, o.id DESC`).all(clientId).map((order) => {
+    const items = loadStoredItems(order.id);
+    const totals = calculateDraftTotals(items);
+    return {
+      id: order.id,
+      status: order.status,
+      company: { id: order.companyId, name: order.companyName },
+      itemCount: items.length,
+      ...totals,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+    };
+  });
+}
+
+export function getDraftOrder(clientId, orderId) {
+  const order = findOwnedOrder(clientId, orderId);
+  return mapDraftOrder(order, loadStoredItems(order.id));
+}
+
+export function updateDraftOrderItems(clientId, orderId, body) {
+  const input = parseDraftItemsUpdate(body);
+  return transaction(() => {
+    const order = findOwnedOrder(clientId, orderId);
+    const storedItems = new Map(loadStoredItems(order.id).map((item) => [item.productId, item]));
+    const resultingItems = input.items.map(({ productId, quantity }) => {
+      const stored = storedItems.get(productId);
+      if (stored) return { ...stored, quantity };
+
+      const product = db.prepare(`SELECT id AS productId, company_id AS companyId, name,
+                                         CAST(price_cents AS TEXT) AS unitPriceCents,
+                                         unit_weight_kg AS unitWeightKg,
+                                         is_available AS isAvailable
+                                  FROM products WHERE id = ?`).get(productId);
+      if (!product) throw orderError(`Produto ${productId} não encontrado.`, 404);
+      if (product.companyId !== order.companyId) {
+        throw orderError("O pedido não pode receber produtos de outra empresa.", 409);
+      }
+      if (!product.isAvailable) {
+        throw orderError(`O produto ${productId} não está disponível. Remova-o da edição.`, 409);
+      }
+      return { ...product, quantity, unitPriceCents: priceSnapshot(product.unitPriceCents) };
+    });
+    const totals = calculateDraftTotals(resultingItems);
+
+    const deletion = db.prepare("DELETE FROM order_items WHERE order_id = ?").run(order.id);
+    if (Number(deletion.changes) !== storedItems.size) {
+      throw orderError("Não foi possível substituir integralmente os itens do pedido.", 500);
+    }
+    const insertItem = db.prepare(`INSERT INTO order_items
+      (order_id, product_id, quantity, unit_price_cents, unit_weight_kg)
+      VALUES (?, ?, ?, ?, ?)`);
+    for (const item of resultingItems) {
+      const insertion = insertItem.run(order.id, item.productId, item.quantity,
+        Number(item.unitPriceCents), item.unitWeightKg);
+      if (Number(insertion.changes) !== 1) {
+        throw orderError("Não foi possível gravar todos os itens do pedido.", 500);
+      }
+    }
+    const update = db.prepare(`UPDATE orders
+                               SET items_total_cents = ?, updated_at = CURRENT_TIMESTAMP
+                               WHERE id = ? AND client_id = ? AND status = 'draft'`)
+      .run(totals.itemsTotalCents, order.id, clientId);
+    if (Number(update.changes) !== 1) {
+      throw orderError("Este pedido não está mais em estado draft.", 409);
+    }
+
+    return mapDraftOrder({ ...order, updatedAt: new Date().toISOString() }, resultingItems);
+  });
+}
+
 export function createDraftOrder(clientId, body) {
   const input = parseDraftOrder(body);
   return transaction(() => {
@@ -111,11 +269,8 @@ export function createDraftOrder(clientId, body) {
         throw orderError("O carrinho contém produto de outra empresa. Esvazie-o antes de trocar de empresa.", 409);
       }
       if (!product.isAvailable) throw orderError(`O produto ${productId} não está disponível. Remova-o do carrinho.`, 409);
-      if (!/^\d+$/.test(product.priceCents)) {
-        throw orderError("O preço cadastrado do produto é inválido.", 409);
-      }
       return { productId, name: product.name, quantity,
-        unitPriceCents: BigInt(product.priceCents), unitWeightKg: product.unitWeightKg };
+        unitPriceCents: priceSnapshot(product.priceCents), unitWeightKg: product.unitWeightKg };
     });
     const totals = calculateDraftTotals(products);
 
