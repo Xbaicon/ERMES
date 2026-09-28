@@ -58,6 +58,9 @@ O limite máximo por pedido é uma regra fixa de 12 kg. Ele não é retornado ne
 | GET | `/client/default-address` | Consultar o endereço padrão do próprio cliente |
 | PUT | `/client/default-address` | Cadastrar ou substituir integralmente o endereço padrão do próprio cliente |
 | POST | `/client/orders` | Criar pedido em estado `draft` a partir do carrinho |
+| GET | `/client/orders/drafts` | Listar os pedidos `draft` do próprio cliente |
+| GET | `/client/orders/:orderId` | Consultar um pedido `draft` do próprio cliente |
+| PUT | `/client/orders/:orderId/items` | Substituir integralmente os itens de um pedido `draft` próprio |
 
 Todas as rotas desta seção exigem sessão com papel `client`. Ausência de sessão retorna `401`, e papéis diferentes de `client` retornam `403`.
 
@@ -163,6 +166,50 @@ Em sucesso, retorna `201`:
 ```
 
 Pedido, subtotal, endereço e snapshots unitários dos itens são gravados numa única transação. `route_snapshot_json` e `freight_total_cents` permanecem `NULL`; nenhuma entrega é criada. O carrinho no painel existe apenas na memória da página, portanto desaparece ao recarregá-la. A prévia de subtotal e peso no navegador não é autoritativa e pode diferir se o produto mudar antes do envio. A criação não confirma o pedido nem inicia pagamento ou entrega.
+
+### Consulta e edição de pedidos draft
+
+`GET /client/orders/drafts` retorna somente pedidos com estado `draft` cujo `client_id` corresponde ao usuário da sessão. A listagem contém dados resumidos para seleção:
+
+```json
+{
+  "drafts": [
+    {
+      "id": 1,
+      "status": "draft",
+      "company": { "id": 1, "name": "Empresa Demonstrativa" },
+      "itemCount": 2,
+      "itemsTotalCents": 8570,
+      "weightKg": 1.75,
+      "createdAt": "2026-09-28 14:00:00",
+      "updatedAt": "2026-09-28 14:05:00"
+    }
+  ]
+}
+```
+
+Quando não há rascunhos, a resposta é HTTP `200` com `drafts: []`.
+
+`GET /client/orders/:orderId` devolve a mesma representação completa documentada na criação: empresa, itens com preço e peso unitários preservados, subtotal, peso total e snapshot de destino. O identificador deve ser um inteiro decimal positivo e seguro, sem sinal, fração, notação exponencial ou zeros à esquerda.
+
+`PUT /client/orders/:orderId/items` representa a lista completa que deve permanecer no pedido:
+
+```json
+{
+  "items": [
+    { "productId": 10, "quantity": 3 },
+    { "productId": 12, "quantity": 1 }
+  ]
+}
+```
+
+O corpo aceita somente `items`, e cada item aceita somente `productId` e `quantity`. A lista não pode ser vazia, produtos não podem se repetir e todos os identificadores e quantidades devem ser inteiros positivos seguros. Campos de proprietário, empresa, preço, peso, status, endereço, subtotal, frete, rota ou snapshots são rejeitados com `400`.
+
+O cliente e a empresa do pedido não são recebidos do navegador. As consultas combinam o `orderId` com o `client_id` da sessão. Pedido inexistente ou pertencente a outro cliente retorna `404`, sem revelar a existência do recurso alheio. Pedido próprio que não está mais em `draft` retorna `409`. Ausência de sessão retorna `401`, e empresa, motoboy ou administrador recebem `403`.
+
+Na atualização, itens que já estavam persistidos no draft mantêm seus `unit_price_cents` e `unit_weight_kg`, mesmo que o cadastro atual do produto tenha mudado; alterar sua quantidade recalcula os totais com esses snapshots. Um produto realmente novo precisa existir, pertencer à empresa imutável do pedido e estar disponível, e recebe preço e peso atuais do banco como novos snapshots. Se um item foi removido e salvo, uma inclusão posterior é uma nova adição e captura os valores vigentes naquele momento.
+
+O servidor recalcula subtotal e peso a partir da versão resultante, aceita exatamente 12 kg e rejeita peso superior ou subtotal acima do inteiro seguro. A substituição de `order_items` e a atualização de `orders.items_total_cents` ocorrem numa única transação. Qualquer falha restaura integralmente a versão anterior. `destination_snapshot_json` não é atualizado nem reconstruído a partir do endereço padrão atual; rota, frete, pagamento, status e entregas também não são modificados. Em sucesso, o `PUT` retorna HTTP `200` com `{ "order": ... }` normalizado pelo servidor.
 
 ## Motoboy autenticado
 
