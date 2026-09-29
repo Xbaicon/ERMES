@@ -22,7 +22,7 @@ Não há dependências npm externas nesta etapa.
 
 - `Pedido` e `Entrega` são entidades distintas.
 - Produto, preço e peso são preservados em `order_items` para impedir alterações retroativas.
-- Endereço e rota possuem espaço para snapshots históricos no pedido.
+- Endereço possui snapshot histórico no pedido. O campo reservado para rota não torna geocodificação, provedor de rotas ou snapshot externo uma dependência da Baseline 0.1; consulte `BASELINE_0.1_SCOPE_CORRECTION.md`.
 - O endereço padrão atual do cliente fica em `client_default_addresses`, com uma linha por usuário; pedidos preservam cópias independentes em `orders.destination_snapshot_json`.
 - O contrato puro de validação e normalização de endereços fica em `src/address.js`; transporte HTTP e persistência continuam centralizados nas camadas existentes.
 - O catálogo de consulta fica sob `/api/client`: a sessão limita o acesso ao papel `client`, empresas bloqueadas não são elegíveis e a consulta de produtos combina `company_id` com `is_available = 1`; as antigas rotas públicas de catálogo não fazem parte do contrato.
@@ -35,16 +35,19 @@ Não há dependências npm externas nesta etapa.
 
 ## Limites deliberados da fundação
 
-- A API de cotação aceita distância e tempo apenas como entrada técnica para testar a fórmula. A interface do cliente não deve solicitar esses valores. No fluxo real, eles deverão vir de um provedor de rotas.
+- A API de cotação aceita distância e tempo apenas como entrada técnica para testar a fórmula. A interface do cliente não deve solicitar esses valores. A fonte operacional de distância e tempo permanece pendente de clarificação; não escolher nem antecipar uma solução geográfica.
 - O cadastro atual cria um usuário responsável inicial para a empresa, sem declarar que a versão final terá apenas um usuário.
 - Recuperação de senha não foi simulada de forma insegura.
 - O SQLite atende ao desenvolvimento e demonstração local. Uma futura mudança de banco exigirá migrações e testes de concorrência equivalentes.
 
 ## Próximas integrações técnicas
 
-1. Provedor de geocodificação e rotas.
-2. Fluxo completo de pedido e confirmação pela empresa.
-3. Pagamento simulado ou gateway definido.
-4. Estados e eventos completos da entrega.
-5. Rastreamento limitado às capacidades do navegador.
-6. Chat entre cliente e empresa.
+1. Fluxo completo de pedido e confirmação pela empresa.
+2. Pagamento, estados financeiros, reembolsos e distribuição financeira; gateway real é opcional/futuro.
+3. Estados e eventos completos da entrega.
+4. Chat entre cliente e empresa.
+
+Geocodificação, provedor real de rotas, mapas e rastreamento geográfico são
+opcionais/futuros e não bloqueiam esta baseline. Acompanhar a operação por
+estados e eventos permanece obrigatório. A classificação completa está em
+`BASELINE_0.1_SCOPE_CORRECTION.md`.

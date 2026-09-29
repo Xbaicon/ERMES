@@ -86,4 +86,9 @@ O Codex localizará `AGENTS.md`, que o direcionará à baseline e ao estado de i
 
 ## Importante
 
-Esta versão é uma **fundação de desenvolvimento**, não um sistema pronto para produção. Pagamentos reais, geocodificação/rotas, pedidos completos, rastreamento e os fluxos finais de entrega ainda exigem implementação e decisões registradas em `docs/IMPLEMENTATION_STATUS.md`.
+Esta versão é uma **fundação de desenvolvimento**, não um sistema pronto para
+produção. Os fluxos de pedido, pagamento, operação de entrega e confirmações
+ainda exigem implementação e decisões registradas em
+`docs/IMPLEMENTATION_STATUS.md`. Geocodificação, rotas reais, mapas e
+rastreamento geográfico não bloqueiam a Baseline 0.1; consulte
+`docs/BASELINE_0.1_SCOPE_CORRECTION.md`.
