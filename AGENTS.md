@@ -4,11 +4,15 @@
 
 Antes de analisar ou alterar o projeto, leia integralmente:
 
-1. `docs/ERMES_Baseline_0.1.md` — regras de negócio e escopo vigente.
-2. `docs/IMPLEMENTATION_STATUS.md` — o que já existe e o que ainda está bloqueado.
-3. `docs/ARCHITECTURE.md` — estrutura técnica provisória.
+1. `docs/BASELINE_0.1_SCOPE_CORRECTION.md` — correção canônica vigente de escopo.
+2. `docs/ERMES_Baseline_0.1.md` — fonte das regras de negócio não corrigidas e registro histórico dos trechos de escopo superados.
+3. `docs/IMPLEMENTATION_STATUS.md` — o que já existe e o que ainda está bloqueado.
+4. `docs/ARCHITECTURE.md` — estrutura técnica provisória.
 
-Se houver conflito entre o código e a baseline, a baseline prevalece. Relate o conflito antes de alterar comportamento de negócio.
+Quando houver conflito sobre escopo entre a correção canônica e trechos históricos
+da baseline, a correção canônica prevalece. Para os demais assuntos, a baseline
+prevalece. Relate qualquer conflito entre código e documentação antes de alterar
+comportamento de negócio.
 
 ## Classificação das decisões
 
@@ -26,10 +30,11 @@ Se houver conflito entre o código e a baseline, a baseline prevalece. Relate o 
 - Uma entrega pode ser aceita por somente um motoboy; a garantia deve existir no banco/servidor.
 - Não criar controle completo de estoque.
 - Não permitir pedido com peso total superior a 12 kg.
-- O frete usa a rota estabelecimento → destino, com tempo estimado; nunca a localização do motoboy nem o tempo real gasto.
-- Não calcular frete quando distância/tempo não vierem de provedor confiável.
+- A fórmula tarifária usa peso, distância e tempo estimado como conceitos de domínio; a fonte operacional de distância/tempo está PENDENTE e não deve ser inventada.
+- Não tratar geocodificação, provedor de rotas, mapas, localização atual ou rastreamento geográfico como pré-requisitos bloqueadores da Baseline 0.1.
+- O acompanhamento operacional da entrega (estados, eventos, coleta, transporte, chegada, confirmação e ocorrências) permanece obrigatório e é distinto de rastreamento geográfico.
 - Não finalizar entrega sem código válido; são permitidas no máximo três tentativas inválidas.
-- Preservar snapshots históricos de preço, peso, endereço, rota, frete e divisão financeira.
+- Preservar snapshots históricos comerciais e operacionais que existirem, como preço, peso, endereço, frete e divisão financeira; não exigir ou criar snapshots provenientes de rota externa sem decisão explícita.
 - Não implementar funções específicas do Administrador do ERMES enquanto continuarem pendentes.
 - Antes de remover requisito ou mudar estado, faça análise de impacto sobre fluxo, banco, API, interface e testes.
 

@@ -7,7 +7,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Página inicial responsiva | Implementado | Referências a entrega agendada removidas |
 | Cadastro de cliente | Implementado inicialmente | Persistência no banco e senha com hash |
 | Cadastro de empresa | Implementado inicialmente | Cria empresa e primeiro usuário responsável |
-| Endereço de origem da empresa | Implementado inicialmente | Persistido como snapshot cadastral; geocodificação ainda pendente |
+| Endereço de origem da empresa | Implementado inicialmente | Persistido como snapshot cadastral; geocodificação não é requisito bloqueador |
 | Login e sessão | Implementado inicialmente | Cookie `HttpOnly`; sem autorização por token no navegador |
 | Recuperação de senha | Bloqueado | Serviço de e-mail e fluxo seguro ainda não definidos |
 | Produtos da empresa | Implementado inicialmente | Cadastro, peso, preço e disponibilidade |
@@ -16,17 +16,18 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Motoboy vinculado à empresa | Implementado inicialmente | Criado pela área da empresa; não autônomo |
 | Online/offline do motoboy | Implementado inicialmente | Persistido no banco |
 | Estrutura de pedidos | Implementado parcialmente | Criação, consulta e edição de `draft` pelo cliente disponíveis; análise, confirmação, cancelamento e gestão pela empresa ainda não implementados |
-| Endereço padrão do cliente | Implementado inicialmente | Consulta, cadastro e substituição isolados por sessão; sem geocodificação; snapshots de pedidos permanecem independentes |
-| Itens e snapshots históricos | Implementado parcialmente | Draft preserva preço e peso unitários, subtotal e endereço de destino; rota, frete e divisão financeira aguardam etapas futuras |
-| Cálculo do frete | Regra e testes implementados | Integração com rota ainda não implementada |
+| Endereço padrão do cliente | Implementado inicialmente | Consulta, cadastro e substituição isolados por sessão; geocodificação não bloqueia; snapshots de pedidos permanecem independentes |
+| Itens e snapshots históricos | Implementado parcialmente | Draft preserva preço e peso unitários, subtotal e endereço de destino; frete final e divisão financeira aguardam etapas futuras |
+| Cálculo tarifário de frete | Regra e testes implementados | Fórmula, faixas, valores por km/minuto, centavos, limite de 12 kg e entradas técnicas para exercício da fórmula |
+| Frete operacional final | Parcial / pendente de clarificação | Falta somente decisão explícita sobre a fonte operacional de distância e tempo; não autoriza provedor externo, API de rotas, geocodificação, valor fixo, entrada manual ou simulação |
 | Parâmetros tarifários da empresa | Implementado inicialmente | Consulta e edição isoladas por sessão; seis tarifas monetárias persistidas em centavos; limite de 12 kg permanece fixo na aplicação |
-| Geocodificação e rotas | Não implementado | Não calcular valor real sem provedor confiável |
-| Pagamento | Não implementado | Integração real é opcional; simulação ainda não criada |
+| Geocodificação, rotas e mapas | Opcional/futuro — não bloqueador | Não selecionar nem implementar provedor externo, API de rotas ou solução substituta sem decisão explícita |
+| Pagamento e financeiro | Não implementado | Estados financeiros, reembolsos e distribuição permanecem no escopo; integração real com gateway é opcional/futura |
 | Divisão 70/25/5 | Regra e testes implementados | Persistência financeira será ligada ao fluxo da entrega |
 | Aceite concorrente da entrega | Banco parcialmente preparado | Índices existem; endpoint transacional ainda necessário |
-| Ciclo completo da entrega | Banco preparado | Estados finais precisam de refinamento UML |
+| Acompanhamento operacional da entrega | Não implementado | Obrigatório: estados, eventos, coleta, transporte, chegada, confirmação e ocorrências; não depende de GPS ou mapa |
 | Código de confirmação | Banco preparado | Geração, hash e limite de tentativas ainda necessários |
-| Rastreamento | Não implementado | Deve respeitar entrega ativa e limitações web |
+| Rastreamento geográfico | Opcional/futuro — não bloqueador | GPS, coordenadas, posição atual/última conhecida, histórico de posições e mapa em tempo real não são pré-requisitos |
 | Chat | Não implementado | Forma exata permanece pendente |
 | Administrador do ERMES | Não implementado | Casos de uso e permissões permanecem pendentes |
 | Promoções | Não implementado | Opcional e ainda não detalhado |
@@ -41,12 +42,12 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 
 ## Pendências que bloqueiam decisões automáticas
 
-Consulte a seção **Decisões pendentes** da baseline antes de implementar qualquer item novo. Em especial, não presumir:
+Consulte também `BASELINE_0.1_SCOPE_CORRECTION.md` antes de implementar qualquer item novo. Em especial, não presumir:
 
 - quantidade final de usuários por empresa;
 - poderes do Administrador do ERMES;
 - distribuição de frete nas exceções ainda não definidas;
-- política de erro interno de endereço/rota;
+- fonte operacional e política de falha para distância/tempo do frete;
 - interface de tentativa de contato;
 - campos definitivos do destinatário;
 - tecnologia do chat;

@@ -24,7 +24,7 @@ O e-mail de acesso é normalizado e único em `users.email`, independentemente d
 | GET/POST | `/company/couriers` | Listar ou vincular motoboys |
 | GET | `/company/freight-config` | Consultar os parâmetros tarifários da própria empresa |
 | PATCH | `/company/freight-config` | Alterar os parâmetros tarifários da própria empresa |
-| POST | `/freight/quote` | Exercitar fórmula com dados produzidos por rota |
+| POST | `/freight/quote` | Exercitar tecnicamente a fórmula com entradas de teste |
 
 ### Parâmetros tarifários
 
@@ -219,6 +219,13 @@ O servidor recalcula subtotal e peso a partir da versão resultante, aceita exat
 
 ## Observação sobre frete
 
-`distanceKm` e `estimatedMinutes` são parâmetros técnicos do serviço. No fluxo definitivo, devem ser produzidos pela integração de rotas a partir do estabelecimento e do destino confirmado. Não devem ser digitados pelo cliente.
+`distanceKm` e `estimatedMinutes` são parâmetros técnicos do serviço para
+exercitar a fórmula; eles não constituem contrato de entrada do cliente nem
+definem uma fonte operacional. A fonte de distância e tempo do frete operacional
+final está pendente de clarificação explícita. Não selecionar, inventar ou
+implementar provedor de rotas, geocodificação, valor fixo, entrada manual ou
+simulação como substituto. Geocodificação, rotas externas e seus snapshots não
+são requisitos bloqueadores da Baseline 0.1; consulte
+`BASELINE_0.1_SCOPE_CORRECTION.md`.
 
 O objeto `quote` devolve `weightKg`, `distanceKm` e `estimatedMinutes`; a taxa de peso aplicada em `weightCents`; as tarifas `perKmCents` e `perMinuteCents`; as parcelas com frações de centavo em `distanceUnroundedCents` e `timeUnroundedCents`; e o valor final, arredondado uma única vez, em `totalCents`. Os antigos campos `distanceCents` e `timeCents`, que arredondavam cada parcela, foram substituídos para deixar explícito que essas parcelas ainda não são valores monetários finais. O objeto `split` usa `totalCents`.
