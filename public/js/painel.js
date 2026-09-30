@@ -1,5 +1,6 @@
 import { setupClientCatalog } from "./client-cart.js";
 import { setupClientDrafts } from "./client-drafts.js";
+import { setupCompanyDrafts } from "./company-drafts.js";
 
 (function () {
   "use strict";
@@ -64,7 +65,7 @@ import { setupClientDrafts } from "./client-drafts.js";
     Object.entries(freightConfig).forEach(([field, value]) => { form.elements[field].value = value; });
   }
 
-  function setupCompany() {
+  async function setupCompany() {
     document.querySelectorAll("[data-company-panel]").forEach((element) => { element.hidden = false; });
     const productForm = document.querySelector("[data-product-form]");
     productForm.addEventListener("submit", async (event) => {
@@ -103,7 +104,12 @@ import { setupClientDrafts } from "./client-drafts.js";
         showMessage(message, "Parâmetros tarifários atualizados.", "success");
       } catch (error) { showMessage(message, error.message); }
     });
-    Promise.all([loadProducts(), loadCouriers(), loadFreightConfig()]).catch(console.error);
+    await Promise.all([
+      loadProducts(),
+      loadCouriers(),
+      loadFreightConfig(),
+      setupCompanyDrafts({ api, money, escapeHtml, showMessage }),
+    ]).catch(console.error);
   }
 
   async function setupCourier() {
@@ -192,7 +198,7 @@ import { setupClientDrafts } from "./client-drafts.js";
     document.querySelector("[data-role-label]").textContent = copy[0];
     document.querySelector("[data-dashboard-title]").textContent = copy[1];
     document.querySelector("[data-dashboard-description]").textContent = copy[2];
-    if (user.role === "company") setupCompany();
+    if (user.role === "company") await setupCompany();
     if (user.role === "courier") setupCourier();
     if (user.role === "client") await setupClient();
   }

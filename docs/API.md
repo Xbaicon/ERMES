@@ -24,6 +24,8 @@ O e-mail de acesso é normalizado e único em `users.email`, independentemente d
 | GET/POST | `/company/couriers` | Listar ou vincular motoboys |
 | GET | `/company/freight-config` | Consultar os parâmetros tarifários da própria empresa |
 | PATCH | `/company/freight-config` | Alterar os parâmetros tarifários da própria empresa |
+| GET | `/company/orders/drafts` | Listar os pedidos `draft` da própria empresa |
+| GET | `/company/orders/:orderId` | Consultar o detalhe de um pedido `draft` da própria empresa |
 | POST | `/freight/quote` | Exercitar tecnicamente a fórmula com entradas de teste |
 
 ### Parâmetros tarifários
@@ -48,6 +50,29 @@ As duas rotas de parâmetros tarifários exigem sessão com papel `company`. A e
 `PATCH /company/freight-config` recebe ao menos um desses mesmos campos. Cada valor deve ser um decimal não negativo em reais, com no máximo duas casas; a API converte e persiste o valor como centavos inteiros. Campos fora dessa lista, incluindo `companyId`, `userId`, `maxWeightKg` e `max_weight_kg`, retornam HTTP `400`. Valores negativos, malformados, com mais de duas casas ou acima do limite seguro para conversão também retornam `400`. Ausência de sessão retorna `401`, e qualquer papel diferente de `company` retorna `403`.
 
 O limite máximo por pedido é uma regra fixa de 12 kg. Ele não é retornado nem editável nessas rotas, e a cotação aplica esse limite independentemente da coluna legada `max_weight_kg`.
+
+### Consulta de pedidos draft
+
+As rotas de consulta exigem sessão com papel `company`. A empresa é
+identificada exclusivamente pelo `companyId` da sessão no servidor; nenhum
+identificador de empresa ou cliente é recebido do navegador.
+
+`GET /company/orders/drafts` retorna HTTP `200` com os resumos dos pedidos
+em estado `draft` cujo `company_id` pertence à sessão. A resposta é
+`{ "drafts": [] }` quando não existem pedidos para análise.
+
+`GET /company/orders/:orderId` exige identificador decimal inteiro, positivo e
+seguro. Em sucesso, retorna HTTP `200` com `id`, `status`, itens e seus
+snapshots de preço/peso, subtotal, peso total e
+`destinationSnapshot` preservado. A projeção não inclui cliente, e-mail,
+sessão, senha, pagamento, frete, rota ou entrega.
+
+Pedido inexistente ou pertencente a outra empresa retorna `404`, sem revelar
+sua existência. Pedido da própria empresa que não esteja mais em `draft`
+retorna `409`; identificador inválido retorna `400`. Ausência de sessão
+retorna `401`, e papéis diferentes de `company` retornam `403`. As rotas
+são exclusivamente de leitura: não confirmam, cancelam, excluem ou alteram
+pedidos.
 
 ## Cliente autenticado
 

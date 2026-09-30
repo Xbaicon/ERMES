@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeAddress } from "./address.js";
 import { db, seedDevelopmentData, transaction } from "./database.js";
 import { calculateFreight, splitNormalFreight } from "./freight.js";
-import { createDraftOrder, getDraftOrder, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
+import { createDraftOrder, getCompanyDraftOrder, getDraftOrder, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
 import { assertPassword, isEmail, isValidCnpj, isValidCpf, normalizeEmail, onlyDigits, requireFields } from "./validation.js";
 
@@ -286,6 +286,16 @@ async function api(request, response, url) {
     const user = requireUser(request, ["client"]);
     const orderId = parseOrderId(clientOrderItemsMatch[1]);
     const order = updateDraftOrderItems(user.id, orderId, await readJson(request));
+    return json(response, 200, { order });
+  }
+  if (request.method === "GET" && pathname === "/api/company/orders/drafts") {
+    const user = requireUser(request, ["company"]);
+    return json(response, 200, { drafts: listCompanyDraftOrders(user.companyId) });
+  }
+  const companyOrderMatch = pathname.match(/^\/api\/company\/orders\/([^/]+)$/);
+  if (request.method === "GET" && companyOrderMatch) {
+    const user = requireUser(request, ["company"]);
+    const order = getCompanyDraftOrder(user.companyId, parseOrderId(companyOrderMatch[1]));
     return json(response, 200, { order });
   }
   if (request.method === "GET" && pathname === "/api/company/products") {

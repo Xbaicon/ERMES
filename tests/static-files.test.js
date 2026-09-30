@@ -81,3 +81,23 @@ test("painel conecta consulta e edição acessíveis dos pedidos draft", async (
   assert.match(drafts, /api\(`\/api\/client\/orders\/\$\{orderId\}`\)/);
   assert.match(drafts, /method: "PUT"/);
 });
+
+test("painel da empresa conecta consulta somente leitura dos pedidos draft", async () => {
+  const html = await readFile(resolve(publicRoot, "pages/painel.html"), "utf8");
+  const panel = await readFile(resolve(publicRoot, "js/painel.js"), "utf8");
+  const drafts = await readFile(resolve(publicRoot, "js/company-drafts.js"), "utf8");
+
+  assert.ok(html.includes('data-company-drafts-status role="status" aria-live="polite"'));
+  assert.ok(html.includes('data-company-drafts-list aria-label="Pedidos em rascunho para análise"'));
+  assert.ok(html.includes('data-company-draft-detail aria-busy="false" hidden'));
+  assert.ok(html.includes('data-company-draft-title tabindex="-1"'));
+  assert.ok(html.includes('data-company-draft-message role="status" aria-live="polite" hidden'));
+  assert.ok(html.indexOf("data-company-draft-message") < html.indexOf("data-company-draft-detail"));
+  assert.ok(panel.includes('import { setupCompanyDrafts } from "./company-drafts.js"'));
+  assert.ok(panel.includes("setupCompanyDrafts({ api, money, escapeHtml, showMessage })"));
+  assert.ok(drafts.includes('api("/api/company/orders/drafts")'));
+  assert.ok(drafts.includes("/api/company/orders/"));
+  for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+    assert.equal(drafts.includes('method: "' + method + '"'), false);
+  }
+});

@@ -194,6 +194,50 @@ export function getDraftOrder(clientId, orderId) {
   return mapDraftOrder(order, loadStoredItems(order.id));
 }
 
+function findCompanyDraftOrder(companyId, orderId) {
+  const order = db.prepare(`SELECT o.id, o.status,
+                                   o.destination_snapshot_json AS destinationSnapshotJson
+                            FROM orders o
+                            WHERE o.id = ? AND o.company_id = ?`).get(orderId, companyId);
+  if (!order) throw orderError("Pedido não encontrado.", 404);
+  if (order.status !== "draft") throw orderError("Este pedido não está mais em estado draft.", 409);
+  return order;
+}
+
+function mapCompanyDraftOrder(order, items) {
+  const totals = calculateDraftTotals(items);
+  return {
+    id: order.id,
+    status: order.status,
+    items: items.map(({ productId, name, quantity, unitPriceCents, unitWeightKg }) => ({
+      productId, name, quantity, unitPriceCents: Number(unitPriceCents), unitWeightKg,
+    })),
+    ...totals,
+    destinationSnapshot: destinationSnapshot(order.destinationSnapshotJson),
+  };
+}
+
+export function listCompanyDraftOrders(companyId) {
+  return db.prepare(`SELECT o.id, o.status
+                     FROM orders o
+                     WHERE o.company_id = ? AND o.status = 'draft'
+                     ORDER BY o.updated_at DESC, o.id DESC`).all(companyId).map((order) => {
+    const items = loadStoredItems(order.id);
+    const totals = calculateDraftTotals(items);
+    return {
+      id: order.id,
+      status: order.status,
+      itemCount: items.length,
+      ...totals,
+    };
+  });
+}
+
+export function getCompanyDraftOrder(companyId, orderId) {
+  const order = findCompanyDraftOrder(companyId, orderId);
+  return mapCompanyDraftOrder(order, loadStoredItems(order.id));
+}
+
 export function updateDraftOrderItems(clientId, orderId, body) {
   const input = parseDraftItemsUpdate(body);
   return transaction(() => {

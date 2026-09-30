@@ -15,7 +15,8 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Carrinho e pedidos draft do cliente | Implementado inicialmente | Carrinho em memória cria drafts; cliente lista, consulta e substitui itens dos próprios drafts com recálculo e snapshots preservados; não cria entrega ou frete |
 | Motoboy vinculado à empresa | Implementado inicialmente | Criado pela área da empresa; não autônomo |
 | Online/offline do motoboy | Implementado inicialmente | Persistido no banco |
-| Estrutura de pedidos | Implementado parcialmente | Criação, consulta e edição de `draft` pelo cliente disponíveis; análise, confirmação, cancelamento e gestão pela empresa ainda não implementados |
+| Estrutura de pedidos | Implementado parcialmente | Criação, consulta e edição de `draft` pelo cliente disponíveis; confirmação, cancelamento e gestão decisória pela empresa ainda não implementados |
+| Consulta de drafts pela empresa | Implementado inicialmente | Lista e detalhe somente leitura, isolados por `company_id` da sessão; mostra itens, snapshots, totais e destino histórico sem dados pessoais do cliente |
 | Endereço padrão do cliente | Implementado inicialmente | Consulta, cadastro e substituição isolados por sessão; geocodificação não bloqueia; snapshots de pedidos permanecem independentes |
 | Itens e snapshots históricos | Implementado parcialmente | Draft preserva preço e peso unitários, subtotal e endereço de destino; frete final e divisão financeira aguardam etapas futuras |
 | Cálculo tarifário de frete | Regra e testes implementados | Fórmula, faixas, valores por km/minuto, centavos, limite de 12 kg e entradas técnicas para exercício da fórmula |

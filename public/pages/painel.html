@@ -45,6 +45,28 @@
       </section>
 
       <section class="dashboard-section" data-company-panel hidden>
+        <div class="section-title">
+          <div><p class="eyebrow">PEDIDOS</p><h2>Pedidos em rascunho</h2></div>
+          <button class="button button-outline button-small" type="button" data-company-drafts-reload>Recarregar lista</button>
+        </div>
+        <div class="form-message" data-company-draft-message role="status" aria-live="polite" hidden></div>
+        <div class="dashboard-grid client-drafts company-drafts">
+          <div class="dashboard-card">
+            <h3>Pedidos para análise comercial</h3>
+            <p class="catalog-status" data-company-drafts-status role="status" aria-live="polite">Carregando pedidos em rascunho.</p>
+            <div class="catalog-company-list draft-list" data-company-drafts-list aria-label="Pedidos em rascunho para análise"></div>
+          </div>
+          <div class="dashboard-card draft-editor" data-company-draft-detail aria-busy="false" hidden>
+            <h3 data-company-draft-title tabindex="-1">Selecione um pedido</h3>
+            <p class="form-copy"><strong>Destino preservado:</strong> <span data-company-draft-address></span></p>
+            <div class="cart-items" data-company-draft-items></div>
+            <div class="cart-totals"><span>Subtotal: <strong data-company-draft-subtotal>R$ 0,00</strong></span><span>Peso total: <strong data-company-draft-weight>0 kg</strong></span></div>
+            <p class="form-copy">Consulta somente leitura. Este painel não confirma, cancela nem altera o pedido.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard-section" data-company-panel hidden>
         <div class="section-title"><div><p class="eyebrow">CATÁLOGO</p><h2>Produtos</h2></div></div>
         <div class="dashboard-grid two-columns">
           <form class="dashboard-card form" data-product-form>
