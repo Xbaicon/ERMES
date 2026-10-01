@@ -26,7 +26,7 @@ Não há dependências npm externas nesta etapa.
 - O endereço padrão atual do cliente fica em `client_default_addresses`, com uma linha por usuário; pedidos preservam cópias independentes em `orders.destination_snapshot_json`.
 - O contrato puro de validação e normalização de endereços fica em `src/address.js`; transporte HTTP e persistência continuam centralizados nas camadas existentes.
 - O catálogo de consulta fica sob `/api/client`: a sessão limita o acesso ao papel `client`, empresas bloqueadas não são elegíveis e a consulta de produtos combina `company_id` com `is_available = 1`; as antigas rotas públicas de catálogo não fazem parte do contrato.
-- `src/orders.js` concentra validação, consultas isoladas por cliente ou empresa, recálculo decimal do peso, subtotal seguro e criação/edição transacional do pedido `draft`; `src/server.js` mantém a autorização e o contrato HTTP. O carrinho efêmero e a interação do catálogo ficam em `public/js/client-cart.js`; a consulta e a edição dos drafts persistidos ficam em `public/js/client-drafts.js`. A consulta empresarial somente leitura fica em `public/js/company-drafts.js`, pois possui carregamento, seleção, detalhe e estados assíncronos próprios, sem compartilhar a edição do cliente. As tabelas existentes `orders` e `order_items` já armazenam os snapshots exigidos, sem migração nesta etapa.
+- `src/orders.js` concentra validação, consultas isoladas por cliente ou empresa, recálculo decimal do peso, subtotal seguro, criação/edição do `draft` e confirmação comercial transacional. A confirmação usa `orders.version` para concorrência otimista, grava `confirmed_at` e não cria entrega, pagamento ou frete. `src/server.js` mantém a autorização e o contrato HTTP. O carrinho efêmero fica em `public/js/client-cart.js`; a consulta e a edição dos drafts em `public/js/client-drafts.js`; a consulta e confirmação empresarial em `public/js/company-drafts.js`. `order_items` preserva os snapshots comerciais, e a migração aditiva de `orders` mantém bancos SQLite existentes.
 - Existe índice parcial no banco para impedir mais de uma entrega ativa por motoboy.
 - Dinheiro é representado em centavos inteiros.
 - Empresa e usuário responsável são entidades distintas.
@@ -42,10 +42,9 @@ Não há dependências npm externas nesta etapa.
 
 ## Próximas integrações técnicas
 
-1. Fluxo completo de pedido e confirmação pela empresa.
-2. Pagamento, estados financeiros, reembolsos e distribuição financeira; gateway real é opcional/futuro.
-3. Estados e eventos completos da entrega.
-4. Chat entre cliente e empresa.
+1. Pagamento, estados financeiros, reembolsos e distribuição financeira; gateway real é opcional/futuro.
+2. Estados e eventos completos da entrega.
+3. Chat entre cliente e empresa.
 
 Geocodificação, provedor real de rotas, mapas e rastreamento geográfico são
 opcionais/futuros e não bloqueiam esta baseline. Acompanhar a operação por

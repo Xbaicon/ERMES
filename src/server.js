@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeAddress } from "./address.js";
 import { db, seedDevelopmentData, transaction } from "./database.js";
 import { calculateFreight, splitNormalFreight } from "./freight.js";
-import { createDraftOrder, getCompanyDraftOrder, getDraftOrder, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
+import { confirmCompanyDraftOrder, createDraftOrder, getCompanyDraftOrder, getDraftOrder, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
 import { assertPassword, isEmail, isValidCnpj, isValidCpf, normalizeEmail, onlyDigits, requireFields } from "./validation.js";
 
@@ -291,6 +291,13 @@ async function api(request, response, url) {
   if (request.method === "GET" && pathname === "/api/company/orders/drafts") {
     const user = requireUser(request, ["company"]);
     return json(response, 200, { drafts: listCompanyDraftOrders(user.companyId) });
+  }
+  const companyOrderConfirmationMatch = pathname.match(/^\/api\/company\/orders\/([^/]+)\/confirm$/);
+  if (request.method === "POST" && companyOrderConfirmationMatch) {
+    const user = requireUser(request, ["company"]);
+    const orderId = parseOrderId(companyOrderConfirmationMatch[1]);
+    const order = confirmCompanyDraftOrder(user.companyId, orderId, await readJson(request));
+    return json(response, 200, { order });
   }
   const companyOrderMatch = pathname.match(/^\/api\/company\/orders\/([^/]+)$/);
   if (request.method === "GET" && companyOrderMatch) {

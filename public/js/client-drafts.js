@@ -311,8 +311,25 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
       renderEditor();
       showMessage(message, `Pedido #${order.id} atualizado com sucesso.`, "success");
     } catch (error) {
-      renderEditor();
-      showMessage(message, error.message);
+      if (error.status === 409 && /n\u00e3o est\u00e1 mais em estado draft/i.test(error.message)) {
+        const orderId = editor.id;
+        drafts = drafts.filter((draft) => draft.id !== orderId);
+        editor = null;
+        saver = null;
+        availableProducts = [];
+        title.textContent = `Pedido #${orderId} confirmado pela empresa`;
+        itemsContainer.innerHTML = "";
+        products.innerHTML = "";
+        setStatus(editorStatus, "Este pedido n\u00e3o est\u00e1 mais dispon\u00edvel para edi\u00e7\u00e3o.", "error");
+        setStatus(productsStatus, "A edi\u00e7\u00e3o foi encerrada pela confirma\u00e7\u00e3o comercial.");
+        saveButton.disabled = true;
+        saveButton.textContent = "Edi\u00e7\u00e3o indispon\u00edvel";
+        renderList();
+        showMessage(message, "A empresa confirmou este pedido. Os itens n\u00e3o podem mais ser alterados.");
+      } else {
+        renderEditor();
+        showMessage(message, error.message);
+      }
     }
   });
 

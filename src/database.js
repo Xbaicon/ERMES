@@ -87,11 +87,13 @@ db.exec(`
     client_id INTEGER NOT NULL REFERENCES users(id),
     company_id INTEGER NOT NULL REFERENCES companies(id),
     status TEXT NOT NULL DEFAULT 'draft',
+    version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
     destination_snapshot_json TEXT,
     route_snapshot_json TEXT,
     items_total_cents INTEGER NOT NULL DEFAULT 0,
     freight_total_cents INTEGER,
     payment_status TEXT NOT NULL DEFAULT 'pending',
+    confirmed_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -139,6 +141,14 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 `);
+
+const orderColumns = new Set(db.prepare("PRAGMA table_info(orders)").all().map(({ name }) => name));
+if (!orderColumns.has("version")) {
+  db.exec("ALTER TABLE orders ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1)");
+}
+if (!orderColumns.has("confirmed_at")) {
+  db.exec("ALTER TABLE orders ADD COLUMN confirmed_at TEXT");
+}
 
 export function transaction(work) {
   db.exec("BEGIN IMMEDIATE");

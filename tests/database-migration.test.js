@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-test("adiciona endereços padrão a banco SQLite existente e preserva a chave estrangeira", async () => {
+test("adiciona endereços, versão e confirmação a banco SQLite existente", async () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ermes-address-migration-test-"));
   const databasePath = join(temporaryDirectory, "legacy.sqlite");
   const legacyDatabase = new DatabaseSync(databasePath);
@@ -14,7 +14,26 @@ test("adiciona endereços padrão a banco SQLite existente e preserva a chave es
       id INTEGER PRIMARY KEY,
       role TEXT NOT NULL
     );
+    CREATE TABLE companies (
+      id INTEGER PRIMARY KEY
+    );
+    CREATE TABLE orders (
+      id INTEGER PRIMARY KEY,
+      client_id INTEGER NOT NULL REFERENCES users(id),
+      company_id INTEGER NOT NULL REFERENCES companies(id),
+      status TEXT NOT NULL DEFAULT 'draft',
+      destination_snapshot_json TEXT,
+      route_snapshot_json TEXT,
+      items_total_cents INTEGER NOT NULL DEFAULT 0,
+      freight_total_cents INTEGER,
+      payment_status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
     INSERT INTO users (id, role) VALUES (1, 'client');
+    INSERT INTO companies (id) VALUES (1);
+    INSERT INTO orders (id, client_id, company_id, status, items_total_cents)
+      VALUES (1, 1, 1, 'draft', 1234);
   `);
   legacyDatabase.close();
 
@@ -25,6 +44,14 @@ test("adiciona endereços padrão a banco SQLite existente e preserva a chave es
   const table = db.prepare(`SELECT name FROM sqlite_master
                             WHERE type = 'table' AND name = 'client_default_addresses'`).get();
   assert.equal(table.name, "client_default_addresses");
+  const orderColumns = db.prepare("PRAGMA table_info(orders)").all().map(({ name }) => name);
+  assert.ok(orderColumns.includes("version"));
+  assert.ok(orderColumns.includes("confirmed_at"));
+  assert.deepEqual({ ...db.prepare(`SELECT id, status, items_total_cents AS itemsTotalCents,
+                                           version, confirmed_at AS confirmedAt
+                                    FROM orders WHERE id = 1`).get() }, {
+    id: 1, status: "draft", itemsTotalCents: 1234, version: 1, confirmedAt: null,
+  });
 
   db.prepare(`INSERT INTO client_default_addresses
                 (client_id, postal_code, state, city, neighborhood, street, number)
@@ -35,6 +62,7 @@ test("adiciona endereços padrão a banco SQLite existente e preserva a chave es
                                   VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(999, "01001000", "SP", "São Paulo", "Sé", "Praça da Sé", "1"), /FOREIGN KEY/);
 
+  db.prepare("DELETE FROM orders WHERE id = 1").run();
   db.prepare("DELETE FROM users WHERE id = 1").run();
   assert.equal(db.prepare("SELECT count(*) AS total FROM client_default_addresses").get().total, 0);
   db.close();

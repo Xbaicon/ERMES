@@ -61,7 +61,8 @@ test("painel do cliente conecta catálogo e carrinho acessíveis à criação dr
   assert.match(cart, /api\("\/api\/client\/companies"\)/);
   assert.match(cart, /api\(`\/api\/client\/companies\/\$\{company\.id\}\/products`\)/);
   assert.match(cart, /api\("\/api\/client\/orders"/);
-  assert.doesNotMatch(html, /pagamento|finalizar entrega|confirmar pedido/i);
+  const clientPanels = html.slice(html.indexOf('<section class="dashboard-section" data-client-panel'));
+  assert.doesNotMatch(clientPanels, /pagamento|finalizar entrega|confirmar pedido/i);
 });
 
 test("painel conecta consulta e edição acessíveis dos pedidos draft", async () => {
@@ -82,7 +83,7 @@ test("painel conecta consulta e edição acessíveis dos pedidos draft", async (
   assert.match(drafts, /method: "PUT"/);
 });
 
-test("painel da empresa conecta consulta somente leitura dos pedidos draft", async () => {
+test("painel da empresa conecta consulta e confirmação comercial dos pedidos draft", async () => {
   const html = await readFile(resolve(publicRoot, "pages/painel.html"), "utf8");
   const panel = await readFile(resolve(publicRoot, "js/painel.js"), "utf8");
   const drafts = await readFile(resolve(publicRoot, "js/company-drafts.js"), "utf8");
@@ -92,12 +93,13 @@ test("painel da empresa conecta consulta somente leitura dos pedidos draft", asy
   assert.ok(html.includes('data-company-draft-detail aria-busy="false" hidden'));
   assert.ok(html.includes('data-company-draft-title tabindex="-1"'));
   assert.ok(html.includes('data-company-draft-message role="status" aria-live="polite" hidden'));
+  assert.ok(html.includes('data-company-draft-confirm hidden'));
   assert.ok(html.indexOf("data-company-draft-message") < html.indexOf("data-company-draft-detail"));
   assert.ok(panel.includes('import { setupCompanyDrafts } from "./company-drafts.js"'));
   assert.ok(panel.includes("setupCompanyDrafts({ api, money, escapeHtml, showMessage })"));
   assert.ok(drafts.includes('api("/api/company/orders/drafts")'));
   assert.ok(drafts.includes("/api/company/orders/"));
-  for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
-    assert.equal(drafts.includes('method: "' + method + '"'), false);
-  }
+  assert.ok(drafts.includes('method: "POST"'));
+  assert.ok(drafts.includes("/confirm"));
+  for (const method of ["PUT", "PATCH", "DELETE"]) assert.equal(drafts.includes('method: "' + method + '"'), false);
 });

@@ -58,6 +58,12 @@ export function parseDraftItemsUpdate(body) {
   return { items: parseItems(requireOwn(body, "items")) };
 }
 
+export function parseOrderConfirmation(body) {
+  if (!isObject(body)) throw orderError("O corpo deve ser um objeto JSON de confirma\u00e7\u00e3o.");
+  allowOnly(body, ["version"]);
+  return { version: positiveSafeInteger(requireOwn(body, "version"), "version") };
+}
+
 export function parseOrderId(value) {
   if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
     throw orderError("Identificador de pedido inválido.");
@@ -121,7 +127,7 @@ function priceSnapshot(value) {
 function findOwnedOrder(clientId, orderId) {
   const order = db.prepare(`SELECT o.id, o.client_id AS clientId, o.company_id AS companyId,
                                    o.status, o.destination_snapshot_json AS destinationSnapshotJson,
-                                   o.created_at AS createdAt, o.updated_at AS updatedAt,
+                                   o.version, o.created_at AS createdAt, o.updated_at AS updatedAt,
                                    c.name AS companyName
                             FROM orders o
                             JOIN companies c ON c.id = o.company_id
@@ -195,7 +201,7 @@ export function getDraftOrder(clientId, orderId) {
 }
 
 function findCompanyDraftOrder(companyId, orderId) {
-  const order = db.prepare(`SELECT o.id, o.status,
+  const order = db.prepare(`SELECT o.id, o.status, o.version,
                                    o.destination_snapshot_json AS destinationSnapshotJson
                             FROM orders o
                             WHERE o.id = ? AND o.company_id = ?`).get(orderId, companyId);
@@ -209,6 +215,7 @@ function mapCompanyDraftOrder(order, items) {
   return {
     id: order.id,
     status: order.status,
+    version: order.version,
     items: items.map(({ productId, name, quantity, unitPriceCents, unitWeightKg }) => ({
       productId, name, quantity, unitPriceCents: Number(unitPriceCents), unitWeightKg,
     })),
@@ -218,7 +225,7 @@ function mapCompanyDraftOrder(order, items) {
 }
 
 export function listCompanyDraftOrders(companyId) {
-  return db.prepare(`SELECT o.id, o.status
+  return db.prepare(`SELECT o.id, o.status, o.version
                      FROM orders o
                      WHERE o.company_id = ? AND o.status = 'draft'
                      ORDER BY o.updated_at DESC, o.id DESC`).all(companyId).map((order) => {
@@ -227,6 +234,7 @@ export function listCompanyDraftOrders(companyId) {
     return {
       id: order.id,
       status: order.status,
+      version: order.version,
       itemCount: items.length,
       ...totals,
     };
@@ -262,6 +270,9 @@ export function updateDraftOrderItems(clientId, orderId, body) {
       return { ...product, quantity, unitPriceCents: priceSnapshot(product.unitPriceCents) };
     });
     const totals = calculateDraftTotals(resultingItems);
+    const hasCommercialChange = resultingItems.length !== storedItems.size
+      || resultingItems.some(({ productId, quantity }) => storedItems.get(productId)?.quantity !== quantity);
+    if (!hasCommercialChange) return mapDraftOrder(order, resultingItems);
 
     const deletion = db.prepare("DELETE FROM order_items WHERE order_id = ?").run(order.id);
     if (Number(deletion.changes) !== storedItems.size) {
@@ -278,14 +289,94 @@ export function updateDraftOrderItems(clientId, orderId, body) {
       }
     }
     const update = db.prepare(`UPDATE orders
-                               SET items_total_cents = ?, updated_at = CURRENT_TIMESTAMP
+                               SET items_total_cents = ?, version = version + 1,
+                                   updated_at = CURRENT_TIMESTAMP
                                WHERE id = ? AND client_id = ? AND status = 'draft'`)
       .run(totals.itemsTotalCents, order.id, clientId);
     if (Number(update.changes) !== 1) {
       throw orderError("Este pedido não está mais em estado draft.", 409);
     }
 
-    return mapDraftOrder({ ...order, updatedAt: new Date().toISOString() }, resultingItems);
+    return mapDraftOrder({ ...order, version: order.version + 1,
+      updatedAt: new Date().toISOString() }, resultingItems);
+  });
+}
+
+function findCompanyOrderForConfirmation(companyId, orderId) {
+  const order = db.prepare(`SELECT o.id, o.status, o.version,
+                                   CAST(o.items_total_cents AS TEXT) AS itemsTotalCents,
+                                   o.destination_snapshot_json AS destinationSnapshotJson,
+                                   o.confirmed_at AS confirmedAt
+                            FROM orders o
+                            WHERE o.id = ? AND o.company_id = ?`).get(orderId, companyId);
+  if (!order) throw orderError("Pedido n\u00e3o encontrado.", 404);
+  return order;
+}
+
+function confirmationSnapshot(order) {
+  const items = loadStoredItems(order.id);
+  if (!items.length) throw orderError("O pedido n\u00e3o possui itens para confirma\u00e7\u00e3o.", 409);
+  let totals;
+  try {
+    totals = calculateDraftTotals(items);
+  } catch (error) {
+    if (Number(error.statusCode || 500) < 500) error.statusCode = 409;
+    throw error;
+  }
+  if (!/^\d+$/.test(order.itemsTotalCents)
+    || BigInt(order.itemsTotalCents) !== BigInt(totals.itemsTotalCents)) {
+    throw orderError("Os dados comerciais do pedido est\u00e3o inconsistentes.", 409);
+  }
+  const snapshot = destinationSnapshot(order.destinationSnapshotJson);
+  const requiredAddressFields = ["postalCode", "state", "city", "neighborhood", "street", "number"];
+  if (!isObject(snapshot)
+    || requiredAddressFields.some((field) => typeof snapshot[field] !== "string" || !snapshot[field].trim())) {
+    throw orderError("O pedido n\u00e3o possui um destino preservado v\u00e1lido.", 409);
+  }
+  return { items, totals, snapshot };
+}
+
+function mapConfirmedCompanyOrder(order, confirmation) {
+  return {
+    id: order.id,
+    status: order.status,
+    version: order.version,
+    confirmedAt: order.confirmedAt,
+    items: confirmation.items.map(({ productId, name, quantity, unitPriceCents, unitWeightKg }) => ({
+      productId, name, quantity, unitPriceCents: Number(unitPriceCents), unitWeightKg,
+    })),
+    ...confirmation.totals,
+    destinationSnapshot: confirmation.snapshot,
+  };
+}
+
+export function confirmCompanyDraftOrder(companyId, orderId, body) {
+  const input = parseOrderConfirmation(body);
+  return transaction(() => {
+    const order = findCompanyOrderForConfirmation(companyId, orderId);
+    if (order.status === "confirmed") {
+      if (order.version !== input.version) {
+        throw orderError("A vers\u00e3o analisada n\u00e3o corresponde \u00e0 vers\u00e3o confirmada do pedido.", 409);
+      }
+      return mapConfirmedCompanyOrder(order, confirmationSnapshot(order));
+    }
+    if (order.status !== "draft") {
+      throw orderError("Este pedido n\u00e3o pode ser confirmado no estado atual.", 409);
+    }
+    if (order.version !== input.version) {
+      throw orderError("O pedido foi alterado pelo cliente. Recarregue a vers\u00e3o atual antes de confirmar.", 409);
+    }
+    const confirmation = confirmationSnapshot(order);
+    const update = db.prepare(`UPDATE orders
+                               SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP,
+                                   updated_at = CURRENT_TIMESTAMP
+                               WHERE id = ? AND company_id = ? AND status = 'draft' AND version = ?`)
+      .run(order.id, companyId, input.version);
+    if (Number(update.changes) !== 1) {
+      throw orderError("O pedido foi alterado. Recarregue a vers\u00e3o atual antes de confirmar.", 409);
+    }
+    const confirmed = findCompanyOrderForConfirmation(companyId, order.id);
+    return mapConfirmedCompanyOrder(confirmed, confirmation);
   });
 }
 
