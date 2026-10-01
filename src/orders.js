@@ -64,6 +64,11 @@ export function parseOrderConfirmation(body) {
   return { version: positiveSafeInteger(requireOwn(body, "version"), "version") };
 }
 
+function parseSimulatedPayment(body) {
+  if (!isObject(body)) throw orderError("O corpo deve ser um objeto JSON de pagamento.");
+  allowOnly(body, []);
+}
+
 export function parseOrderId(value) {
   if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
     throw orderError("Identificador de pedido inválido.");
@@ -348,6 +353,138 @@ function mapConfirmedCompanyOrder(order, confirmation) {
     ...confirmation.totals,
     destinationSnapshot: confirmation.snapshot,
   };
+}
+
+function findOwnedOrderForPayment(clientId, orderId) {
+  const order = db.prepare(`SELECT o.id, o.client_id AS clientId, o.company_id AS companyId,
+                                   o.status, CAST(o.items_total_cents AS TEXT) AS itemsTotalCents,
+                                   CAST(o.freight_total_cents AS TEXT) AS freightTotalCents,
+                                   o.destination_snapshot_json AS destinationSnapshotJson,
+                                   o.payment_status AS paymentStatus,
+                                   o.payment_paid_at AS paymentPaidAt,
+                                   o.confirmed_at AS confirmedAt,
+                                   o.created_at AS createdAt, o.updated_at AS updatedAt,
+                                   c.name AS companyName
+                            FROM orders o
+                            JOIN companies c ON c.id = o.company_id
+                            WHERE o.id = ? AND o.client_id = ?`).get(orderId, clientId);
+  if (!order) throw orderError("Pedido n\u00e3o encontrado.", 404);
+  return order;
+}
+
+function validatePaymentState(order) {
+  if (typeof order.confirmedAt !== "string" || !order.confirmedAt.trim()) {
+    throw orderError("Os dados de confirma\u00e7\u00e3o comercial do pedido est\u00e3o inconsistentes.", 409);
+  }
+  if (!["pending", "paid"].includes(order.paymentStatus)) {
+    throw orderError("A situa\u00e7\u00e3o de pagamento do pedido \u00e9 incompat\u00edvel.", 409);
+  }
+  if (order.paymentStatus === "pending" && order.paymentPaidAt !== null) {
+    throw orderError("Os dados de pagamento do pedido est\u00e3o inconsistentes.", 409);
+  }
+  if (order.paymentStatus === "paid" && order.paymentPaidAt === null) {
+    throw orderError("Os dados de pagamento do pedido est\u00e3o inconsistentes.", 409);
+  }
+}
+
+function paymentSnapshot(order) {
+  let confirmation;
+  try {
+    confirmation = confirmationSnapshot(order);
+  } catch (error) {
+    error.statusCode = 409;
+    throw error;
+  }
+  if (order.freightTotalCents !== null
+    && (!/^\d+$/.test(order.freightTotalCents) || BigInt(order.freightTotalCents) > MAX_SAFE)) {
+    throw orderError("O valor de frete preservado no pedido \u00e9 inv\u00e1lido.", 409);
+  }
+  validatePaymentState(order);
+  return {
+    ...confirmation,
+    freightTotalCents: order.freightTotalCents === null ? null : Number(order.freightTotalCents),
+  };
+}
+
+function mapClientConfirmedOrder(order, snapshot, summary = false) {
+  const common = {
+    id: order.id,
+    status: order.status,
+    company: { id: order.companyId, name: order.companyName },
+    paymentStatus: order.paymentStatus,
+    paymentPaidAt: order.paymentPaidAt,
+    confirmedAt: order.confirmedAt,
+    itemsTotalCents: snapshot.totals.itemsTotalCents,
+    freightTotalCents: snapshot.freightTotalCents,
+  };
+  if (summary) {
+    return {
+      ...common,
+      itemCount: snapshot.items.length,
+      weightKg: snapshot.totals.weightKg,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+    };
+  }
+  return {
+    ...common,
+    items: snapshot.items.map(({ productId, name, quantity, unitPriceCents, unitWeightKg }) => ({
+      productId, name, quantity, unitPriceCents: Number(unitPriceCents), unitWeightKg,
+    })),
+    weightKg: snapshot.totals.weightKg,
+    destinationSnapshot: snapshot.snapshot,
+  };
+}
+
+export function listClientConfirmedOrders(clientId) {
+  return db.prepare(`SELECT o.id, o.client_id AS clientId, o.company_id AS companyId,
+                            o.status, CAST(o.items_total_cents AS TEXT) AS itemsTotalCents,
+                            CAST(o.freight_total_cents AS TEXT) AS freightTotalCents,
+                            o.destination_snapshot_json AS destinationSnapshotJson,
+                            o.payment_status AS paymentStatus,
+                            o.payment_paid_at AS paymentPaidAt,
+                            o.confirmed_at AS confirmedAt,
+                            o.created_at AS createdAt, o.updated_at AS updatedAt,
+                            c.name AS companyName
+                     FROM orders o
+                     JOIN companies c ON c.id = o.company_id
+                     WHERE o.client_id = ? AND o.status = 'confirmed'
+                     ORDER BY o.confirmed_at DESC, o.id DESC`).all(clientId)
+    .map((order) => mapClientConfirmedOrder(order, paymentSnapshot(order), true));
+}
+
+export function getClientConfirmedOrder(clientId, orderId) {
+  const order = findOwnedOrderForPayment(clientId, orderId);
+  if (order.status !== "confirmed") {
+    throw orderError("Este pedido n\u00e3o est\u00e1 confirmado comercialmente.", 409);
+  }
+  return mapClientConfirmedOrder(order, paymentSnapshot(order));
+}
+
+export function confirmSimulatedPayment(clientId, orderId, body) {
+  parseSimulatedPayment(body);
+  return transaction(() => {
+    const order = findOwnedOrderForPayment(clientId, orderId);
+    if (order.status !== "confirmed") {
+      throw orderError("Este pedido n\u00e3o est\u00e1 confirmado comercialmente.", 409);
+    }
+    const snapshot = paymentSnapshot(order);
+    if (order.paymentStatus === "paid") {
+      return mapClientConfirmedOrder(order, snapshot);
+    }
+
+    const update = db.prepare(`UPDATE orders
+                               SET payment_status = 'paid', payment_paid_at = CURRENT_TIMESTAMP,
+                                   updated_at = CURRENT_TIMESTAMP
+                               WHERE id = ? AND client_id = ? AND status = 'confirmed'
+                                 AND payment_status = 'pending' AND payment_paid_at IS NULL`)
+      .run(order.id, clientId);
+    if (Number(update.changes) !== 1) {
+      throw orderError("O pagamento do pedido foi alterado. Recarregue a situa\u00e7\u00e3o atual.", 409);
+    }
+    const paid = findOwnedOrderForPayment(clientId, order.id);
+    return mapClientConfirmedOrder(paid, paymentSnapshot(paid));
+  });
 }
 
 export function confirmCompanyDraftOrder(companyId, orderId, body) {

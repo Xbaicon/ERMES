@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-test("adiciona endereços, versão e confirmação a banco SQLite existente", async () => {
+test("adiciona colunas de pedido a banco existente e repete a migração sem perder dados", async () => {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ermes-address-migration-test-"));
   const databasePath = join(temporaryDirectory, "legacy.sqlite");
   const legacyDatabase = new DatabaseSync(databasePath);
@@ -47,10 +47,14 @@ test("adiciona endereços, versão e confirmação a banco SQLite existente", as
   const orderColumns = db.prepare("PRAGMA table_info(orders)").all().map(({ name }) => name);
   assert.ok(orderColumns.includes("version"));
   assert.ok(orderColumns.includes("confirmed_at"));
+  assert.ok(orderColumns.includes("payment_paid_at"));
   assert.deepEqual({ ...db.prepare(`SELECT id, status, items_total_cents AS itemsTotalCents,
-                                           version, confirmed_at AS confirmedAt
+                                           version, confirmed_at AS confirmedAt,
+                                           payment_status AS paymentStatus,
+                                           payment_paid_at AS paymentPaidAt
                                     FROM orders WHERE id = 1`).get() }, {
     id: 1, status: "draft", itemsTotalCents: 1234, version: 1, confirmedAt: null,
+    paymentStatus: "pending", paymentPaidAt: null,
   });
 
   db.prepare(`INSERT INTO client_default_addresses
@@ -62,8 +66,26 @@ test("adiciona endereços, versão e confirmação a banco SQLite existente", as
                                   VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(999, "01001000", "SP", "São Paulo", "Sé", "Praça da Sé", "1"), /FOREIGN KEY/);
 
-  db.prepare("DELETE FROM orders WHERE id = 1").run();
-  db.prepare("DELETE FROM users WHERE id = 1").run();
-  assert.equal(db.prepare("SELECT count(*) AS total FROM client_default_addresses").get().total, 0);
   db.close();
+
+  const { db: migratedAgain } = await import(`../src/database.js?migration-rerun=${Date.now()}`);
+  const columnsAfterRerun = migratedAgain.prepare("PRAGMA table_info(orders)").all()
+    .map(({ name }) => name);
+  assert.equal(columnsAfterRerun.filter((name) => name === "payment_paid_at").length, 1);
+  assert.deepEqual({ ...migratedAgain.prepare(`SELECT id, status, items_total_cents AS itemsTotalCents,
+                                                       version, confirmed_at AS confirmedAt,
+                                                       payment_status AS paymentStatus,
+                                                       payment_paid_at AS paymentPaidAt
+                                                FROM orders WHERE id = 1`).get() }, {
+    id: 1, status: "draft", itemsTotalCents: 1234, version: 1, confirmedAt: null,
+    paymentStatus: "pending", paymentPaidAt: null,
+  });
+  assert.equal(migratedAgain.prepare("SELECT count(*) AS total FROM client_default_addresses")
+    .get().total, 1);
+
+  migratedAgain.prepare("DELETE FROM orders WHERE id = 1").run();
+  migratedAgain.prepare("DELETE FROM users WHERE id = 1").run();
+  assert.equal(migratedAgain.prepare("SELECT count(*) AS total FROM client_default_addresses")
+    .get().total, 0);
+  migratedAgain.close();
 });

@@ -93,6 +93,7 @@ db.exec(`
     items_total_cents INTEGER NOT NULL DEFAULT 0,
     freight_total_cents INTEGER,
     payment_status TEXT NOT NULL DEFAULT 'pending',
+    payment_paid_at TEXT,
     confirmed_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -148,6 +149,9 @@ if (!orderColumns.has("version")) {
 }
 if (!orderColumns.has("confirmed_at")) {
   db.exec("ALTER TABLE orders ADD COLUMN confirmed_at TEXT");
+}
+if (!orderColumns.has("payment_paid_at")) {
+  db.exec("ALTER TABLE orders ADD COLUMN payment_paid_at TEXT");
 }
 
 export function transaction(work) {

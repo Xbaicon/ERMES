@@ -61,8 +61,34 @@ test("painel do cliente conecta catálogo e carrinho acessíveis à criação dr
   assert.match(cart, /api\("\/api\/client\/companies"\)/);
   assert.match(cart, /api\(`\/api\/client\/companies\/\$\{company\.id\}\/products`\)/);
   assert.match(cart, /api\("\/api\/client\/orders"/);
-  const clientPanels = html.slice(html.indexOf('<section class="dashboard-section" data-client-panel'));
-  assert.doesNotMatch(clientPanels, /pagamento|finalizar entrega|confirmar pedido/i);
+  const clientPanels = html.slice(
+    html.indexOf('<section class="dashboard-section" data-client-panel'),
+  );
+  assert.doesNotMatch(clientPanels, /finalizar entrega|confirmar pedido/i);
+});
+
+test("painel conecta consulta e pagamento simulado dos pedidos confirmados", async () => {
+  const html = await readFile(resolve(publicRoot, "pages/painel.html"), "utf8");
+  const panel = await readFile(resolve(publicRoot, "js/painel.js"), "utf8");
+  const payments = await readFile(resolve(publicRoot, "js/client-payments.js"), "utf8");
+
+  assert.match(html, /data-client-payments-status role="status" aria-live="polite"/);
+  assert.match(html, /data-client-payment-message role="status" aria-live="polite" hidden/);
+  assert.match(html, /data-client-payment-detail aria-busy="false" hidden/);
+  assert.match(html, /data-client-payment-title tabindex="-1"/);
+  assert.match(html, /data-client-payment-pay hidden/);
+  assert.match(html, /pagamento . uma confirma..o simulada/i);
+  assert.match(html, /n.o h. cobran.a real, cart.o, Pix ou gateway/i);
+  assert.match(html, /n.o cria uma entrega/i);
+  assert.doesNotMatch(html, /\uFFFD/);
+  assert.doesNotMatch(payments, /\uFFFD/);
+  assert.match(panel, /import \{ setupClientPayments \} from "\.\/client-payments\.js"/);
+  assert.match(panel, /setupClientPayments\(dependencies\)/);
+  assert.match(payments, /api\("\/api\/client\/orders\/confirmed"\)/);
+  assert.match(payments, /`\/api\/client\/orders\/confirmed\/\$\{orderId\}`/);
+  assert.match(payments, /`\/api\/client\/orders\/\$\{orderId\}\/pay`/);
+  assert.match(payments, /method: "POST"/);
+  assert.doesNotMatch(payments, /card|cart.o|pix|qr code|gateway/i);
 });
 
 test("painel conecta consulta e edição acessíveis dos pedidos draft", async () => {

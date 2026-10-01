@@ -124,8 +124,11 @@ mapa, GPS, distância ou tempo operacional.
 | PUT | `/client/default-address` | Cadastrar ou substituir integralmente o endereço padrão do próprio cliente |
 | POST | `/client/orders` | Criar pedido em estado `draft` a partir do carrinho |
 | GET | `/client/orders/drafts` | Listar os pedidos `draft` do próprio cliente |
+| GET | `/client/orders/confirmed` | Listar os pedidos `confirmed` do próprio cliente para consulta de pagamento |
+| GET | `/client/orders/confirmed/:orderId` | Consultar um pedido `confirmed` do próprio cliente |
 | GET | `/client/orders/:orderId` | Consultar um pedido `draft` do próprio cliente |
 | PUT | `/client/orders/:orderId/items` | Substituir integralmente os itens de um pedido `draft` próprio |
+| POST | `/client/orders/:orderId/pay` | Confirmar de forma simulada o pagamento de um pedido `confirmed` próprio |
 
 Todas as rotas desta seção exigem sessão com papel `client`. Ausência de sessão retorna `401`, e papéis diferentes de `client` retornam `403`.
 
@@ -281,6 +284,54 @@ incrementa `orders.version`; reenviar a mesma composição não incrementa.
 Depois da confirmação comercial, tanto a consulta de `draft` quanto o `PUT`
 de itens retornam `409`, e a interface informa que o pedido não está mais
 disponível para edição direta.
+
+### Consulta e pagamento simulado de pedidos confirmados
+
+`GET /client/orders/confirmed` lista somente pedidos com `status = confirmed`
+cujo `client_id` corresponde à sessão. A lista inclui pedidos com pagamento
+`pending` e `paid`, a empresa, quantidade de itens, subtotal preservado,
+`freightTotalCents`, situação e datas do pagamento e da confirmação comercial.
+Quando o frete ainda não foi definido, `freightTotalCents` é `null`; ele não é
+convertido para zero nem apresentado como frete grátis.
+
+`GET /client/orders/confirmed/:orderId` retorna a representação completa e
+somente leitura do pedido confirmado próprio, incluindo itens e seus snapshots,
+subtotal, peso, destino preservado, `paymentStatus`, `paymentPaidAt`,
+`confirmedAt` e `freightTotalCents`. Pedido inexistente ou de outro cliente
+retorna `404` sem revelar sua existência. Pedido próprio que não esteja
+`confirmed` retorna `409`.
+
+`POST /client/orders/:orderId/pay` confirma o passo de pagamento simulado do
+protótipo acadêmico. O corpo deve ser um objeto vazio (`{}`); valores de itens,
+frete, total, situação ou data de pagamento enviados pelo navegador são
+rejeitados. O servidor exige ownership, `status = confirmed`, dados comerciais
+persistidos íntegros e `payment_status = pending` ou `paid` no caso idempotente.
+
+Na primeira confirmação válida, a transição atômica é:
+
+```text
+payment_status: pending -> paid
+status: confirmed -> confirmed
+payment_paid_at: null -> horário do servidor
+```
+
+A transação atualiza somente uma linha que ainda esteja `confirmed`, `pending`
+e sem `payment_paid_at`. Requisições simultâneas produzem uma única transição;
+as demais observam o estado `paid`. Repetir o pagamento de um pedido
+`confirmed` e `paid` retorna HTTP `200`, preservando `payment_paid_at`, itens,
+valores e todos os demais dados, sem efeito adicional.
+
+O significado de `paid` nesta etapa é exclusivamente a confirmação simulada do
+passo acadêmico: não há Pix, cartão, gateway, banco, cobrança real, webhook ou
+comprovante. A operação não calcula nem altera frete, não soma um total fictício
+de produtos com frete ausente, não cria tabela ou registro de pagamento, não
+cria Entrega e não produz reembolso ou distribuição financeira. Esses fluxos
+permanecem para etapas posteriores que possuam suas próprias precondições.
+
+Identificador ou corpo inválido retorna `400`; ausência de sessão retorna `401`;
+empresa, motoboy e administrador recebem `403`; recurso alheio ou inexistente
+retorna `404`; e estado comercial, financeiro ou dados persistidos
+incompatíveis retornam `409`.
 
 ## Motoboy autenticado
 
