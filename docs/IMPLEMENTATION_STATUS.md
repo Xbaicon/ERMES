@@ -15,7 +15,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Carrinho e pedidos draft do cliente | Implementado inicialmente | Carrinho em memória cria drafts; cliente lista, consulta e substitui itens dos próprios drafts com recálculo e snapshots preservados; não cria entrega ou frete |
 | Motoboy vinculado à empresa | Implementado inicialmente | Criado pela área da empresa; não autônomo |
 | Online/offline do motoboy | Implementado inicialmente | Persistido no banco |
-| Estrutura de pedidos | Implementado parcialmente | Criação, consulta e edição de `draft` pelo cliente e confirmação comercial pela empresa disponíveis; cancelamento e demais decisões da empresa ainda não implementados |
+| Estrutura de pedidos | Implementado parcialmente | Criação, consulta e edição de `draft`, confirmação comercial e consulta de pedidos `confirmed` pelo cliente disponíveis; cancelamento e demais fluxos posteriores ainda não implementados |
 | Consulta e confirmação de drafts pela empresa | Implementado inicialmente | Lista, detalhe e confirmação `draft -> confirmed` isolados por `company_id`; usa versão otimista, `confirmed_at` e idempotência, sem criar entrega, pagamento ou frete |
 | Endereço padrão do cliente | Implementado inicialmente | Consulta, cadastro e substituição isolados por sessão; geocodificação não bloqueia; snapshots de pedidos permanecem independentes |
 | Itens e snapshots históricos | Implementado parcialmente | Draft preserva preço e peso unitários, subtotal e endereço de destino; frete final e divisão financeira aguardam etapas futuras |
@@ -23,7 +23,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Frete operacional final | Parcial / pendente de clarificação | Falta somente decisão explícita sobre a fonte operacional de distância e tempo; não autoriza provedor externo, API de rotas, geocodificação, valor fixo, entrada manual ou simulação |
 | Parâmetros tarifários da empresa | Implementado inicialmente | Consulta e edição isoladas por sessão; seis tarifas monetárias persistidas em centavos; limite de 12 kg permanece fixo na aplicação |
 | Geocodificação, rotas e mapas | Opcional/futuro — não bloqueador | Não selecionar nem implementar provedor externo, API de rotas ou solução substituta sem decisão explícita |
-| Pagamento e financeiro | Não implementado | Estados financeiros, reembolsos e distribuição permanecem no escopo; integração real com gateway é opcional/futura |
+| Pagamento e financeiro | Implementado parcialmente | Cliente proprietário confirma pagamento simulado `pending -> paid` de pedido `confirmed`, com `payment_paid_at`, idempotência e concorrência transacional; sem gateway, cobrança real, frete inventado, Entrega, reembolso ou distribuição financeira |
 | Divisão 70/25/5 | Regra e testes implementados | Persistência financeira será ligada ao fluxo da entrega |
 | Aceite concorrente da entrega | Banco parcialmente preparado | Índices existem; endpoint transacional ainda necessário |
 | Acompanhamento operacional da entrega | Não implementado | Obrigatório: estados, eventos, coleta, transporte, chegada, confirmação e ocorrências; não depende de GPS ou mapa |

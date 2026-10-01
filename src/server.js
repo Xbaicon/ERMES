@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeAddress } from "./address.js";
 import { db, seedDevelopmentData, transaction } from "./database.js";
 import { calculateFreight, splitNormalFreight } from "./freight.js";
-import { confirmCompanyDraftOrder, createDraftOrder, getCompanyDraftOrder, getDraftOrder, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
+import { confirmCompanyDraftOrder, confirmSimulatedPayment, createDraftOrder, getClientConfirmedOrder, getCompanyDraftOrder, getDraftOrder, listClientConfirmedOrders, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
 import { assertPassword, isEmail, isValidCnpj, isValidCpf, normalizeEmail, onlyDigits, requireFields } from "./validation.js";
 
@@ -275,6 +275,16 @@ async function api(request, response, url) {
     const user = requireUser(request, ["client"]);
     return json(response, 200, { drafts: listDraftOrders(user.id) });
   }
+  if (request.method === "GET" && pathname === "/api/client/orders/confirmed") {
+    const user = requireUser(request, ["client"]);
+    return json(response, 200, { orders: listClientConfirmedOrders(user.id) });
+  }
+  const clientConfirmedOrderMatch = pathname.match(/^\/api\/client\/orders\/confirmed\/([^/]+)$/);
+  if (request.method === "GET" && clientConfirmedOrderMatch) {
+    const user = requireUser(request, ["client"]);
+    const order = getClientConfirmedOrder(user.id, parseOrderId(clientConfirmedOrderMatch[1]));
+    return json(response, 200, { order });
+  }
   const clientOrderMatch = pathname.match(/^\/api\/client\/orders\/([^/]+)$/);
   if (request.method === "GET" && clientOrderMatch) {
     const user = requireUser(request, ["client"]);
@@ -286,6 +296,13 @@ async function api(request, response, url) {
     const user = requireUser(request, ["client"]);
     const orderId = parseOrderId(clientOrderItemsMatch[1]);
     const order = updateDraftOrderItems(user.id, orderId, await readJson(request));
+    return json(response, 200, { order });
+  }
+  const clientOrderPaymentMatch = pathname.match(/^\/api\/client\/orders\/([^/]+)\/pay$/);
+  if (request.method === "POST" && clientOrderPaymentMatch) {
+    const user = requireUser(request, ["client"]);
+    const orderId = parseOrderId(clientOrderPaymentMatch[1]);
+    const order = confirmSimulatedPayment(user.id, orderId, await readJson(request));
     return json(response, 200, { order });
   }
   if (request.method === "GET" && pathname === "/api/company/orders/drafts") {

@@ -119,6 +119,36 @@
 
       <section class="dashboard-section" data-client-panel hidden>
         <div class="section-title">
+          <div><p class="eyebrow">PAGAMENTO</p><h2>Pedidos confirmados</h2></div>
+          <button class="button button-outline button-small" type="button" data-client-payments-reload>Recarregar lista</button>
+        </div>
+        <div class="form-message" data-client-payment-message role="status" aria-live="polite" hidden></div>
+        <div class="dashboard-grid client-drafts">
+          <div class="dashboard-card">
+            <h3>Pedidos para pagamento</h3>
+            <p class="catalog-status" data-client-payments-status role="status" aria-live="polite">Carregando pedidos confirmados.</p>
+            <div class="catalog-company-list draft-list" data-client-payments-list aria-label="Pedidos confirmados para pagamento"></div>
+          </div>
+          <div class="dashboard-card draft-editor" data-client-payment-detail aria-busy="false" hidden>
+            <h3 data-client-payment-title tabindex="-1">Selecione um pedido</h3>
+            <p class="form-copy"><strong>Empresa:</strong> <span data-client-payment-company></span></p>
+            <p class="catalog-status" data-client-payment-status role="status" aria-live="polite"></p>
+            <p class="form-copy"><strong>Confirmado comercialmente em:</strong> <span data-client-payment-confirmed-at></span></p>
+            <p class="form-copy"><strong>Pagamento confirmado em:</strong> <span data-client-payment-paid-at></span></p>
+            <div class="cart-items" data-client-payment-items></div>
+            <div class="cart-totals">
+              <span>Subtotal dos itens: <strong data-client-payment-subtotal>R$ 0,00</strong></span>
+              <span>Frete: <strong data-client-payment-freight>Ainda não definido</strong></span>
+            </div>
+            <p class="form-copy">Este pagamento é uma confirmação simulada do protótipo acadêmico. Não há cobrança real, cartão, Pix ou gateway. Se o frete ainda não estiver definido, ele permanece pendente e não é tratado como gratuito.</p>
+            <p class="form-copy">Pedidos confirmados são somente leitura; o pagamento não reabilita a edição dos itens e não cria uma entrega.</p>
+            <button class="button button-dark" type="button" data-client-payment-pay hidden>Confirmar pagamento simulado</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard-section" data-client-panel hidden>
+        <div class="section-title">
           <div><p class="eyebrow">PEDIDOS</p><h2>Rascunhos</h2></div>
           <button class="button button-outline button-small" type="button" data-client-drafts-reload>Recarregar lista</button>
         </div>

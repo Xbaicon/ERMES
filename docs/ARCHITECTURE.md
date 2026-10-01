@@ -20,6 +20,7 @@ Não há dependências npm externas nesta etapa.
 
 ## Decisões estruturais
 
+- O pagamento acadêmico simulado evolui incrementalmente `orders`: `payment_status` representa `pending -> paid` e `payment_paid_at` preserva o horário da primeira confirmação válida. A transição usa transação imediata e `UPDATE` condicionado ao estado anterior; não existe tabela `payments`, gateway ou cobrança externa. A consulta somente leitura e a ação do cliente ficam isoladas em `public/js/client-payments.js`, sem compartilhar o editor de drafts.
 - `Pedido` e `Entrega` são entidades distintas.
 - Produto, preço e peso são preservados em `order_items` para impedir alterações retroativas.
 - Endereço possui snapshot histórico no pedido. O campo reservado para rota não torna geocodificação, provedor de rotas ou snapshot externo uma dependência da Baseline 0.1; consulte `BASELINE_0.1_SCOPE_CORRECTION.md`.
@@ -42,8 +43,8 @@ Não há dependências npm externas nesta etapa.
 
 ## Próximas integrações técnicas
 
-1. Pagamento, estados financeiros, reembolsos e distribuição financeira; gateway real é opcional/futuro.
-2. Estados e eventos completos da entrega.
+1. Estados e eventos completos da entrega.
+2. Reembolsos e distribuição financeira, quando os fluxos posteriores de entrega, conclusão, cancelamento e ocorrências fornecerem suas precondições.
 3. Chat entre cliente e empresa.
 
 Geocodificação, provedor real de rotas, mapas e rastreamento geográfico são

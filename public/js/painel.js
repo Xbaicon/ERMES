@@ -1,5 +1,6 @@
 import { setupClientCatalog } from "./client-cart.js";
 import { setupClientDrafts } from "./client-drafts.js";
+import { setupClientPayments } from "./client-payments.js";
 import { setupCompanyDrafts } from "./company-drafts.js";
 
 (function () {
@@ -186,7 +187,12 @@ import { setupCompanyDrafts } from "./company-drafts.js";
   async function setupClient() {
     document.querySelectorAll("[data-client-panel]").forEach((element) => { element.hidden = false; });
     const dependencies = { api, money, escapeHtml, showMessage };
-    await Promise.all([setupDefaultAddress(), setupClientCatalog(dependencies), setupClientDrafts(dependencies)]);
+    await Promise.all([
+      setupDefaultAddress(),
+      setupClientCatalog(dependencies),
+      setupClientDrafts(dependencies),
+      setupClientPayments(dependencies),
+    ]);
   }
 
   async function main() {
