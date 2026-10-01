@@ -1,6 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createDraftEditor, createDraftSaver } from "../public/js/client-drafts.js";
+import { createDraftEditor, createDraftSaver, setupClientDrafts } from "../public/js/client-drafts.js";
+
+function element() {
+  const listeners = new Map();
+  return {
+    hidden: false, disabled: false, textContent: "", className: "", innerHTML: "",
+    dataset: {}, attributes: new Map(),
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    setAttribute(name, value) { this.attributes.set(name, value); },
+    focus() {},
+    listener(type) { return listeners.get(type); },
+  };
+}
 
 const order = {
   id: 7,
@@ -87,4 +99,53 @@ test("falha da API preserva integralmente a edição visual para nova tentativa"
   assert.equal(saver.pending, false);
   assert.deepEqual(editor.lines(), before);
   assert.ok(await saver.save());
+});
+
+test("interface informa quando a empresa confirma enquanto o cliente editava", async () => {
+  const selectors = [
+    "[data-client-drafts-list]", "[data-client-drafts-status]", "[data-client-drafts-reload]",
+    "[data-client-draft-detail]", "[data-client-draft-title]", "[data-client-draft-company]",
+    "[data-client-draft-address]", "[data-client-draft-items]", "[data-client-draft-subtotal]",
+    "[data-client-draft-weight]", "[data-client-draft-editor-status]", "[data-client-draft-message]",
+    "[data-client-draft-products]", "[data-client-draft-products-status]", "[data-client-draft-save]",
+  ];
+  const elements = new Map(selectors.map((selector) => [selector, element()]));
+  const originalDocument = globalThis.document;
+  globalThis.document = { querySelector: (selector) => elements.get(selector) };
+  const list = elements.get("[data-client-drafts-list]");
+  const save = elements.get("[data-client-draft-save]");
+  const title = elements.get("[data-client-draft-title]");
+  const editorStatus = elements.get("[data-client-draft-editor-status]");
+  const message = elements.get("[data-client-draft-message]");
+  try {
+    await setupClientDrafts({
+      api: async (path) => {
+        if (path === "/api/client/orders/drafts") return { drafts: [{
+          id: order.id, status: "draft", company: order.company, itemCount: 1,
+          itemsTotalCents: order.itemsTotalCents, weightKg: order.weightKg,
+        }] };
+        if (path === `/api/client/orders/${order.id}`) return { order };
+        if (path === `/api/client/companies/${order.company.id}/products`) return { products: [] };
+        if (path === `/api/client/orders/${order.id}/items`) {
+          throw Object.assign(new Error("Este pedido n\u00e3o est\u00e1 mais em estado draft."), { status: 409 });
+        }
+        throw new Error(`Chamada inesperada: ${path}`);
+      },
+      money: (value) => String(value),
+      escapeHtml: (value) => String(value),
+      showMessage: (target, value) => { target.textContent = value; target.hidden = false; },
+    });
+
+    list.listener("click")({ target: { closest: () => ({ dataset: { clientDraftId: String(order.id) } }) } });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(save.disabled, false);
+    await save.listener("click")();
+    assert.match(title.textContent, /confirmado pela empresa/i);
+    assert.match(editorStatus.textContent, /n.o est. mais dispon.vel para edi..o/i);
+    assert.match(message.textContent, /empresa confirmou/i);
+    assert.equal(save.disabled, true);
+    assert.equal(list.innerHTML, "");
+  } finally {
+    globalThis.document = originalDocument;
+  }
 });

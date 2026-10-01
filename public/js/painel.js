@@ -8,7 +8,11 @@ import { setupCompanyDrafts } from "./company-drafts.js";
   async function api(path, options = {}) {
     const response = await fetch(path, { credentials: "same-origin", headers: { "Content-Type": "application/json" }, ...options });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || "Operação não concluída.");
+    if (!response.ok) {
+      const error = new Error(data.error || "Opera\u00e7\u00e3o n\u00e3o conclu\u00edda.");
+      error.status = response.status;
+      throw error;
+    }
     return data;
   }
 

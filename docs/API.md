@@ -26,6 +26,7 @@ O e-mail de acesso é normalizado e único em `users.email`, independentemente d
 | PATCH | `/company/freight-config` | Alterar os parâmetros tarifários da própria empresa |
 | GET | `/company/orders/drafts` | Listar os pedidos `draft` da própria empresa |
 | GET | `/company/orders/:orderId` | Consultar o detalhe de um pedido `draft` da própria empresa |
+| POST | `/company/orders/:orderId/confirm` | Confirmar comercialmente um `draft` da própria empresa |
 | POST | `/freight/quote` | Exercitar tecnicamente a fórmula com entradas de teste |
 
 ### Parâmetros tarifários
@@ -73,6 +74,45 @@ retorna `409`; identificador inválido retorna `400`. Ausência de sessão
 retorna `401`, e papéis diferentes de `company` retornam `403`. As rotas
 são exclusivamente de leitura: não confirmam, cancelam, excluem ou alteram
 pedidos.
+
+### Confirmação comercial do pedido
+
+Os resumos e o detalhe retornados pelas duas rotas GET incluem `version`,
+que identifica a versão comercial persistida do `draft`.
+
+`POST /company/orders/:orderId/confirm` exige sessão `company`, valida o
+`orderId` e identifica a empresa exclusivamente pela sessão. O corpo aceita
+somente a versão inteira positiva que a empresa analisou:
+
+```json
+{ "version": 2 }
+```
+
+A operação compara essa versão com `orders.version` dentro de uma
+transação. Cada alteração efetiva dos itens de um `draft` incrementa
+a versão; um salvamento sem mudança comercial não a incrementa. Divergência
+retorna `409` sem alteração parcial, para que a empresa recarregue e analise
+a versão atual.
+
+Em sucesso, a transição é `draft -> confirmed`, o servidor grava
+`confirmed_at` e retorna HTTP `200` com o pedido confirmado, incluindo
+`version` e `confirmedAt`. Se o pedido já estiver confirmado, a repetição
+somente é idempotente quando a `version` enviada for igual à versão confirmada:
+nesse caso, retorna `200` com a mesma representação, sem mudar novamente o
+timestamp ou produzir qualquer outro efeito. Uma versão diferente retorna
+`409`, pois a versão analisada não corresponde à versão confirmada.
+
+Pedido inexistente ou de outra empresa retorna `404`; versão desatualizada
+ou estado incompatível retorna `409`; identificador ou corpo inválido retorna
+`400`; ausência de sessão retorna `401`; e papel diferente de `company`
+retorna `403`.
+
+A confirmação recalcula e valida os itens persistidos, o subtotal, o peso
+máximo de 12 kg e o destino preservado. Ela usa os snapshots do pedido e não
+passa a depender da disponibilidade atual do produto. Esta operação não
+cria entrega, pagamento, frete ou rota, não altera `payment_status`,
+`freight_total_cents` ou `route_snapshot_json` e não exige geocodificação,
+mapa, GPS, distância ou tempo operacional.
 
 ## Cliente autenticado
 
@@ -235,6 +275,12 @@ O cliente e a empresa do pedido não são recebidos do navegador. As consultas c
 Na atualização, itens que já estavam persistidos no draft mantêm seus `unit_price_cents` e `unit_weight_kg`, mesmo que o cadastro atual do produto tenha mudado; alterar sua quantidade recalcula os totais com esses snapshots. Um produto realmente novo precisa existir, pertencer à empresa imutável do pedido e estar disponível, e recebe preço e peso atuais do banco como novos snapshots. Se um item foi removido e salvo, uma inclusão posterior é uma nova adição e captura os valores vigentes naquele momento.
 
 O servidor recalcula subtotal e peso a partir da versão resultante, aceita exatamente 12 kg e rejeita peso superior ou subtotal acima do inteiro seguro. A substituição de `order_items` e a atualização de `orders.items_total_cents` ocorrem numa única transação. Qualquer falha restaura integralmente a versão anterior. `destination_snapshot_json` não é atualizado nem reconstruído a partir do endereço padrão atual; rota, frete, pagamento, status e entregas também não são modificados. Em sucesso, o `PUT` retorna HTTP `200` com `{ "order": ... }` normalizado pelo servidor.
+
+Cada alteração efetiva da composição ou quantidade dos itens
+incrementa `orders.version`; reenviar a mesma composição não incrementa.
+Depois da confirmação comercial, tanto a consulta de `draft` quanto o `PUT`
+de itens retornam `409`, e a interface informa que o pedido não está mais
+disponível para edição direta.
 
 ## Motoboy autenticado
 
