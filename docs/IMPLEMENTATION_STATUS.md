@@ -23,11 +23,11 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Frete operacional final | Parcial / pendente de clarificação | Falta somente decisão explícita sobre a fonte operacional de distância e tempo; não autoriza provedor externo, API de rotas, geocodificação, valor fixo, entrada manual ou simulação |
 | Parâmetros tarifários da empresa | Implementado inicialmente | Consulta e edição isoladas por sessão; seis tarifas monetárias persistidas em centavos; limite de 12 kg permanece fixo na aplicação |
 | Geocodificação, rotas e mapas | Opcional/futuro — não bloqueador | Não selecionar nem implementar provedor externo, API de rotas ou solução substituta sem decisão explícita |
-| Pagamento e financeiro | Implementado parcialmente | Cliente proprietário confirma pagamento simulado `pending -> paid` de pedido `confirmed`, com `payment_paid_at`, idempotência e concorrência transacional; sem gateway, cobrança real, frete inventado, Entrega, reembolso ou distribuição financeira |
+| Pagamento e financeiro | Implementado parcialmente | Pagamento simulado `pending -> paid` garante atomicamente a Entrega; não há gateway, cobrança real, frete inventado, reembolso nem distribuição financeira |
 | Divisão 70/25/5 | Regra e testes implementados | Persistência financeira será ligada ao fluxo da entrega |
-| Aceite concorrente da entrega | Banco parcialmente preparado | Índices existem; endpoint transacional ainda necessário |
-| Acompanhamento operacional da entrega | Não implementado | Obrigatório: estados, eventos, coleta, transporte, chegada, confirmação e ocorrências; não depende de GPS ou mapa |
-| Código de confirmação | Banco preparado | Geração, hash e limite de tentativas ainda necessários |
+| Aceite concorrente da entrega | Implementado | Mesmo estabelecimento, motoboy online, uma entrega ativa por motoboy e aceite único protegidos por transação e índices |
+| Acompanhamento operacional da entrega | Implementado para regras definidas da 0.1 | Nascimento, fluxo normal, histórico, consultas isoladas, falhas, cancelamentos, ocorrências e retorno com dupla verificação; sem GPS ou mapa |
+| Código de confirmação | Implementado | Código de seis dígitos disponível ao cliente durante a operação, validado por hash `scrypt`, cifrado para recuperação autorizada, oculto do motoboy e limitado a três erros |
 | Rastreamento geográfico | Opcional/futuro — não bloqueador | GPS, coordenadas, posição atual/última conhecida, histórico de posições e mapa em tempo real não são pré-requisitos |
 | Chat | Não implementado | Forma exata permanece pendente |
 | Administrador do ERMES | Não implementado | Casos de uso e permissões permanecem pendentes |
@@ -54,3 +54,9 @@ Consulte também `BASELINE_0.1_SCOPE_CORRECTION.md` antes de implementar qualque
 - tecnologia do chat;
 - provedor e fluxo técnico de pagamento;
 - nomenclatura final dos estados UML.
+
+As regras financeiras de reembolso e distribuição decorrentes de cancelamentos,
+ausência, recusa, endereço incorreto e falha após três códigos permanecem sem
+persistência porque parte da distribuição está pendente na 0.1 e não existe
+infraestrutura financeira real. A interface de tentativa de contato também
+permanece pendente. Nenhum conceito da Baseline 0.2 foi introduzido.

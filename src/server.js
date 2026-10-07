@@ -8,6 +8,13 @@ import { calculateFreight, splitNormalFreight } from "./freight.js";
 import { confirmCompanyDraftOrder, confirmSimulatedPayment, createDraftOrder, getClientConfirmedOrder, getCompanyDraftOrder, getDraftOrder, listClientConfirmedOrders, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
 import { assertPassword, isEmail, isValidCnpj, isValidCpf, normalizeEmail, onlyDigits, requireFields } from "./validation.js";
+import {
+  acceptDelivery, arriveAtDestination, arriveAtPickup, cancelClientDelivery,
+  cancelForUnavailableProduct, collectDelivery, confirmDelivery, confirmReturn,
+  getClientDelivery, getCompanyDelivery, getCourierCurrentDelivery, listAvailableDeliveries,
+  listClientDeliveries, listCompanyDeliveries, parseDeliveryId, reportCourierFailure,
+  reportDeliveryOccurrence, reportReturn,
+} from "./delivery-operations.js";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const publicDirectory = join(root, "public");
@@ -302,8 +309,23 @@ async function api(request, response, url) {
   if (request.method === "POST" && clientOrderPaymentMatch) {
     const user = requireUser(request, ["client"]);
     const orderId = parseOrderId(clientOrderPaymentMatch[1]);
-    const order = confirmSimulatedPayment(user.id, orderId, await readJson(request));
-    return json(response, 200, { order });
+    const result = confirmSimulatedPayment(user.id, orderId, await readJson(request));
+    return json(response, 200, result);
+  }
+  if (request.method === "GET" && pathname === "/api/client/deliveries") {
+    const user = requireUser(request, ["client"]);
+    return json(response, 200, { deliveries: listClientDeliveries(user.id) });
+  }
+  const clientDeliveryMatch = pathname.match(/^\/api\/client\/deliveries\/([^/]+)$/);
+  if (request.method === "GET" && clientDeliveryMatch) {
+    const user = requireUser(request, ["client"]);
+    return json(response, 200, { delivery: getClientDelivery(user.id, parseDeliveryId(clientDeliveryMatch[1])) });
+  }
+  const clientDeliveryCancelMatch = pathname.match(/^\/api\/client\/deliveries\/([^/]+)\/cancel$/);
+  if (request.method === "POST" && clientDeliveryCancelMatch) {
+    const user = requireUser(request, ["client"]);
+    const delivery = cancelClientDelivery(parseDeliveryId(clientDeliveryCancelMatch[1]), user.id, await readJson(request));
+    return json(response, 200, { delivery });
   }
   if (request.method === "GET" && pathname === "/api/company/orders/drafts") {
     const user = requireUser(request, ["company"]);
@@ -321,6 +343,29 @@ async function api(request, response, url) {
     const user = requireUser(request, ["company"]);
     const order = getCompanyDraftOrder(user.companyId, parseOrderId(companyOrderMatch[1]));
     return json(response, 200, { order });
+  }
+  if (request.method === "GET" && pathname === "/api/company/deliveries") {
+    const user = requireUser(request, ["company"]);
+    return json(response, 200, { deliveries: listCompanyDeliveries(user.companyId) });
+  }
+  const companyDeliveryMatch = pathname.match(/^\/api\/company\/deliveries\/([^/]+)$/);
+  if (request.method === "GET" && companyDeliveryMatch) {
+    const user = requireUser(request, ["company"]);
+    return json(response, 200, { delivery: getCompanyDelivery(user.companyId, parseDeliveryId(companyDeliveryMatch[1])) });
+  }
+  const companyUnavailableMatch = pathname.match(/^\/api\/company\/deliveries\/([^/]+)\/product-unavailable$/);
+  if (request.method === "POST" && companyUnavailableMatch) {
+    const user = requireUser(request, ["company"]);
+    const delivery = cancelForUnavailableProduct(parseDeliveryId(companyUnavailableMatch[1]),
+      user.id, user.companyId, await readJson(request));
+    return json(response, 200, { delivery });
+  }
+  const companyReturnMatch = pathname.match(/^\/api\/company\/deliveries\/([^/]+)\/confirm-return$/);
+  if (request.method === "POST" && companyReturnMatch) {
+    const user = requireUser(request, ["company"]);
+    const delivery = confirmReturn(parseDeliveryId(companyReturnMatch[1]),
+      user.id, user.companyId, await readJson(request));
+    return json(response, 200, { delivery });
   }
   if (request.method === "GET" && pathname === "/api/company/products") {
     const user = requireUser(request, ["company"]);
@@ -397,13 +442,47 @@ async function api(request, response, url) {
   if (request.method === "PATCH" && pathname === "/api/courier/availability") {
     const user = requireUser(request, ["courier"]);
     const body = await readJson(request);
+    if (!body || Array.isArray(body) || typeof body !== "object"
+      || Object.keys(body).length !== 1 || typeof body.isOnline !== "boolean") {
+      throw badRequest("Informe somente isOnline como valor booleano.");
+    }
     db.prepare("UPDATE couriers SET is_online = ? WHERE user_id = ?").run(body.isOnline ? 1 : 0, user.id);
-    return json(response, 200, { isOnline: Boolean(body.isOnline) });
+    return json(response, 200, { isOnline: body.isOnline });
   }
   if (request.method === "GET" && pathname === "/api/courier/availability") {
     const user = requireUser(request, ["courier"]);
     const row = db.prepare("SELECT is_online AS isOnline FROM couriers WHERE user_id = ?").get(user.id);
     return json(response, 200, { isOnline: Boolean(row?.isOnline) });
+  }
+  if (request.method === "GET" && pathname === "/api/courier/deliveries/available") {
+    const user = requireUser(request, ["courier"]);
+    return json(response, 200, { deliveries: listAvailableDeliveries(user.companyId) });
+  }
+  if (request.method === "GET" && pathname === "/api/courier/deliveries/current") {
+    const user = requireUser(request, ["courier"]);
+    return json(response, 200, { delivery: getCourierCurrentDelivery(user.id, user.companyId) });
+  }
+  const courierActionMatch = pathname.match(/^\/api\/courier\/deliveries\/([^/]+)\/(accept|arrive-pickup|collect|arrive-destination|confirm|fail|occurrences|report-return)$/);
+  if (request.method === "POST" && courierActionMatch) {
+    const user = requireUser(request, ["courier"]);
+    const id = parseDeliveryId(courierActionMatch[1]);
+    const body = await readJson(request);
+    const actions = {
+      accept: acceptDelivery,
+      "arrive-pickup": arriveAtPickup,
+      collect: collectDelivery,
+      "arrive-destination": arriveAtDestination,
+      fail: reportCourierFailure,
+      occurrences: reportDeliveryOccurrence,
+      "report-return": reportReturn,
+    };
+    if (courierActionMatch[2] === "confirm") {
+      const result = confirmDelivery(id, user.id, user.companyId, body);
+      return json(response, result.valid ? 200 : 422,
+        result.valid ? result : { error: "Código inválido.", ...result });
+    }
+    const delivery = actions[courierActionMatch[2]](id, user.id, user.companyId, body);
+    return json(response, 200, { delivery });
   }
   if (request.method === "POST" && pathname === "/api/freight/quote") {
     const user = requireUser(request, ["company"]);
@@ -446,6 +525,7 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   try {
     if (url.pathname.startsWith("/api/")) {
+      response.setHeader("Cache-Control", "no-store");
       const handled = await api(request, response, url);
       if (handled === false) json(response, 404, { error: "Rota de API não encontrada." });
       return;

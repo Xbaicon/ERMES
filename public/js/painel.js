@@ -2,6 +2,7 @@ import { setupClientCatalog } from "./client-cart.js";
 import { setupClientDrafts } from "./client-drafts.js";
 import { setupClientPayments } from "./client-payments.js";
 import { setupCompanyDrafts } from "./company-drafts.js";
+import { setupDeliveryPanel } from "./delivery-panels.js";
 
 (function () {
   "use strict";
@@ -114,6 +115,7 @@ import { setupCompanyDrafts } from "./company-drafts.js";
       loadCouriers(),
       loadFreightConfig(),
       setupCompanyDrafts({ api, money, escapeHtml, showMessage }),
+      setupDeliveryPanel({ role: "company", api, escapeHtml, showMessage }),
     ]).catch(console.error);
   }
 
@@ -132,7 +134,9 @@ import { setupCompanyDrafts } from "./company-drafts.js";
     button.addEventListener("click", async () => {
       ({ isOnline } = await api("/api/courier/availability", { method: "PATCH", body: JSON.stringify({ isOnline: !isOnline }) }));
       render();
+      document.dispatchEvent(new CustomEvent("ermes:delivery-changed"));
     });
+    await setupDeliveryPanel({ role: "courier", api, escapeHtml, showMessage });
   }
 
   async function setupDefaultAddress() {
@@ -192,6 +196,7 @@ import { setupCompanyDrafts } from "./company-drafts.js";
       setupClientCatalog(dependencies),
       setupClientDrafts(dependencies),
       setupClientPayments(dependencies),
+      setupDeliveryPanel({ role: "client", api, escapeHtml, showMessage }),
     ]);
   }
 
@@ -209,7 +214,7 @@ import { setupCompanyDrafts } from "./company-drafts.js";
     document.querySelector("[data-dashboard-title]").textContent = copy[1];
     document.querySelector("[data-dashboard-description]").textContent = copy[2];
     if (user.role === "company") await setupCompany();
-    if (user.role === "courier") setupCourier();
+    if (user.role === "courier") await setupCourier();
     if (user.role === "client") await setupClient();
   }
 

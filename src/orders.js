@@ -1,5 +1,6 @@
 import { db, transaction } from "./database.js";
 import { MAX_ORDER_WEIGHT_KG } from "./freight.js";
+import { createDeliveryForEligibleOrderInTransaction } from "./delivery-creation.js";
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -470,7 +471,8 @@ export function confirmSimulatedPayment(clientId, orderId, body) {
     }
     const snapshot = paymentSnapshot(order);
     if (order.paymentStatus === "paid") {
-      return mapClientConfirmedOrder(order, snapshot);
+      const ensured = createDeliveryForEligibleOrderInTransaction(order.id);
+      return { order: mapClientConfirmedOrder(order, snapshot), ...ensured };
     }
 
     const update = db.prepare(`UPDATE orders
@@ -483,7 +485,8 @@ export function confirmSimulatedPayment(clientId, orderId, body) {
       throw orderError("O pagamento do pedido foi alterado. Recarregue a situa\u00e7\u00e3o atual.", 409);
     }
     const paid = findOwnedOrderForPayment(clientId, order.id);
-    return mapClientConfirmedOrder(paid, paymentSnapshot(paid));
+    const ensured = createDeliveryForEligibleOrderInTransaction(paid.id);
+    return { order: mapClientConfirmedOrder(paid, paymentSnapshot(paid)), ...ensured };
   });
 }
 
@@ -520,6 +523,12 @@ export function confirmCompanyDraftOrder(companyId, orderId, body) {
 export function createDraftOrder(clientId, body) {
   const input = parseDraftOrder(body);
   return transaction(() => {
+    const client = db.prepare(`SELECT order_blocked_until AS orderBlockedUntil,
+                                      order_blocked_until > CURRENT_TIMESTAMP AS isBlocked
+                               FROM users WHERE id = ? AND role = 'client'`).get(clientId);
+    if (client?.isBlocked) {
+      throw orderError(`Novos pedidos estão bloqueados até ${client.orderBlockedUntil}.`, 409);
+    }
     const company = db.prepare("SELECT id, name FROM companies WHERE id = ? AND status = 'active'")
       .get(input.companyId);
     if (!company) throw orderError("Empresa não encontrada ou indisponível.", 404);
