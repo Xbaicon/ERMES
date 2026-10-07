@@ -110,11 +110,29 @@
         </div>
       </section>
 
+      <section class="dashboard-section" data-delivery-panel="company" hidden>
+        <div class="section-title"><div><p class="eyebrow">ENTREGAS</p><h2>Acompanhamento operacional</h2></div><button class="button button-outline button-small" type="button" data-delivery-reload>Recarregar</button></div>
+        <div class="form-message" data-delivery-message role="status" aria-live="polite" hidden></div>
+        <div class="dashboard-grid client-drafts"><div class="dashboard-card"><h3>Entregas da empresa</h3><div class="catalog-company-list draft-list" data-delivery-list></div></div><div class="dashboard-card draft-editor" data-delivery-detail hidden></div></div>
+      </section>
+
       <section class="dashboard-section" data-courier-panel hidden>
         <div class="dashboard-card availability-card">
           <div><p class="eyebrow">DISPONIBILIDADE</p><h2 data-availability-title>Você está offline</h2><p>Somente motoboys online e sem entrega ativa poderão aceitar uma entrega.</p></div>
           <button class="button button-dark button-large" data-availability-toggle>Ficar online</button>
         </div>
+      </section>
+
+      <section class="dashboard-section" data-delivery-panel="courier" hidden>
+        <div class="section-title"><div><p class="eyebrow">ENTREGAS</p><h2>Jornada operacional</h2></div><button class="button button-outline button-small" type="button" data-delivery-reload>Recarregar</button></div>
+        <div class="form-message" data-delivery-message role="status" aria-live="polite" hidden></div>
+        <div class="dashboard-grid client-drafts"><div class="dashboard-card"><h3>Entrega atual e disponíveis</h3><div class="catalog-company-list draft-list" data-delivery-list></div></div><div class="dashboard-card draft-editor" data-delivery-detail hidden></div></div>
+      </section>
+
+      <section class="dashboard-section" data-delivery-panel="client" hidden>
+        <div class="section-title"><div><p class="eyebrow">ENTREGAS</p><h2>Acompanhe seus pedidos</h2></div><button class="button button-outline button-small" type="button" data-delivery-reload>Recarregar</button></div>
+        <div class="form-message" data-delivery-message role="status" aria-live="polite" hidden></div>
+        <div class="dashboard-grid client-drafts"><div class="dashboard-card"><h3>Suas entregas</h3><div class="catalog-company-list draft-list" data-delivery-list></div></div><div class="dashboard-card draft-editor" data-delivery-detail hidden></div></div>
       </section>
 
       <section class="dashboard-section" data-client-panel hidden>
@@ -141,7 +159,7 @@
               <span>Frete: <strong data-client-payment-freight>Ainda não definido</strong></span>
             </div>
             <p class="form-copy">Este pagamento é uma confirmação simulada do protótipo acadêmico. Não há cobrança real, cartão, Pix ou gateway. Se o frete ainda não estiver definido, ele permanece pendente e não é tratado como gratuito.</p>
-            <p class="form-copy">Pedidos confirmados são somente leitura; o pagamento não reabilita a edição dos itens e não cria uma entrega.</p>
+            <p class="form-copy">Pedidos confirmados são somente leitura. O pagamento garante uma entrega disponível; o código permanece acessível ao cliente no acompanhamento enquanto puder ser usado.</p>
             <button class="button button-dark" type="button" data-client-payment-pay hidden>Confirmar pagamento simulado</button>
           </div>
         </div>

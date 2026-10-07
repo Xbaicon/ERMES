@@ -30,10 +30,24 @@ test("adiciona colunas de pedido a banco existente e repete a migração sem per
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE deliveries (
+      id INTEGER PRIMARY KEY,
+      order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id),
+      courier_id INTEGER REFERENCES users(id),
+      status TEXT NOT NULL DEFAULT 'available',
+      confirmation_code_hash TEXT,
+      invalid_code_attempts INTEGER NOT NULL DEFAULT 0,
+      accepted_at TEXT,
+      collected_at TEXT,
+      completed_at TEXT,
+      last_location_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
     INSERT INTO users (id, role) VALUES (1, 'client');
     INSERT INTO companies (id) VALUES (1);
     INSERT INTO orders (id, client_id, company_id, status, items_total_cents)
       VALUES (1, 1, 1, 'draft', 1234);
+    INSERT INTO deliveries (id, order_id, status) VALUES (1, 1, 'available');
   `);
   legacyDatabase.close();
 
@@ -48,6 +62,17 @@ test("adiciona colunas de pedido a banco existente e repete a migração sem per
   assert.ok(orderColumns.includes("version"));
   assert.ok(orderColumns.includes("confirmed_at"));
   assert.ok(orderColumns.includes("payment_paid_at"));
+  const userColumns = db.prepare("PRAGMA table_info(users)").all().map(({ name }) => name);
+  assert.ok(userColumns.includes("order_blocked_until"));
+  const deliveryColumns = db.prepare("PRAGMA table_info(deliveries)").all().map(({ name }) => name);
+  for (const name of ["cancelled_at", "return_reason", "return_reported_at", "returned_at",
+    "confirmation_code_ciphertext"]) {
+    assert.ok(deliveryColumns.includes(name));
+  }
+  const migratedDelivery = db.prepare(`SELECT confirmation_code_hash AS hash,
+    confirmation_code_ciphertext AS ciphertext FROM deliveries WHERE id = 1`).get();
+  assert.match(migratedDelivery.hash, /^scrypt\$/);
+  assert.match(migratedDelivery.ciphertext, /^aes-256-gcm\$/);
   assert.deepEqual({ ...db.prepare(`SELECT id, status, items_total_cents AS itemsTotalCents,
                                            version, confirmed_at AS confirmedAt,
                                            payment_status AS paymentStatus,
@@ -83,6 +108,7 @@ test("adiciona colunas de pedido a banco existente e repete a migração sem per
   assert.equal(migratedAgain.prepare("SELECT count(*) AS total FROM client_default_addresses")
     .get().total, 1);
 
+  migratedAgain.prepare("DELETE FROM deliveries WHERE order_id = 1").run();
   migratedAgain.prepare("DELETE FROM orders WHERE id = 1").run();
   migratedAgain.prepare("DELETE FROM users WHERE id = 1").run();
   assert.equal(migratedAgain.prepare("SELECT count(*) AS total FROM client_default_addresses")

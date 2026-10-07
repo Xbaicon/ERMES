@@ -27,6 +27,10 @@ O e-mail de acesso é normalizado e único em `users.email`, independentemente d
 | GET | `/company/orders/drafts` | Listar os pedidos `draft` da própria empresa |
 | GET | `/company/orders/:orderId` | Consultar o detalhe de um pedido `draft` da própria empresa |
 | POST | `/company/orders/:orderId/confirm` | Confirmar comercialmente um `draft` da própria empresa |
+| GET | `/company/deliveries` | Listar Entregas da própria empresa |
+| GET | `/company/deliveries/:deliveryId` | Consultar Entrega e histórico da própria empresa |
+| POST | `/company/deliveries/:deliveryId/product-unavailable` | Cancelar antes da coleta por produto indisponível |
+| POST | `/company/deliveries/:deliveryId/confirm-return` | Confirmar recebimento físico do retorno |
 | POST | `/freight/quote` | Exercitar tecnicamente a fórmula com entradas de teste |
 
 ### Parâmetros tarifários
@@ -129,6 +133,9 @@ mapa, GPS, distância ou tempo operacional.
 | GET | `/client/orders/:orderId` | Consultar um pedido `draft` do próprio cliente |
 | PUT | `/client/orders/:orderId/items` | Substituir integralmente os itens de um pedido `draft` próprio |
 | POST | `/client/orders/:orderId/pay` | Confirmar de forma simulada o pagamento de um pedido `confirmed` próprio |
+| GET | `/client/deliveries` | Listar as próprias Entregas |
+| GET | `/client/deliveries/:deliveryId` | Consultar estado e histórico de Entrega própria |
+| POST | `/client/deliveries/:deliveryId/cancel` | Cancelar Entrega própria quando permitido |
 
 Todas as rotas desta seção exigem sessão com papel `client`. Ausência de sessão retorna `401`, e papéis diferentes de `client` retornam `403`.
 
@@ -301,6 +308,12 @@ subtotal, peso, destino preservado, `paymentStatus`, `paymentPaidAt`,
 retorna `404` sem revelar sua existência. Pedido próprio que não esteja
 `confirmed` retorna `409`.
 
+`GET /client/deliveries/:deliveryId` inclui `confirmationCode` enquanto a
+Entrega ainda pode chegar à etapa de confirmação. Isso permite ao cliente
+reconsultar o código após recarregar ou reabrir o painel. O campo deixa de ser
+retornado após conclusão, cancelamento ou encaminhamento definitivo ao retorno.
+Listagens, empresa e motoboy nunca recebem o código nem seus dados internos.
+
 `POST /client/orders/:orderId/pay` confirma o passo de pagamento simulado do
 protótipo acadêmico. O corpo deve ser um objeto vazio (`{}`); valores de itens,
 frete, total, situação ou data de pagamento enviados pelo navegador são
@@ -315,18 +328,20 @@ status: confirmed -> confirmed
 payment_paid_at: null -> horário do servidor
 ```
 
-A transação atualiza somente uma linha que ainda esteja `confirmed`, `pending`
-e sem `payment_paid_at`. Requisições simultâneas produzem uma única transição;
-as demais observam o estado `paid`. Repetir o pagamento de um pedido
-`confirmed` e `paid` retorna HTTP `200`, preservando `payment_paid_at`, itens,
-valores e todos os demais dados, sem efeito adicional.
+A transação atualiza somente uma linha elegível e garante uma Entrega
+`available` com `delivery_created`. Pedido, Entrega, hash do código e evento
+inicial são atômicos. A primeira resposta inclui `order`, `delivery`,
+`created: true` e `confirmationCode`. O banco mantém hash `scrypt` para validar
+e uma representação cifrada para que somente a consulta autenticada do cliente
+possa recuperar o mesmo código durante a operação. Requisições simultâneas
+produzem uma única Entrega e um único evento. Repetições preservam
+identificadores, timestamps, estado e código, retornando `created: false`.
 
 O significado de `paid` nesta etapa é exclusivamente a confirmação simulada do
 passo acadêmico: não há Pix, cartão, gateway, banco, cobrança real, webhook ou
 comprovante. A operação não calcula nem altera frete, não soma um total fictício
-de produtos com frete ausente, não cria tabela ou registro de pagamento, não
-cria Entrega e não produz reembolso ou distribuição financeira. Esses fluxos
-permanecem para etapas posteriores que possuam suas próprias precondições.
+de produtos com frete ausente e não cria tabela financeira, reembolso ou
+distribuição.
 
 Identificador ou corpo inválido retorna `400`; ausência de sessão retorna `401`;
 empresa, motoboy e administrador recebem `403`; recurso alheio ou inexistente
@@ -338,6 +353,41 @@ incompatíveis retornam `409`.
 | Método | Rota | Finalidade |
 | --- | --- | --- |
 | GET/PATCH | `/courier/availability` | Consultar ou alterar online/offline |
+| GET | `/courier/deliveries/available` | Listar Entregas disponíveis da empresa do motoboy |
+| GET | `/courier/deliveries/current` | Consultar a Entrega ativa atribuída e seu histórico |
+| POST | `/courier/deliveries/:id/accept` | Aceitar Entrega disponível |
+| POST | `/courier/deliveries/:id/arrive-pickup` | Registrar chegada ao estabelecimento |
+| POST | `/courier/deliveries/:id/collect` | Registrar coleta |
+| POST | `/courier/deliveries/:id/arrive-destination` | Registrar chegada ao destino |
+| POST | `/courier/deliveries/:id/confirm` | Validar código e concluir |
+| POST | `/courier/deliveries/:id/fail` | Registrar falha com motivo |
+| POST | `/courier/deliveries/:id/occurrences` | Registrar ausência, recusa ou endereço incorreto |
+| POST | `/courier/deliveries/:id/report-return` | Registrar devolução física à empresa |
+
+### Operação e autorização de Entregas
+
+Identificadores de cliente, empresa e motoboy vêm da sessão e das relações no
+banco. Recursos de outra empresa ou cliente retornam `404`. Aceite exige
+motoboy online, da mesma empresa e sem outra Entrega ativa. A Entrega aceita
+passa para `heading_to_pickup` e grava `accepted_at`; coleta grava
+`collected_at`; conclusão grava `completed_at`. Atalhos, retrocessos e ator
+incorreto retornam conflito ou recurso não encontrado.
+
+`POST .../confirm` recebe somente `{ "code": "123456" }`. Código correto em
+`awaiting_confirmation` conclui a Entrega. Cada erro incrementa o contador e
+grava apenas número e horário da tentativa; a resposta usa HTTP `422` com
+`{ "error": "Código inválido." }`. No terceiro erro, a Entrega passa
+para `returning`; não há método alternativo de conclusão. O motoboy registra o
+retorno e a empresa confirma o recebimento. Hashes, códigos digitados, sessão e
+dados cadastrais sensíveis não aparecem nas respostas.
+
+Falha do motoboy antes da coleta redisponibiliza a mesma Entrega; depois da
+coleta exige retorno e, após a dupla verificação, permite redisponibilização.
+Cancelamento do cliente antes da coleta encerra como `cancelled`; depois da
+coleta exige retorno. Cancelamento ocorrido mais de três minutos após a coleta
+bloqueia novos pedidos por duas horas. Ausência, recusa e endereço incorreto
+também exigem retorno. Os corpos de transições sem parâmetros devem ser `{}`.
+Não há dependência de GPS, mapa, geocodificação, rota, distância ou tempo.
 
 ## Observação sobre frete
 

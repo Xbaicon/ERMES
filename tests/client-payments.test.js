@@ -68,7 +68,7 @@ test("envio de pagamento bloqueia requisicoes concorrentes no navegador", async 
   assert.deepEqual(JSON.parse(calls[0].options.body), {});
   assert.equal(await duplicate, null);
   complete({ order: { ...pendingOrder, paymentStatus: "paid", paymentPaidAt: "2026-10-01 10:05:00" } });
-  assert.equal((await first).paymentStatus, "paid");
+  assert.equal((await first).order.paymentStatus, "paid");
   assert.equal(submitter.pending, false);
 });
 

@@ -175,7 +175,7 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     assert.deepEqual(storedOrder(otherConfirmed.id), before);
   });
 
-  await context.test("confirma pagamento simulado preservando valores e sem criar efeitos posteriores", async () => {
+  await context.test("confirma pagamento, cria entrega e protege o código persistido", async () => {
     const before = { order: storedOrder(ownConfirmed.id), items: storedItems(ownConfirmed.id) };
     assert.equal(before.order.status, "confirmed");
     assert.equal(before.order.paymentStatus, "pending");
@@ -183,7 +183,10 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     assert.equal(before.order.freightTotalCents, null);
     const response = await pay(firstClient.cookie, ownConfirmed.id);
     assert.equal(response.status, 200);
-    const paid = (await response.json()).order;
+    const payment = await response.json();
+    const paid = payment.order;
+    assert.match(payment.confirmationCode, /^\d{6}$/);
+    assert.equal(payment.delivery.status, "available");
     assert.equal(paid.status, "confirmed");
     assert.equal(paid.paymentStatus, "paid");
     assert.match(paid.paymentPaidAt, /^\d{4}-\d{2}-\d{2} /);
@@ -200,7 +203,12 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     assert.equal(after.destinationSnapshotJson, before.order.destinationSnapshotJson);
     assert.equal(after.confirmedAt, before.order.confirmedAt);
     assert.deepEqual(storedItems(ownConfirmed.id), before.items);
-    assert.equal(db.prepare("SELECT COUNT(*) AS value FROM deliveries").get().value, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS value FROM deliveries").get().value, 1);
+    const storedDelivery = db.prepare("SELECT * FROM deliveries WHERE order_id = ?").get(ownConfirmed.id);
+    assert.match(storedDelivery.confirmation_code_hash, /^scrypt\$/);
+    assert.match(storedDelivery.confirmation_code_ciphertext, /^aes-256-gcm\$/);
+    assert.equal(JSON.stringify(storedDelivery).includes(payment.confirmationCode), false);
+    assert.equal(db.prepare("SELECT COUNT(*) AS value FROM delivery_events WHERE delivery_id = ? AND event_type = 'delivery_created'").get(storedDelivery.id).value, 1);
     const forbiddenTables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'
       AND lower(name) IN ('payments', 'refunds', 'reimbursements', 'financial_distributions')`).all();
     assert.deepEqual(forbiddenTables, []);
@@ -211,7 +219,13 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
       deliveries: db.prepare("SELECT COUNT(*) AS value FROM deliveries").get().value };
     const response = await pay(firstClient.cookie, ownConfirmed.id);
     assert.equal(response.status, 200);
-    const repeated = (await response.json()).order;
+    const repeatedResult = await response.json();
+    const repeated = repeatedResult.order;
+    assert.equal(repeatedResult.confirmationCode.length, 6);
+    const detail = await request(`/api/client/deliveries/${repeatedResult.delivery.id}`,
+      { cookie: firstClient.cookie });
+    assert.equal(detail.status, 200);
+    assert.equal((await detail.json()).delivery.confirmationCode, repeatedResult.confirmationCode);
     assert.equal(repeated.paymentStatus, "paid");
     assert.equal(repeated.paymentPaidAt, before.order.paymentPaidAt);
     assert.deepEqual({ order: storedOrder(ownConfirmed.id), items: storedItems(ownConfirmed.id),
@@ -241,8 +255,12 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     ]);
     assert.equal(first.status, 200);
     assert.equal(second.status, 200);
-    const firstOrder = (await first.json()).order;
-    const secondOrder = (await second.json()).order;
+    const firstResult = await first.json();
+    const secondResult = await second.json();
+    const firstOrder = firstResult.order;
+    const secondOrder = secondResult.order;
+    assert.equal(firstResult.confirmationCode, secondResult.confirmationCode);
+    assert.equal(firstResult.delivery.id, secondResult.delivery.id);
     assert.equal(firstOrder.paymentStatus, "paid");
     assert.equal(secondOrder.paymentStatus, "paid");
     assert.equal(firstOrder.paymentPaidAt, secondOrder.paymentPaidAt);
@@ -250,7 +268,10 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     assert.equal(db.prepare("SELECT COUNT(*) AS value FROM payment_transition_audit WHERE order_id = ?")
       .get(concurrentConfirmed.id).value, 1);
     assert.equal(storedOrder(concurrentConfirmed.id).freightTotalCents, null);
-    assert.equal(db.prepare("SELECT COUNT(*) AS value FROM deliveries").get().value, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS value FROM deliveries").get().value, 2);
+    assert.equal(db.prepare("SELECT COUNT(*) AS value FROM deliveries WHERE order_id = ?").get(concurrentConfirmed.id).value, 1);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS value FROM delivery_events e JOIN deliveries d ON d.id = e.delivery_id
+      WHERE d.order_id = ? AND e.event_type = 'delivery_created'`).get(concurrentConfirmed.id).value, 1);
   });
 
   await context.test("rejeita dados comerciais persistidos inconsistentes sem pagamento parcial", async () => {
@@ -264,6 +285,21 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     assert.deepEqual(storedOrder(confirmed.id), before);
     assert.equal(before.paymentStatus, "pending");
     assert.equal(before.paymentPaidAt, null);
+  });
+
+  await context.test("falha no evento inicial desfaz pagamento e entrega na mesma transação", async () => {
+    const draft = await createDraft(firstClient.cookie, company.id, product.id);
+    const confirmed = await confirmDraft(companyCookie, draft);
+    db.exec(`CREATE TRIGGER fail_delivery_created BEFORE INSERT ON delivery_events
+             WHEN NEW.event_type = 'delivery_created'
+             BEGIN SELECT RAISE(ABORT, 'forced delivery event failure'); END;`);
+    const response = await pay(firstClient.cookie, confirmed.id);
+    assert.equal(response.status, 500);
+    assert.equal(storedOrder(confirmed.id).paymentStatus, "pending");
+    assert.equal(storedOrder(confirmed.id).paymentPaidAt, null);
+    assert.equal(db.prepare("SELECT COUNT(*) AS total FROM deliveries WHERE order_id = ?")
+      .get(confirmed.id).total, 0);
+    db.exec("DROP TRIGGER fail_delivery_created");
   });
 
   await context.test("rejeita situacao de pagamento persistida incompativel", async () => {

@@ -2,7 +2,9 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { hashPassword } from "./security.js";
+import {
+  encryptConfirmationCode, hashConfirmationCode, hashPassword, newConfirmationCode,
+} from "./security.js";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databasePath = process.env.ERMES_DB_PATH || resolve(projectRoot, "data", "ermes.sqlite");
@@ -34,6 +36,7 @@ db.exec(`
     phone TEXT,
     password_hash TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'pending', 'blocked')),
+    order_blocked_until TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK(role NOT IN ('company', 'courier') OR company_id IS NOT NULL)
   );
@@ -114,10 +117,15 @@ db.exec(`
     courier_id INTEGER REFERENCES users(id),
     status TEXT NOT NULL DEFAULT 'available',
     confirmation_code_hash TEXT,
+    confirmation_code_ciphertext TEXT,
     invalid_code_attempts INTEGER NOT NULL DEFAULT 0,
     accepted_at TEXT,
     collected_at TEXT,
     completed_at TEXT,
+    cancelled_at TEXT,
+    return_reason TEXT,
+    return_reported_at TEXT,
+    returned_at TEXT,
     last_location_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -152,6 +160,41 @@ if (!orderColumns.has("confirmed_at")) {
 }
 if (!orderColumns.has("payment_paid_at")) {
   db.exec("ALTER TABLE orders ADD COLUMN payment_paid_at TEXT");
+}
+
+const userColumns = new Set(db.prepare("PRAGMA table_info(users)").all().map(({ name }) => name));
+if (!userColumns.has("order_blocked_until")) {
+  db.exec("ALTER TABLE users ADD COLUMN order_blocked_until TEXT");
+}
+
+const deliveryColumns = new Set(db.prepare("PRAGMA table_info(deliveries)").all().map(({ name }) => name));
+for (const [name, definition] of [
+  ["cancelled_at", "TEXT"],
+  ["return_reason", "TEXT"],
+  ["return_reported_at", "TEXT"],
+  ["returned_at", "TEXT"],
+  ["confirmation_code_ciphertext", "TEXT"],
+]) {
+  if (!deliveryColumns.has(name)) db.exec(`ALTER TABLE deliveries ADD COLUMN ${name} ${definition}`);
+}
+
+const deliveriesWithoutRecoverableCode = db.prepare(`SELECT id FROM deliveries
+  WHERE confirmation_code_ciphertext IS NULL
+    AND status IN ('available', 'heading_to_pickup', 'awaiting_pickup', 'in_transit', 'awaiting_confirmation')`).all();
+if (deliveriesWithoutRecoverableCode.length) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const updateCode = db.prepare(`UPDATE deliveries
+      SET confirmation_code_hash = ?, confirmation_code_ciphertext = ? WHERE id = ?`);
+    for (const { id } of deliveriesWithoutRecoverableCode) {
+      const code = newConfirmationCode();
+      updateCode.run(hashConfirmationCode(code), encryptConfirmationCode(code), id);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function transaction(work) {

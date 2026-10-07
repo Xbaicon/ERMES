@@ -79,7 +79,9 @@ test("painel conecta consulta e pagamento simulado dos pedidos confirmados", asy
   assert.match(html, /data-client-payment-pay hidden/);
   assert.match(html, /pagamento . uma confirma..o simulada/i);
   assert.match(html, /n.o h. cobran.a real, cart.o, Pix ou gateway/i);
-  assert.match(html, /n.o cria uma entrega/i);
+  assert.match(html, /pagamento garante uma entrega dispon.vel/i);
+  assert.match(html, /c.digo permanece acess.vel ao cliente/i);
+  assert.match(html, /data-delivery-panel="client"/);
   assert.doesNotMatch(html, /\uFFFD/);
   assert.doesNotMatch(payments, /\uFFFD/);
   assert.match(panel, /import \{ setupClientPayments \} from "\.\/client-payments\.js"/);

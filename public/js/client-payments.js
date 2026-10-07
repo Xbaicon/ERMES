@@ -6,11 +6,11 @@ export function createPaymentSubmitter(orderId, api) {
       if (pending) return null;
       pending = true;
       try {
-        const { order } = await api(`/api/client/orders/${orderId}/pay`, {
+        const result = await api(`/api/client/orders/${orderId}/pay`, {
           method: "POST",
           body: "{}",
         });
-        return order;
+        return result;
       } finally {
         pending = false;
       }
@@ -154,8 +154,9 @@ export async function setupClientPayments({ api, money, escapeHtml, showMessage 
     const operation = submitter.pay();
     renderDetail();
     try {
-      const order = await operation;
-      if (!order) return;
+      const result = await operation;
+      if (!result) return;
+      const { order, confirmationCode } = result;
       selectedOrder = order;
       const summary = orders.find(({ id }) => id === order.id);
       if (summary) Object.assign(summary, {
@@ -163,7 +164,12 @@ export async function setupClientPayments({ api, money, escapeHtml, showMessage 
         paymentPaidAt: order.paymentPaidAt,
       });
       renderDetail();
-      showMessage(message, `Pagamento simulado do pedido #${order.id} confirmado.`, "success");
+      showMessage(message, confirmationCode
+        ? `Pagamento confirmado. Código da entrega: ${confirmationCode}. Guarde-o e repasse somente ao destinatário autorizado.`
+        : `Pagamento simulado do pedido #${order.id} confirmado.`, "success");
+      if (typeof CustomEvent !== "undefined") {
+        document.dispatchEvent?.(new CustomEvent("ermes:delivery-changed"));
+      }
     } catch (error) {
       const orderId = selectedId;
       if (error.status === 409 && orderId) await loadOrder(orderId);

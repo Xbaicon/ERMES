@@ -2,5 +2,6 @@ node_modules/
 data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
+data/*.confirmation-key
 *.log
 .DS_Store
