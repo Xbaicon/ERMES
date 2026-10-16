@@ -67,6 +67,8 @@ test("painel do cliente conecta catálogo e carrinho acessíveis à criação dr
   assert.match(html, /data-client-order-recipient-summary/);
   assert.match(html, /src="\.\.\/js\/painel\.js" type="module"/);
   assert.match(script, /import \{ setupClientCatalog \} from "\.\/client-cart\.js"/);
+  assert.match(script, /async function setupClient\(user\)/);
+  assert.match(script, /if \(user\.role === "client"\) await setupClient\(user\)/);
   assert.match(cart, /api\("\/api\/client\/companies"\)/);
   assert.match(cart, /api\(`\/api\/client\/companies\/\$\{company\.id\}\/products`\)/);
   assert.match(cart, /api\("\/api\/client\/orders"/);
