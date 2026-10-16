@@ -191,7 +191,7 @@ import { setupDeliveryPanel } from "./delivery-panels.js";
     }
   }
 
-  async function setupClient() {
+  async function setupClient(user) {
     document.querySelectorAll("[data-client-panel]").forEach((element) => { element.hidden = false; });
     const dependencies = { api, money, escapeHtml, showMessage, user };
     await Promise.all([
@@ -218,7 +218,7 @@ import { setupDeliveryPanel } from "./delivery-panels.js";
     document.querySelector("[data-dashboard-description]").textContent = copy[2];
     if (user.role === "company") await setupCompany();
     if (user.role === "courier") await setupCourier();
-    if (user.role === "client") await setupClient();
+    if (user.role === "client") await setupClient(user);
   }
 
   document.querySelector("[data-logout]").addEventListener("click", async () => {
