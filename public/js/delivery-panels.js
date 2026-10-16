@@ -73,6 +73,8 @@ export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage })
       <p class="catalog-status success"><strong>${escapeHtml(labels[selected.status] || selected.status)}</strong></p>
       <p class="form-copy"><strong>Pedido:</strong> #${selected.orderId} · <strong>Empresa:</strong> ${escapeHtml(selected.company.name)}</p>
       ${selected.destination ? `<p class="form-copy"><strong>Destino:</strong> ${escapeHtml(address(selected.destination))}</p>` : ""}
+      ${selected.recipient ? `<p class="form-copy"><strong>Destinatário:</strong> ${escapeHtml(selected.recipient.type === "self"
+        ? `Próprio cliente: ${selected.recipient.name}` : `Outra pessoa: ${selected.recipient.name}`)}</p>` : ""}
       ${selected.client ? `<p class="form-copy"><strong>Cliente:</strong> ${escapeHtml(selected.client.fullName)}${selected.client.phone ? ` · ${escapeHtml(selected.client.phone)}` : ""}</p>` : ""}
       <p class="form-copy"><strong>Motoboy:</strong> ${escapeHtml(selected.courier?.fullName || "Ainda não atribuído")}</p>
       ${selected.courier ? `<p class="form-copy"><strong>Veículo:</strong> ${escapeHtml([selected.courier.vehicleType, selected.courier.vehicleIdentifier, selected.courier.plate].filter(Boolean).join(" · "))}</p>` : ""}

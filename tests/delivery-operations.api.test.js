@@ -70,11 +70,13 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     offline: await login("offline@ermes.local"), otherCourier: await login("outro@ermes.local"),
   };
   function createDelivery(companyId = company1, clientId = client1) {
+    const recipient = JSON.stringify({ type: "self",
+      name: db.prepare("SELECT full_name AS fullName FROM users WHERE id = ?").get(clientId).fullName });
     const orderId = Number(db.prepare(`INSERT INTO orders
-      (client_id, company_id, status, destination_snapshot_json, items_total_cents,
+      (client_id, company_id, status, destination_snapshot_json, recipient_snapshot_json, items_total_cents,
        payment_status, payment_paid_at, confirmed_at)
-      VALUES (?, ?, 'confirmed', ?, 1000, 'paid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
-      .run(clientId, companyId, destination).lastInsertRowid);
+      VALUES (?, ?, 'confirmed', ?, ?, 1000, 'paid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+      .run(clientId, companyId, destination, recipient).lastInsertRowid);
     return transaction(() => createDeliveryForEligibleOrderInTransaction(orderId));
   }
   const post = (cookie, id, action, body = {}) => request(`/api/courier/deliveries/${id}/${action}`,

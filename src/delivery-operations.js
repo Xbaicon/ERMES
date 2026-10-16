@@ -48,6 +48,7 @@ function findDelivery(id) {
                             o.items_total_cents AS itemsTotalCents,
                             o.freight_total_cents AS freightTotalCents,
                             o.destination_snapshot_json AS destinationSnapshotJson,
+                            o.recipient_snapshot_json AS recipientSnapshotJson,
                             c.name AS companyName, c.address_json AS pickupAddressJson,
                             client.full_name AS clientName, client.phone AS clientPhone,
                             courier.full_name AS courierName,
@@ -67,9 +68,25 @@ function parseJson(value) {
   try { return JSON.parse(value || "{}"); } catch { return {}; }
 }
 
+function parseRecipientSnapshot(value) {
+  let snapshot;
+  try {
+    snapshot = JSON.parse(value);
+  } catch {
+    throw deliveryError("O destinatário preservado do pedido é inválido.", 500);
+  }
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)
+    || !["self", "other"].includes(snapshot.type)
+    || typeof snapshot.name !== "string" || !snapshot.name.trim()
+    || Object.keys(snapshot).some((field) => !["type", "name"].includes(field))) {
+    throw deliveryError("O destinatário preservado do pedido é inválido.", 500);
+  }
+  return { type: snapshot.type, name: snapshot.name.trim() };
+}
+
 function publicDelivery(row, {
   includeAmounts = false, includeClient = false, includeCourier = false,
-  includeDestination = false, includePickupAddress = false,
+  includeDestination = false, includePickupAddress = false, includeRecipient = false,
 } = {}) {
   const delivery = {
     id: row.id, orderId: row.orderId, status: row.status,
@@ -84,6 +101,9 @@ function publicDelivery(row, {
     delivery.freightTotalCents = row.freightTotalCents;
   }
   if (includeDestination) delivery.destination = parseJson(row.destinationSnapshotJson);
+  if (includeRecipient) {
+    delivery.recipient = parseRecipientSnapshot(row.recipientSnapshotJson);
+  }
   if (includePickupAddress) delivery.pickupAddress = parseJson(row.pickupAddressJson);
   if (includeClient) delivery.client = { fullName: row.clientName, phone: row.clientPhone || null };
   if (includeCourier) delivery.courier = row.courierId ? {
@@ -111,14 +131,14 @@ function withHistory(row, options) {
 }
 
 const courierView = (row) => withHistory(row, {
-  includeClient: true, includeDestination: true, includePickupAddress: true,
+  includeClient: true, includeDestination: true, includePickupAddress: true, includeRecipient: true,
 });
 const clientView = (row) => withHistory(row, {
-  includeAmounts: true, includeCourier: true, includeDestination: true,
+  includeAmounts: true, includeCourier: true, includeDestination: true, includeRecipient: true,
 });
 const companyView = (row) => withHistory(row, {
   includeAmounts: true, includeClient: true, includeCourier: true,
-  includeDestination: true, includePickupAddress: true,
+  includeDestination: true, includePickupAddress: true, includeRecipient: true,
 });
 
 function event(deliveryId, actorUserId, eventType, details = {}) {

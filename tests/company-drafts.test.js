@@ -23,6 +23,7 @@ test("erro ao consultar detalhe permanece visível e libera nova tentativa", asy
   const selectors = [
     "[data-company-drafts-list]", "[data-company-drafts-status]", "[data-company-drafts-reload]",
     "[data-company-draft-detail]", "[data-company-draft-title]", "[data-company-draft-address]",
+    "[data-company-draft-recipient]",
     "[data-company-draft-items]", "[data-company-draft-subtotal]", "[data-company-draft-weight]",
     "[data-company-draft-message]", "[data-company-draft-confirm]",
   ];
@@ -66,6 +67,7 @@ test("confirmacao envia a versao analisada, bloqueia duplo clique e atualiza a l
   const selectors = [
     "[data-company-drafts-list]", "[data-company-drafts-status]", "[data-company-drafts-reload]",
     "[data-company-draft-detail]", "[data-company-draft-title]", "[data-company-draft-address]",
+    "[data-company-draft-recipient]",
     "[data-company-draft-items]", "[data-company-draft-subtotal]", "[data-company-draft-weight]",
     "[data-company-draft-message]", "[data-company-draft-confirm]",
   ];
@@ -82,6 +84,7 @@ test("confirmacao envia a versao analisada, bloqueia duplo clique e atualiza a l
     itemsTotalCents: 2000, weightKg: 1,
     destinationSnapshot: { postalCode: "01001000", state: "SP", city: "Sao Paulo",
       neighborhood: "Centro", street: "Rua Um", number: "10", complement: "" },
+    recipientSnapshot: { type: "self", name: "Cliente Teste" },
   };
   let completeConfirmation;
   const confirmationCalls = [];
@@ -134,6 +137,7 @@ test("conflito recarrega a versao atual antes de permitir nova confirmacao", asy
   const selectors = [
     "[data-company-drafts-list]", "[data-company-drafts-status]", "[data-company-drafts-reload]",
     "[data-company-draft-detail]", "[data-company-draft-title]", "[data-company-draft-address]",
+    "[data-company-draft-recipient]",
     "[data-company-draft-items]", "[data-company-draft-subtotal]", "[data-company-draft-weight]",
     "[data-company-draft-message]", "[data-company-draft-confirm]",
   ];
@@ -157,6 +161,7 @@ test("conflito recarrega a versao atual antes de permitir nova confirmacao", asy
           itemsTotalCents: 1000 * detailVersion, weightKg: detailVersion,
           destinationSnapshot: { postalCode: "01001000", state: "SP", city: "Sao Paulo",
             neighborhood: "Centro", street: "Rua Um", number: "10", complement: "" },
+          recipientSnapshot: { type: "other", name: "Porteiro Teste" },
         } };
         if (path === "/api/company/orders/8/confirm") {
           const version = JSON.parse(options.body).version;

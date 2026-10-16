@@ -41,6 +41,22 @@ function requireValidDestinationSnapshot(value) {
   return snapshot;
 }
 
+function requireValidRecipientSnapshot(value) {
+  let snapshot;
+  try {
+    snapshot = JSON.parse(value);
+  } catch {
+    throw deliveryCreationError("O pedido não possui um destinatário preservado válido.");
+  }
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)
+    || !["self", "other"].includes(snapshot.type)
+    || typeof snapshot.name !== "string" || !snapshot.name.trim()
+    || Object.keys(snapshot).some((field) => !["type", "name"].includes(field))) {
+    throw deliveryCreationError("O pedido não possui um destinatário preservado válido.");
+  }
+  return snapshot;
+}
+
 function findDeliveryByOrderId(orderId) {
   const delivery = db.prepare(`SELECT id, order_id AS orderId, courier_id AS courierId, status,
                                       confirmation_code_hash AS confirmationCodeHash,
@@ -87,7 +103,8 @@ export function createDeliveryForEligibleOrderInTransaction(orderId) {
     }
 
     const order = db.prepare(`SELECT id, status, payment_status AS paymentStatus,
-                                    destination_snapshot_json AS destinationSnapshotJson
+                                    destination_snapshot_json AS destinationSnapshotJson,
+                                    recipient_snapshot_json AS recipientSnapshotJson
                              FROM orders WHERE id = ?`).get(validOrderId);
     if (!order) throw deliveryCreationError("Pedido não encontrado.", 404);
     if (order.status !== "confirmed") {
@@ -97,6 +114,7 @@ export function createDeliveryForEligibleOrderInTransaction(orderId) {
       throw deliveryCreationError("O pagamento do pedido ainda não está confirmado.");
     }
     requireValidDestinationSnapshot(order.destinationSnapshotJson);
+    requireValidRecipientSnapshot(order.recipientSnapshotJson);
 
     const confirmationCode = newConfirmationCode();
     const result = db.prepare(`INSERT INTO deliveries

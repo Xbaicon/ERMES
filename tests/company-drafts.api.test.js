@@ -117,12 +117,14 @@ test("API de consulta de pedidos draft pela empresa", async (context) => {
     assert.equal(response.status, 200);
     const { order } = await response.json();
     assert.deepEqual(Object.keys(order).sort(), [
-      "destinationSnapshot", "id", "items", "itemsTotalCents", "status", "version", "weightKg",
+      "destinationSnapshot", "id", "items", "itemsTotalCents", "recipientSnapshot",
+      "status", "version", "weightKg",
     ]);
     assert.equal(order.id, ownDraft.id);
     assert.equal(order.status, "draft");
     assert.equal(order.version, 1);
     assert.deepEqual(order.destinationSnapshot, address);
+    assert.deepEqual(order.recipientSnapshot, { type: "self", name: "Cliente de teste" });
     assert.deepEqual(order.items, ownDraft.items);
     assert.equal(order.itemsTotalCents, 3980);
     assert.equal(order.weightKg, 1);

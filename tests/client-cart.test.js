@@ -76,3 +76,26 @@ test("erro de envio preserva itens para correção ou nova tentativa", async () 
   assert.deepEqual(await submitter.submit(), { id: 43, status: "draft" });
   assert.deepEqual(cart.lines(), []);
 });
+
+test("envio inclui somente a escolha explícita de destino e destinatário", async () => {
+  const cart = createCart();
+  cart.add(company, product);
+  let sent;
+  const submitter = createCartSubmitter(cart, async (_path, options) => {
+    sent = JSON.parse(options.body);
+    return { order: { id: 44, status: "draft" } };
+  });
+  const destination = { type: "manual", address: {
+    postalCode: "20040002", state: "RJ", city: "Rio de Janeiro", neighborhood: "Centro",
+    street: "Rua da Assembleia", number: "25", complement: "",
+  } };
+  const recipient = { type: "other", name: "Pessoa Autorizada" };
+  await submitter.submit({ destination, recipient });
+  assert.deepEqual(sent, {
+    companyId: company.id,
+    items: [{ productId: product.id, quantity: 1 }],
+    destination,
+    recipient,
+  });
+  assert.equal(Object.hasOwn(sent.recipient, "phone"), false);
+});

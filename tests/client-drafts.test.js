@@ -28,6 +28,7 @@ const order = {
     postalCode: "01001000", state: "SP", city: "São Paulo", neighborhood: "Sé",
     street: "Praça da Sé", number: "10", complement: "",
   },
+  recipientSnapshot: { type: "self", name: "Cliente Teste" },
 };
 
 test("editor altera quantidades, remove e adiciona produtos calculando a prévia", () => {
@@ -105,7 +106,8 @@ test("interface informa quando a empresa confirma enquanto o cliente editava", a
   const selectors = [
     "[data-client-drafts-list]", "[data-client-drafts-status]", "[data-client-drafts-reload]",
     "[data-client-draft-detail]", "[data-client-draft-title]", "[data-client-draft-company]",
-    "[data-client-draft-address]", "[data-client-draft-items]", "[data-client-draft-subtotal]",
+    "[data-client-draft-address]", "[data-client-draft-recipient]",
+    "[data-client-draft-items]", "[data-client-draft-subtotal]",
     "[data-client-draft-weight]", "[data-client-draft-editor-status]", "[data-client-draft-message]",
     "[data-client-draft-products]", "[data-client-draft-products-status]", "[data-client-draft-save]",
   ];

@@ -168,6 +168,9 @@ import { setupDeliveryPanel } from "./delivery-panels.js";
       try {
         const result = await api("/api/client/default-address", { method: "PUT", body: JSON.stringify(address) });
         fillForm(result.defaultAddress);
+        document.dispatchEvent(new CustomEvent("ermes:default-address-changed", {
+          detail: { defaultAddress: result.defaultAddress },
+        }));
         showMessage(message, "Endereço padrão salvo com sucesso.", "success");
       } catch (error) {
         showMessage(message, error.message);
@@ -190,7 +193,7 @@ import { setupDeliveryPanel } from "./delivery-panels.js";
 
   async function setupClient() {
     document.querySelectorAll("[data-client-panel]").forEach((element) => { element.hidden = false; });
-    const dependencies = { api, money, escapeHtml, showMessage };
+    const dependencies = { api, money, escapeHtml, showMessage, user };
     await Promise.all([
       setupDefaultAddress(),
       setupClientCatalog(dependencies),

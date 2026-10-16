@@ -12,7 +12,8 @@ test("adiciona colunas de pedido a banco existente e repete a migração sem per
   legacyDatabase.exec(`
     CREATE TABLE users (
       id INTEGER PRIMARY KEY,
-      role TEXT NOT NULL
+      role TEXT NOT NULL,
+      full_name TEXT NOT NULL
     );
     CREATE TABLE companies (
       id INTEGER PRIMARY KEY
@@ -43,7 +44,7 @@ test("adiciona colunas de pedido a banco existente e repete a migração sem per
       last_location_json TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
-    INSERT INTO users (id, role) VALUES (1, 'client');
+    INSERT INTO users (id, role, full_name) VALUES (1, 'client', 'Cliente Legado');
     INSERT INTO companies (id) VALUES (1);
     INSERT INTO orders (id, client_id, company_id, status, items_total_cents)
       VALUES (1, 1, 1, 'draft', 1234);
@@ -62,6 +63,7 @@ test("adiciona colunas de pedido a banco existente e repete a migração sem per
   assert.ok(orderColumns.includes("version"));
   assert.ok(orderColumns.includes("confirmed_at"));
   assert.ok(orderColumns.includes("payment_paid_at"));
+  assert.ok(orderColumns.includes("recipient_snapshot_json"));
   const userColumns = db.prepare("PRAGMA table_info(users)").all().map(({ name }) => name);
   assert.ok(userColumns.includes("order_blocked_until"));
   const deliveryColumns = db.prepare("PRAGMA table_info(deliveries)").all().map(({ name }) => name);
@@ -81,6 +83,8 @@ test("adiciona colunas de pedido a banco existente e repete a migração sem per
     id: 1, status: "draft", itemsTotalCents: 1234, version: 1, confirmedAt: null,
     paymentStatus: "pending", paymentPaidAt: null,
   });
+  assert.deepEqual(JSON.parse(db.prepare("SELECT recipient_snapshot_json AS value FROM orders WHERE id = 1")
+    .get().value), { type: "self", name: "Cliente Legado" });
 
   db.prepare(`INSERT INTO client_default_addresses
                 (client_id, postal_code, state, city, neighborhood, street, number)
@@ -97,6 +101,7 @@ test("adiciona colunas de pedido a banco existente e repete a migração sem per
   const columnsAfterRerun = migratedAgain.prepare("PRAGMA table_info(orders)").all()
     .map(({ name }) => name);
   assert.equal(columnsAfterRerun.filter((name) => name === "payment_paid_at").length, 1);
+  assert.equal(columnsAfterRerun.filter((name) => name === "recipient_snapshot_json").length, 1);
   assert.deepEqual({ ...migratedAgain.prepare(`SELECT id, status, items_total_cents AS itemsTotalCents,
                                                        version, confirmed_at AS confirmedAt,
                                                        payment_status AS paymentStatus,
@@ -105,6 +110,9 @@ test("adiciona colunas de pedido a banco existente e repete a migração sem per
     id: 1, status: "draft", itemsTotalCents: 1234, version: 1, confirmedAt: null,
     paymentStatus: "pending", paymentPaidAt: null,
   });
+  assert.deepEqual(JSON.parse(migratedAgain.prepare(
+    "SELECT recipient_snapshot_json AS value FROM orders WHERE id = 1",
+  ).get().value), { type: "self", name: "Cliente Legado" });
   assert.equal(migratedAgain.prepare("SELECT count(*) AS total FROM client_default_addresses")
     .get().total, 1);
 

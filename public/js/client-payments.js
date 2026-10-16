@@ -28,6 +28,7 @@ export async function setupClientPayments({ api, money, escapeHtml, showMessage 
   const status = document.querySelector("[data-client-payment-status]");
   const confirmedAt = document.querySelector("[data-client-payment-confirmed-at]");
   const paidAt = document.querySelector("[data-client-payment-paid-at]");
+  const recipient = document.querySelector("[data-client-payment-recipient]");
   const items = document.querySelector("[data-client-payment-items]");
   const subtotal = document.querySelector("[data-client-payment-subtotal]");
   const freight = document.querySelector("[data-client-payment-freight]");
@@ -68,6 +69,9 @@ export async function setupClientPayments({ api, money, escapeHtml, showMessage 
       selectedOrder.paymentStatus === "paid" ? "success" : "");
     confirmedAt.textContent = selectedOrder.confirmedAt;
     paidAt.textContent = selectedOrder.paymentPaidAt || "Ainda não confirmado";
+    recipient.textContent = selectedOrder.recipientSnapshot.type === "self"
+      ? `Você (${selectedOrder.recipientSnapshot.name})`
+      : `Outra pessoa: ${selectedOrder.recipientSnapshot.name}`;
     items.innerHTML = selectedOrder.items.map((item) => `
       <div class="cart-item">
         <div><strong>${escapeHtml(item.name)}</strong><small>${item.quantity} unidade(s) • ${money(item.unitPriceCents)} cada</small></div>

@@ -29,12 +29,14 @@ test("criação persistente e idempotente da entrega", async (context) => {
   };
 
   function createOrder({ status = "confirmed", paymentStatus = "paid",
-    destinationSnapshotJson = JSON.stringify(validDestination), freightTotalCents = null } = {}) {
+    destinationSnapshotJson = JSON.stringify(validDestination),
+    recipientSnapshotJson = JSON.stringify({ type: "self", name: "Cliente logística" }),
+    freightTotalCents = null } = {}) {
     return Number(db.prepare(`INSERT INTO orders
-      (client_id, company_id, status, destination_snapshot_json, items_total_cents,
+      (client_id, company_id, status, destination_snapshot_json, recipient_snapshot_json, items_total_cents,
        freight_total_cents, payment_status)
-      VALUES (?, ?, ?, ?, 1000, ?, ?)`).run(clientId, companyId, status,
-      destinationSnapshotJson, freightTotalCents, paymentStatus).lastInsertRowid);
+      VALUES (?, ?, ?, ?, ?, 1000, ?, ?)`).run(clientId, companyId, status,
+      destinationSnapshotJson, recipientSnapshotJson, freightTotalCents, paymentStatus).lastInsertRowid);
   }
 
   function storedDelivery(orderId) {
@@ -171,6 +173,25 @@ test("criação persistente e idempotente da entrega", async (context) => {
       const orderId = createOrder({ destinationSnapshotJson });
       assert.throws(() => createDeliveryForEligibleOrder(orderId), {
         message: "O pedido não possui um destino preservado válido.",
+        statusCode: 409,
+      });
+      assert.equal(storedDelivery(orderId), null);
+    }
+  });
+
+  await context.test("rejeita destinatário ausente, malformado ou incompleto", () => {
+    for (const recipientSnapshotJson of [
+      null,
+      "json inválido",
+      JSON.stringify({}),
+      JSON.stringify({ type: "unknown", name: "Pessoa" }),
+      JSON.stringify({ type: "other", name: " " }),
+      JSON.stringify({ type: "self", name: "Cliente", phone: "71999999999" }),
+      JSON.stringify([]),
+    ]) {
+      const orderId = createOrder({ recipientSnapshotJson });
+      assert.throws(() => createDeliveryForEligibleOrder(orderId), {
+        message: "O pedido não possui um destinatário preservado válido.",
         statusCode: 409,
       });
       assert.equal(storedDelivery(orderId), null);

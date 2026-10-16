@@ -37,7 +37,9 @@ export function createDraftEditor(initialOrder) {
       || !nextOrder.company || !validPositiveInteger(nextOrder.company.id)
       || !Array.isArray(nextOrder.items) || !nextOrder.items.length
       || !nextOrder.destinationSnapshot || typeof nextOrder.destinationSnapshot !== "object"
-      || Array.isArray(nextOrder.destinationSnapshot)) {
+      || Array.isArray(nextOrder.destinationSnapshot)
+      || !nextOrder.recipientSnapshot || !["self", "other"].includes(nextOrder.recipientSnapshot.type)
+      || typeof nextOrder.recipientSnapshot.name !== "string" || !nextOrder.recipientSnapshot.name.trim()) {
       throw new Error("A resposta do pedido é inválida. Recarregue a página.");
     }
     const nextItems = new Map();
@@ -47,7 +49,9 @@ export function createDraftEditor(initialOrder) {
       nextItems.set(item.productId, { ...item });
     }
     totalsFor(nextItems);
-    order = { ...nextOrder, company: { ...nextOrder.company }, destinationSnapshot: { ...nextOrder.destinationSnapshot } };
+    order = { ...nextOrder, company: { ...nextOrder.company },
+      destinationSnapshot: { ...nextOrder.destinationSnapshot },
+      recipientSnapshot: { ...nextOrder.recipientSnapshot } };
     items = nextItems;
     persistedItems = new Map([...nextItems].map(([productId, item]) => [productId, { ...item }]));
   };
@@ -65,6 +69,7 @@ export function createDraftEditor(initialOrder) {
     get id() { return order.id; },
     get company() { return { ...order.company }; },
     get destinationSnapshot() { return { ...order.destinationSnapshot }; },
+    get recipientSnapshot() { return { ...order.recipientSnapshot }; },
     lines,
     totals,
     setQuantity,
@@ -120,6 +125,7 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
   const title = document.querySelector("[data-client-draft-title]");
   const company = document.querySelector("[data-client-draft-company]");
   const address = document.querySelector("[data-client-draft-address]");
+  const recipient = document.querySelector("[data-client-draft-recipient]");
   const itemsContainer = document.querySelector("[data-client-draft-items]");
   const subtotal = document.querySelector("[data-client-draft-subtotal]");
   const weight = document.querySelector("[data-client-draft-weight]");
@@ -177,6 +183,9 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
     title.textContent = `Pedido #${editor.id}`;
     company.textContent = editor.company.name;
     address.textContent = formatAddress(editor.destinationSnapshot);
+    recipient.textContent = editor.recipientSnapshot.type === "self"
+      ? `Você (${editor.recipientSnapshot.name})`
+      : `Outra pessoa: ${editor.recipientSnapshot.name}`;
     itemsContainer.innerHTML = lines.map((item) => `
       <div class="cart-item">
         <div><strong>${escapeHtml(item.name)}</strong><small>${money(item.unitPriceCents)} · ${item.unitWeightKg.toLocaleString("pt-BR")} kg por unidade</small></div>

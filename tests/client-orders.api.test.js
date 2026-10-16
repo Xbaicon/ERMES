@@ -138,6 +138,7 @@ test("criação de pedidos draft do cliente", async (context) => {
     assert.deepEqual(summary, {
       status: "draft", company: { id: companyId, name: "Empresa Demonstrativa" },
       itemsTotalCents: 3980, weightKg: 1, destinationSnapshot: address,
+      recipientSnapshot: { type: "self", name: "primeiro.pedido@ermes.local" },
     });
     assert.ok(Number.isSafeInteger(id));
     assert.deepEqual(items, [{ productId: seedProducts[0].id, name: "Produto demonstrativo",

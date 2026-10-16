@@ -62,7 +62,7 @@ export function createCartSubmitter(cart, api) {
   let pending = false;
   return {
     get pending() { return pending; },
-    async submit() {
+    async submit(orderOptions = {}) {
       if (pending) return null;
       const lines = cart.lines();
       if (!lines.length || cart.totals().weightKg > 12 + Number.EPSILON * 12) return null;
@@ -73,6 +73,7 @@ export function createCartSubmitter(cart, api) {
           body: JSON.stringify({
             companyId: cart.company.id,
             items: lines.map(({ productId, quantity }) => ({ productId, quantity })),
+            ...orderOptions,
           }),
         });
         if (!order || !Number.isSafeInteger(order.id) || order.status !== "draft") {
@@ -87,7 +88,7 @@ export function createCartSubmitter(cart, api) {
   };
 }
 
-export async function setupClientCatalog({ api, money, escapeHtml, showMessage }) {
+export async function setupClientCatalog({ api, money, escapeHtml, showMessage, user }) {
   const companiesList = document.querySelector("[data-client-companies-list]");
   const companiesStatus = document.querySelector("[data-client-companies-status]");
   const productsList = document.querySelector("[data-client-products-list]");
@@ -101,12 +102,93 @@ export async function setupClientCatalog({ api, money, escapeHtml, showMessage }
   const cartMessage = document.querySelector("[data-client-cart-message]");
   const clearButton = document.querySelector("[data-client-cart-clear]");
   const submitButton = document.querySelector("[data-client-cart-submit]");
+  const destinationTypes = [...document.querySelectorAll("[data-client-destination-type]")];
+  const manualAddress = document.querySelector("[data-client-manual-address]");
+  const addressFields = [...document.querySelectorAll("[data-order-address-field]")];
+  const recipientTypes = [...document.querySelectorAll("[data-client-recipient-type]")];
+  const otherRecipient = document.querySelector("[data-client-other-recipient]");
+  const recipientName = document.querySelector("[data-client-recipient-name]");
+  const destinationSummary = document.querySelector("[data-client-order-destination-summary]");
+  const recipientSummary = document.querySelector("[data-client-order-recipient-summary]");
   const cart = createCart();
   const submitter = createCartSubmitter(cart, api);
+  let defaultAddress = null;
+  let defaultAddressLoading = true;
+  let defaultAddressRevision = 0;
   let companies = [];
   let selectedCompanyId = null;
   let currentProducts = [];
   let productsLoading = false;
+
+  const formatAddress = (value) => [
+    `${value.street}, ${value.number}`,
+    value.complement,
+    value.neighborhood,
+    `${value.city} - ${value.state}`,
+    `CEP ${value.postalCode}`,
+  ].filter(Boolean).join(" • ");
+  const selectedValue = (inputs) => inputs.find(({ checked }) => checked)?.value;
+  const manualAddressValue = () => Object.fromEntries(addressFields.map((input) => [
+    input.dataset.orderAddressField, input.value,
+  ]));
+  const orderOptions = () => {
+    const destinationType = selectedValue(destinationTypes);
+    const recipientType = selectedValue(recipientTypes);
+    return {
+      destination: destinationType === "manual"
+        ? { type: "manual", address: manualAddressValue() }
+        : { type: "default" },
+      recipient: recipientType === "other"
+        ? { type: "other", name: recipientName.value }
+        : { type: "self" },
+    };
+  };
+  const destinationIsValid = (options) => {
+    if (options.destination.type === "default" && !defaultAddress) return false;
+    if (options.destination.type === "manual") {
+      const required = ["postalCode", "state", "city", "neighborhood", "street", "number"];
+      if (required.some((field) => !String(options.destination.address[field] || "").trim())) return false;
+      if (!/^\d{8}$/.test(String(options.destination.address.postalCode).replace(/\D/g, ""))) return false;
+      if (!/^[A-Za-z]{2}$/.test(String(options.destination.address.state).trim())) return false;
+    }
+    return true;
+  };
+  const recipientIsValid = (options) => options.recipient.type !== "other"
+    || Boolean(options.recipient.name.trim());
+  const optionsAreValid = () => {
+    const options = orderOptions();
+    return destinationIsValid(options) && recipientIsValid(options);
+  };
+  const renderOrderOptions = () => {
+    const options = orderOptions();
+    const usesManualAddress = options.destination.type === "manual";
+    const usesOtherRecipient = options.recipient.type === "other";
+    manualAddress.hidden = !usesManualAddress;
+    otherRecipient.hidden = !usesOtherRecipient;
+    for (const input of addressFields) {
+      input.required = usesManualAddress && input.dataset.orderAddressField !== "complement";
+      input.disabled = submitter.pending;
+    }
+    recipientName.required = usesOtherRecipient;
+    recipientName.disabled = submitter.pending;
+    destinationTypes.forEach((input) => { input.disabled = submitter.pending; });
+    recipientTypes.forEach((input) => { input.disabled = submitter.pending; });
+    if (usesManualAddress) {
+      const value = options.destination.address;
+      destinationSummary.textContent = destinationIsValid(options)
+        ? formatAddress({ ...value, postalCode: value.postalCode.replace(/\D/g, ""), state: value.state.trim().toUpperCase() })
+        : "Preencha o endereço alternativo completo.";
+    } else if (defaultAddressLoading) {
+      destinationSummary.textContent = "Carregando endereço padrão.";
+    } else {
+      destinationSummary.textContent = defaultAddress
+        ? formatAddress(defaultAddress)
+        : "Cadastre um endereço padrão ou informe outro endereço.";
+    }
+    recipientSummary.textContent = usesOtherRecipient
+      ? (options.recipient.name.trim() || "Informe o nome da outra pessoa.")
+      : (user?.fullName || "Você");
+  };
 
   const setStatus = (element, message, type = "") => {
     element.textContent = message;
@@ -160,9 +242,11 @@ export async function setupClientCatalog({ api, money, escapeHtml, showMessage }
     setStatus(cartStatus, !lines.length ? "Carrinho vazio."
       : exceedsWeightLimit ? "Peso acima de 12 kg. Reduza quantidades ou remova itens." : `${lines.length} produto(s) no carrinho.`, exceedsWeightLimit ? "error" : "");
     submitButton.disabled = submitter.pending || !lines.length || exceedsWeightLimit;
+    if (!optionsAreValid()) submitButton.disabled = true;
     submitButton.textContent = submitter.pending ? "Criando pedido…" : "Criar pedido draft";
     clearButton.disabled = submitter.pending || !lines.length;
     cartItems.setAttribute("aria-busy", String(submitter.pending));
+    renderOrderOptions();
     updateControls();
   };
 
@@ -202,10 +286,29 @@ export async function setupClientCatalog({ api, money, escapeHtml, showMessage }
     cartMessage.hidden = true;
     renderCart();
   });
+  for (const input of [...destinationTypes, ...recipientTypes]) {
+    input.addEventListener("change", renderCart);
+  }
+  for (const input of [...addressFields, recipientName]) {
+    input.addEventListener("input", renderCart);
+  }
+  document.addEventListener("ermes:default-address-changed", (event) => {
+    defaultAddressRevision += 1;
+    defaultAddress = event.detail?.defaultAddress || null;
+    defaultAddressLoading = false;
+    renderCart();
+  });
   submitButton.addEventListener("click", async () => {
     if (submitter.pending || !cart.lines().length || cart.totals().weightKg > 12 + Number.EPSILON * 12) return;
+    if (!optionsAreValid()) {
+      const options = orderOptions();
+      showMessage(cartMessage, options.destination.type === "default" && !defaultAddress
+        ? "Cadastre um endereço padrão ou escolha informar outro endereço."
+        : "Revise o destino e o destinatário antes de criar o pedido.");
+      return;
+    }
     cartMessage.hidden = true;
-    const operation = submitter.submit();
+    const operation = submitter.submit(orderOptions());
     renderCart();
     try {
       const order = await operation;
@@ -245,6 +348,16 @@ export async function setupClientCatalog({ api, money, escapeHtml, showMessage }
   }
 
   renderCart();
+  const addressLoadRevision = defaultAddressRevision;
+  try {
+    const result = await api("/api/client/default-address");
+    if (defaultAddressRevision === addressLoadRevision) defaultAddress = result.defaultAddress;
+  } catch (error) {
+    showMessage(cartMessage, `Não foi possível carregar o endereço padrão. ${error.message}`);
+  } finally {
+    defaultAddressLoading = false;
+    renderCart();
+  }
   companiesList.setAttribute("aria-busy", "true");
   try {
     ({ companies } = await api("/api/client/companies"));
