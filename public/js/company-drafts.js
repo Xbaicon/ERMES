@@ -5,6 +5,7 @@ export async function setupCompanyDrafts({ api, money, escapeHtml, showMessage }
   const detail = document.querySelector("[data-company-draft-detail]");
   const title = document.querySelector("[data-company-draft-title]");
   const address = document.querySelector("[data-company-draft-address]");
+  const recipient = document.querySelector("[data-company-draft-recipient]");
   const items = document.querySelector("[data-company-draft-items]");
   const subtotal = document.querySelector("[data-company-draft-subtotal]");
   const weight = document.querySelector("[data-company-draft-weight]");
@@ -53,6 +54,9 @@ export async function setupCompanyDrafts({ api, money, escapeHtml, showMessage }
     selectedOrder = order;
     title.textContent = `Pedido #${order.id}`;
     address.textContent = formatAddress(order.destinationSnapshot);
+    recipient.textContent = order.recipientSnapshot.type === "self"
+      ? `Próprio cliente: ${order.recipientSnapshot.name}`
+      : `Outra pessoa: ${order.recipientSnapshot.name}`;
     items.innerHTML = order.items.map((item) => `
       <div class="cart-item">
         <div><strong>${escapeHtml(item.name)}</strong><small>Quantidade: ${item.quantity} · ${money(item.unitPriceCents)} · ${item.unitWeightKg.toLocaleString("pt-BR")} kg por unidade</small></div>

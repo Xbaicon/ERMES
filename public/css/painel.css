@@ -52,6 +52,14 @@
 .cart-item small { color: var(--muted); }
 .cart-item-actions { justify-content: flex-end; flex-wrap: wrap; }
 .cart-totals { justify-content: flex-start; flex-wrap: wrap; gap: 8px 28px; }
+.order-options { display: grid; gap: 16px; padding: 18px; border: 1px solid var(--border); border-radius: 14px; background: #fafbfc; }
+.order-choice { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 0; padding: 0; border: 0; }
+.order-choice legend { width: 100%; margin-bottom: 2px; font-weight: 800; }
+.order-choice label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.order-conditional { display: grid; gap: 12px; padding-left: 18px; border-left: 3px solid #bdd2f9; }
+.order-conditional[hidden] { display: none; }
+.order-summary { display: grid; gap: 6px; padding: 14px; border-radius: 12px; background: var(--blue-soft); }
+.order-summary p { margin: 0; overflow-wrap: anywhere; }
 .client-cart > [data-client-cart-submit] { justify-self: start; }
 .client-drafts { grid-template-columns: minmax(230px, .7fr) minmax(0, 1.5fr); }
 .draft-list .catalog-company-button { display: grid; gap: 5px; }

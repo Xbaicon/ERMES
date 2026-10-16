@@ -1,6 +1,7 @@
 import { db, transaction } from "./database.js";
 import { MAX_ORDER_WEIGHT_KG } from "./freight.js";
 import { createDeliveryForEligibleOrderInTransaction } from "./delivery-creation.js";
+import { normalizeAddress } from "./address.js";
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -31,10 +32,46 @@ function positiveSafeInteger(value, field) {
 
 export function parseDraftOrder(body) {
   if (!isObject(body)) throw orderError("O corpo deve ser um objeto JSON de pedido.");
-  allowOnly(body, ["companyId", "items"]);
+  allowOnly(body, ["companyId", "items", "destination", "recipient"]);
   const companyId = positiveSafeInteger(requireOwn(body, "companyId"), "companyId");
   const items = parseItems(requireOwn(body, "items"));
-  return { companyId, items };
+  const destination = parseDestinationChoice(body.destination);
+  const recipient = parseRecipientChoice(body.recipient);
+  return { companyId, items, destination, recipient };
+}
+
+function parseDestinationChoice(value) {
+  if (value === undefined) return { type: "default" };
+  if (!isObject(value)) throw orderError("O campo destination deve ser um objeto JSON.");
+  const type = requireOwn(value, "type");
+  if (type === "default") {
+    allowOnly(value, ["type"]);
+    return { type };
+  }
+  if (type === "manual") {
+    allowOnly(value, ["type", "address"]);
+    return { type, address: normalizeAddress(requireOwn(value, "address")) };
+  }
+  throw orderError("O campo destination.type deve ser default ou manual.");
+}
+
+function parseRecipientChoice(value) {
+  if (value === undefined) return { type: "self" };
+  if (!isObject(value)) throw orderError("O campo recipient deve ser um objeto JSON.");
+  const type = requireOwn(value, "type");
+  if (type === "self") {
+    allowOnly(value, ["type"]);
+    return { type };
+  }
+  if (type === "other") {
+    allowOnly(value, ["type", "name"]);
+    const name = requireOwn(value, "name");
+    if (typeof name !== "string" || !name.trim()) {
+      throw orderError("O campo recipient.name é obrigatório para outro destinatário.");
+    }
+    return { type, name: name.trim() };
+  }
+  throw orderError("O campo recipient.type deve ser self ou other.");
 }
 
 function parseItems(items) {
@@ -133,6 +170,7 @@ function priceSnapshot(value) {
 function findOwnedOrder(clientId, orderId) {
   const order = db.prepare(`SELECT o.id, o.client_id AS clientId, o.company_id AS companyId,
                                    o.status, o.destination_snapshot_json AS destinationSnapshotJson,
+                                   o.recipient_snapshot_json AS recipientSnapshotJson,
                                    o.version, o.created_at AS createdAt, o.updated_at AS updatedAt,
                                    c.name AS companyName
                             FROM orders o
@@ -164,6 +202,22 @@ function destinationSnapshot(value) {
   }
 }
 
+function recipientSnapshot(value) {
+  let snapshot;
+  try {
+    snapshot = JSON.parse(value);
+  } catch {
+    throw orderError("O destinatário preservado do pedido é inválido.", 500);
+  }
+  if (!isObject(snapshot)
+    || !["self", "other"].includes(snapshot.type)
+    || typeof snapshot.name !== "string" || !snapshot.name.trim()
+    || Object.keys(snapshot).some((field) => !["type", "name"].includes(field))) {
+    throw orderError("O destinatário preservado do pedido é inválido.", 500);
+  }
+  return { type: snapshot.type, name: snapshot.name.trim() };
+}
+
 function mapDraftOrder(order, items) {
   const totals = calculateDraftTotals(items);
   return {
@@ -175,6 +229,7 @@ function mapDraftOrder(order, items) {
     })),
     ...totals,
     destinationSnapshot: destinationSnapshot(order.destinationSnapshotJson),
+    recipientSnapshot: recipientSnapshot(order.recipientSnapshotJson),
   };
 }
 
@@ -208,7 +263,8 @@ export function getDraftOrder(clientId, orderId) {
 
 function findCompanyDraftOrder(companyId, orderId) {
   const order = db.prepare(`SELECT o.id, o.status, o.version,
-                                   o.destination_snapshot_json AS destinationSnapshotJson
+                                   o.destination_snapshot_json AS destinationSnapshotJson,
+                                   o.recipient_snapshot_json AS recipientSnapshotJson
                             FROM orders o
                             WHERE o.id = ? AND o.company_id = ?`).get(orderId, companyId);
   if (!order) throw orderError("Pedido não encontrado.", 404);
@@ -227,6 +283,7 @@ function mapCompanyDraftOrder(order, items) {
     })),
     ...totals,
     destinationSnapshot: destinationSnapshot(order.destinationSnapshotJson),
+    recipientSnapshot: recipientSnapshot(order.recipientSnapshotJson),
   };
 }
 
@@ -312,6 +369,7 @@ function findCompanyOrderForConfirmation(companyId, orderId) {
   const order = db.prepare(`SELECT o.id, o.status, o.version,
                                    CAST(o.items_total_cents AS TEXT) AS itemsTotalCents,
                                    o.destination_snapshot_json AS destinationSnapshotJson,
+                                   o.recipient_snapshot_json AS recipientSnapshotJson,
                                    o.confirmed_at AS confirmedAt
                             FROM orders o
                             WHERE o.id = ? AND o.company_id = ?`).get(orderId, companyId);
@@ -334,12 +392,13 @@ function confirmationSnapshot(order) {
     throw orderError("Os dados comerciais do pedido est\u00e3o inconsistentes.", 409);
   }
   const snapshot = destinationSnapshot(order.destinationSnapshotJson);
+  const recipient = recipientSnapshot(order.recipientSnapshotJson);
   const requiredAddressFields = ["postalCode", "state", "city", "neighborhood", "street", "number"];
   if (!isObject(snapshot)
     || requiredAddressFields.some((field) => typeof snapshot[field] !== "string" || !snapshot[field].trim())) {
     throw orderError("O pedido n\u00e3o possui um destino preservado v\u00e1lido.", 409);
   }
-  return { items, totals, snapshot };
+  return { items, totals, snapshot, recipient };
 }
 
 function mapConfirmedCompanyOrder(order, confirmation) {
@@ -353,6 +412,7 @@ function mapConfirmedCompanyOrder(order, confirmation) {
     })),
     ...confirmation.totals,
     destinationSnapshot: confirmation.snapshot,
+    recipientSnapshot: confirmation.recipient,
   };
 }
 
@@ -361,6 +421,7 @@ function findOwnedOrderForPayment(clientId, orderId) {
                                    o.status, CAST(o.items_total_cents AS TEXT) AS itemsTotalCents,
                                    CAST(o.freight_total_cents AS TEXT) AS freightTotalCents,
                                    o.destination_snapshot_json AS destinationSnapshotJson,
+                                   o.recipient_snapshot_json AS recipientSnapshotJson,
                                    o.payment_status AS paymentStatus,
                                    o.payment_paid_at AS paymentPaidAt,
                                    o.confirmed_at AS confirmedAt,
@@ -434,6 +495,7 @@ function mapClientConfirmedOrder(order, snapshot, summary = false) {
     })),
     weightKg: snapshot.totals.weightKg,
     destinationSnapshot: snapshot.snapshot,
+    recipientSnapshot: snapshot.recipient,
   };
 }
 
@@ -442,6 +504,7 @@ export function listClientConfirmedOrders(clientId) {
                             o.status, CAST(o.items_total_cents AS TEXT) AS itemsTotalCents,
                             CAST(o.freight_total_cents AS TEXT) AS freightTotalCents,
                             o.destination_snapshot_json AS destinationSnapshotJson,
+                            o.recipient_snapshot_json AS recipientSnapshotJson,
                             o.payment_status AS paymentStatus,
                             o.payment_paid_at AS paymentPaidAt,
                             o.confirmed_at AS confirmedAt,
@@ -523,9 +586,11 @@ export function confirmCompanyDraftOrder(companyId, orderId, body) {
 export function createDraftOrder(clientId, body) {
   const input = parseDraftOrder(body);
   return transaction(() => {
-    const client = db.prepare(`SELECT order_blocked_until AS orderBlockedUntil,
+    const client = db.prepare(`SELECT full_name AS fullName,
+                                      order_blocked_until AS orderBlockedUntil,
                                       order_blocked_until > CURRENT_TIMESTAMP AS isBlocked
                                FROM users WHERE id = ? AND role = 'client'`).get(clientId);
+    if (!client) throw orderError("Cliente não encontrado.", 404);
     if (client?.isBlocked) {
       throw orderError(`Novos pedidos estão bloqueados até ${client.orderBlockedUntil}.`, 409);
     }
@@ -533,11 +598,24 @@ export function createDraftOrder(clientId, body) {
       .get(input.companyId);
     if (!company) throw orderError("Empresa não encontrada ou indisponível.", 404);
 
-    const address = db.prepare(`SELECT postal_code AS postalCode, state, city, neighborhood,
-                                       street, number, complement
-                                FROM client_default_addresses WHERE client_id = ?`)
-      .get(clientId);
-    if (!address) throw orderError("Cadastre seu endereço padrão antes de criar o pedido.", 409);
+    let address;
+    if (input.destination.type === "manual") {
+      address = input.destination.address;
+    } else {
+      address = db.prepare(`SELECT postal_code AS postalCode, state, city, neighborhood,
+                                   street, number, complement
+                            FROM client_default_addresses WHERE client_id = ?`)
+        .get(clientId);
+      if (!address) throw orderError("Cadastre seu endereço padrão antes de criar o pedido.", 409);
+      address = normalizeAddress(address);
+    }
+    const clientName = typeof client.fullName === "string" ? client.fullName.trim() : "";
+    if (input.recipient.type === "self" && !clientName) {
+      throw orderError("O cadastro do cliente não possui nome válido para o destinatário.", 409);
+    }
+    const recipient = input.recipient.type === "other"
+      ? { type: "other", name: input.recipient.name }
+      : { type: "self", name: clientName };
 
     const products = input.items.map(({ productId, quantity }) => {
       const product = db.prepare(`SELECT id, company_id AS companyId, name,
@@ -556,8 +634,10 @@ export function createDraftOrder(clientId, body) {
     const totals = calculateDraftTotals(products);
 
     const orderId = Number(db.prepare(`INSERT INTO orders
-      (client_id, company_id, status, destination_snapshot_json, items_total_cents)
-      VALUES (?, ?, 'draft', ?, ?)`).run(clientId, company.id, JSON.stringify(address), totals.itemsTotalCents).lastInsertRowid);
+      (client_id, company_id, status, destination_snapshot_json, recipient_snapshot_json,
+       items_total_cents)
+      VALUES (?, ?, 'draft', ?, ?, ?)`).run(clientId, company.id, JSON.stringify(address),
+      JSON.stringify(recipient), totals.itemsTotalCents).lastInsertRowid);
     const insertItem = db.prepare(`INSERT INTO order_items
       (order_id, product_id, quantity, unit_price_cents, unit_weight_kg)
       VALUES (?, ?, ?, ?, ?)`);
@@ -574,6 +654,7 @@ export function createDraftOrder(clientId, body) {
       })),
       ...totals,
       destinationSnapshot: { ...address },
+      recipientSnapshot: { ...recipient },
     };
   });
 }

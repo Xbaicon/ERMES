@@ -68,9 +68,10 @@ em estado `draft` cujo `company_id` pertence à sessão. A resposta é
 
 `GET /company/orders/:orderId` exige identificador decimal inteiro, positivo e
 seguro. Em sucesso, retorna HTTP `200` com `id`, `status`, itens e seus
-snapshots de preço/peso, subtotal, peso total e
-`destinationSnapshot` preservado. A projeção não inclui cliente, e-mail,
-sessão, senha, pagamento, frete, rota ou entrega.
+snapshots de preço/peso, subtotal, peso total, `destinationSnapshot` e
+`recipientSnapshot` preservados. O destinatário expõe somente `type` (`self`
+ou `other`) e `name`, necessários à análise e à operação; a projeção não inclui
+conta do cliente, e-mail, sessão, senha, pagamento, frete, rota ou entrega.
 
 Pedido inexistente ou pertencente a outra empresa retorna `404`, sem revelar
 sua existência. Pedido da própria empresa que não esteja mais em `draft`
@@ -112,7 +113,7 @@ ou estado incompatível retorna `409`; identificador ou corpo inválido retorna
 retorna `403`.
 
 A confirmação recalcula e valida os itens persistidos, o subtotal, o peso
-máximo de 12 kg e o destino preservado. Ela usa os snapshots do pedido e não
+máximo de 12 kg, o destino e o destinatário preservados. Ela usa os snapshots do pedido e não
 passa a depender da disponibilidade atual do produto. Esta operação não
 cria entrega, pagamento, frete ou rota, não altera `payment_status`,
 `freight_total_cents` ou `route_snapshot_json` e não exige geocodificação,
@@ -203,20 +204,48 @@ O endereço padrão é um cadastro atual em `client_default_addresses`. Substitu
 
 ### Criação de pedido draft
 
-`POST /client/orders` recebe somente `companyId` e `items`; cada item recebe somente `productId` e `quantity`:
+`POST /client/orders` recebe `companyId`, `items` e, opcionalmente, as escolhas
+`destination` e `recipient`; cada item recebe somente `productId` e `quantity`.
+Omissão das duas escolhas preserva o contrato anterior: endereço padrão e o
+próprio cliente como destinatário.
 
 ```json
 {
   "companyId": 1,
   "items": [
     { "productId": 10, "quantity": 2 }
-  ]
+  ],
+  "destination": {
+    "type": "manual",
+    "address": {
+      "postalCode": "20040002",
+      "state": "RJ",
+      "city": "Rio de Janeiro",
+      "neighborhood": "Centro",
+      "street": "Rua da Assembleia",
+      "number": "25",
+      "complement": "Portaria B"
+    }
+  },
+  "recipient": { "type": "other", "name": "Pessoa Autorizada" }
 }
 ```
 
-Identificadores e quantidades devem ser números inteiros positivos dentro do intervalo seguro do JavaScript. O pedido exige ao menos um item e não aceita o mesmo produto duas vezes; aumente a quantidade do item existente. Campos inesperados em qualquer nível são rejeitados com `400`, inclusive identificadores de cliente, preços, pesos, status, frete, rota e endereços enviados pelo navegador.
+`destination` aceita exclusivamente `{ "type": "default" }` ou
+`{ "type": "manual", "address": { ... } }`. O endereço manual usa os mesmos
+sete campos e a mesma normalização do endereço padrão; `complement` é opcional.
+Ele pertence somente ao Pedido e não altera `client_default_addresses`.
 
-O cliente é identificado exclusivamente pela sessão. A empresa precisa estar ativa e cada produto deve existir, pertencer a ela e estar disponível. É necessário um endereço padrão cadastrado. O servidor lê preço e peso atuais dos produtos, calcula `itemsTotalCents` em centavos inteiros e `weightKg` com comparação decimal exata ao limite de 12 kg, e copia o endereço atual para o snapshot do pedido. O subtotal deve caber em inteiro seguro. Erros de validação retornam `400`; ausência de endereço, produto indisponível ou de outra empresa retorna `409`; empresa ou produto inexistente retorna `404`. Ausência de sessão retorna `401`, e outro papel retorna `403`.
+`recipient` aceita exclusivamente `{ "type": "self" }` ou
+`{ "type": "other", "name": "..." }`. Para `self`, o servidor captura o nome
+do cliente autenticado; para `other`, `name` é obrigatório e normalizado pela
+remoção de espaços externos. Telefone não é obrigatório e não é aceito neste
+contrato, pois os campos adicionais definitivos do destinatário continuam
+PENDENTES na Baseline 0.1. O destinatário não ganha conta no ERMES.
+
+Identificadores e quantidades devem ser números inteiros positivos dentro do intervalo seguro do JavaScript. O pedido exige ao menos um item e não aceita o mesmo produto duas vezes; aumente a quantidade do item existente. Campos inesperados em qualquer nível são rejeitados com `400`, inclusive identificadores de cliente, preços, pesos, status, frete, rota e snapshots arbitrários enviados pelo navegador.
+
+O cliente é identificado exclusivamente pela sessão. A empresa precisa estar ativa e cada produto deve existir, pertencer a ela e estar disponível. Um endereço padrão cadastrado é necessário somente quando `destination.type = default`; o endereço manual permite criar o Pedido sem cadastro padrão. O servidor lê preço e peso atuais dos produtos, calcula `itemsTotalCents` em centavos inteiros e `weightKg` com comparação decimal exata ao limite de 12 kg, e copia o endereço efetivo e o destinatário para snapshots do pedido. O subtotal deve caber em inteiro seguro. Erros de validação retornam `400`; ausência do endereço padrão escolhido, produto indisponível ou de outra empresa retorna `409`; empresa ou produto inexistente retorna `404`. Ausência de sessão retorna `401`, e outro papel retorna `403`.
 
 Em sucesso, retorna `201`:
 
@@ -235,12 +264,13 @@ Em sucesso, retorna `201`:
     "destinationSnapshot": {
       "postalCode": "01001000", "state": "SP", "city": "São Paulo",
       "neighborhood": "Sé", "street": "Praça da Sé", "number": "10", "complement": "Apto 2"
-    }
+    },
+    "recipientSnapshot": { "type": "self", "name": "Cliente Demonstrativo" }
   }
 }
 ```
 
-Pedido, subtotal, endereço e snapshots unitários dos itens são gravados numa única transação. `route_snapshot_json` e `freight_total_cents` permanecem `NULL`; nenhuma entrega é criada. O carrinho no painel existe apenas na memória da página, portanto desaparece ao recarregá-la. A prévia de subtotal e peso no navegador não é autoritativa e pode diferir se o produto mudar antes do envio. A criação não confirma o pedido nem inicia pagamento ou entrega.
+Pedido, subtotal, endereço, destinatário e snapshots unitários dos itens são gravados numa única transação. `route_snapshot_json` e `freight_total_cents` permanecem `NULL`; nenhuma entrega é criada. O carrinho no painel existe apenas na memória da página, portanto desaparece ao recarregá-la. A prévia de subtotal e peso no navegador não é autoritativa e pode diferir se o produto mudar antes do envio. A criação não confirma o pedido nem inicia pagamento ou entrega.
 
 ### Consulta e edição de pedidos draft
 
@@ -265,7 +295,7 @@ Pedido, subtotal, endereço e snapshots unitários dos itens são gravados numa 
 
 Quando não há rascunhos, a resposta é HTTP `200` com `drafts: []`.
 
-`GET /client/orders/:orderId` devolve a mesma representação completa documentada na criação: empresa, itens com preço e peso unitários preservados, subtotal, peso total e snapshot de destino. O identificador deve ser um inteiro decimal positivo e seguro, sem sinal, fração, notação exponencial ou zeros à esquerda.
+`GET /client/orders/:orderId` devolve a mesma representação completa documentada na criação: empresa, itens com preço e peso unitários preservados, subtotal, peso total e snapshots de destino e destinatário. O identificador deve ser um inteiro decimal positivo e seguro, sem sinal, fração, notação exponencial ou zeros à esquerda.
 
 `PUT /client/orders/:orderId/items` representa a lista completa que deve permanecer no pedido:
 
@@ -284,7 +314,7 @@ O cliente e a empresa do pedido não são recebidos do navegador. As consultas c
 
 Na atualização, itens que já estavam persistidos no draft mantêm seus `unit_price_cents` e `unit_weight_kg`, mesmo que o cadastro atual do produto tenha mudado; alterar sua quantidade recalcula os totais com esses snapshots. Um produto realmente novo precisa existir, pertencer à empresa imutável do pedido e estar disponível, e recebe preço e peso atuais do banco como novos snapshots. Se um item foi removido e salvo, uma inclusão posterior é uma nova adição e captura os valores vigentes naquele momento.
 
-O servidor recalcula subtotal e peso a partir da versão resultante, aceita exatamente 12 kg e rejeita peso superior ou subtotal acima do inteiro seguro. A substituição de `order_items` e a atualização de `orders.items_total_cents` ocorrem numa única transação. Qualquer falha restaura integralmente a versão anterior. `destination_snapshot_json` não é atualizado nem reconstruído a partir do endereço padrão atual; rota, frete, pagamento, status e entregas também não são modificados. Em sucesso, o `PUT` retorna HTTP `200` com `{ "order": ... }` normalizado pelo servidor.
+O servidor recalcula subtotal e peso a partir da versão resultante, aceita exatamente 12 kg e rejeita peso superior ou subtotal acima do inteiro seguro. A substituição de `order_items` e a atualização de `orders.items_total_cents` ocorrem numa única transação. Qualquer falha restaura integralmente a versão anterior. `destination_snapshot_json` e `recipient_snapshot_json` não são atualizados nem reconstruídos a partir dos cadastros atuais; rota, frete, pagamento, status e entregas também não são modificados. A Baseline 0.1 não define com segurança uma operação posterior para trocar destino ou destinatário do draft, portanto esta API preserva a escolha da criação e mantém o `PUT` restrito aos itens. Em sucesso, o `PUT` retorna HTTP `200` com `{ "order": ... }` normalizado pelo servidor.
 
 Cada alteração efetiva da composição ou quantidade dos itens
 incrementa `orders.version`; reenviar a mesma composição não incrementa.
@@ -303,7 +333,7 @@ convertido para zero nem apresentado como frete grátis.
 
 `GET /client/orders/confirmed/:orderId` retorna a representação completa e
 somente leitura do pedido confirmado próprio, incluindo itens e seus snapshots,
-subtotal, peso, destino preservado, `paymentStatus`, `paymentPaidAt`,
+subtotal, peso, destino e destinatário preservados, `paymentStatus`, `paymentPaidAt`,
 `confirmedAt` e `freightTotalCents`. Pedido inexistente ou de outro cliente
 retorna `404` sem revelar sua existência. Pedido próprio que não esteja
 `confirmed` retorna `409`.
@@ -365,6 +395,12 @@ incompatíveis retornam `409`.
 | POST | `/courier/deliveries/:id/report-return` | Registrar devolução física à empresa |
 
 ### Operação e autorização de Entregas
+
+Os detalhes de Entrega consultados por cliente, empresa e motoboy usam
+`orders.destination_snapshot_json` e `orders.recipient_snapshot_json`, nunca o
+endereço ou nome atuais do cadastro. O motoboy recebe somente o destino efetivo,
+o tipo e o nome do destinatário necessários à execução; nenhum cadastro ou
+telefone adicional do destinatário é criado ou exposto.
 
 Identificadores de cliente, empresa e motoboy vêm da sessão e das relações no
 banco. Recursos de outra empresa ou cliente retornam `404`. Aceite exige

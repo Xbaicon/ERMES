@@ -92,6 +92,7 @@ db.exec(`
     status TEXT NOT NULL DEFAULT 'draft',
     version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
     destination_snapshot_json TEXT,
+    recipient_snapshot_json TEXT,
     route_snapshot_json TEXT,
     items_total_cents INTEGER NOT NULL DEFAULT 0,
     freight_total_cents INTEGER,
@@ -160,6 +161,29 @@ if (!orderColumns.has("confirmed_at")) {
 }
 if (!orderColumns.has("payment_paid_at")) {
   db.exec("ALTER TABLE orders ADD COLUMN payment_paid_at TEXT");
+}
+if (!orderColumns.has("recipient_snapshot_json")) {
+  db.exec("ALTER TABLE orders ADD COLUMN recipient_snapshot_json TEXT");
+}
+
+const ordersWithoutRecipientSnapshot = db.prepare(`SELECT o.id, u.full_name AS recipientName
+  FROM orders o JOIN users u ON u.id = o.client_id
+  WHERE o.recipient_snapshot_json IS NULL`).all();
+if (ordersWithoutRecipientSnapshot.length) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const updateRecipient = db.prepare("UPDATE orders SET recipient_snapshot_json = ? WHERE id = ?");
+    for (const { id, recipientName } of ordersWithoutRecipientSnapshot) {
+      if (typeof recipientName !== "string" || !recipientName.trim()) {
+        throw new Error(`Pedido legado ${id} não possui nome de cliente válido para migrar o destinatário.`);
+      }
+      updateRecipient.run(JSON.stringify({ type: "self", name: recipientName.trim() }), id);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 const userColumns = new Set(db.prepare("PRAGMA table_info(users)").all().map(({ name }) => name));

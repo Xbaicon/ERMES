@@ -56,11 +56,25 @@ test("painel do cliente conecta catálogo e carrinho acessíveis à criação dr
   assert.match(html, /data-client-cart-status role="status" aria-live="polite"/);
   assert.match(html, /data-client-cart-message role="status" aria-live="polite" hidden/);
   assert.match(html, /data-client-cart-submit disabled/);
+  assert.match(html, /data-client-destination-type checked/);
+  assert.match(html, /data-client-manual-address hidden/);
+  assert.match(html, /data-order-address-field="postalCode"/);
+  assert.match(html, /data-client-recipient-type checked/);
+  assert.match(html, /data-client-other-recipient hidden/);
+  assert.match(html, /data-client-recipient-name/);
+  assert.match(html, /Telefone n.o . obrigat.rio nem coletado/i);
+  assert.match(html, /data-client-order-destination-summary/);
+  assert.match(html, /data-client-order-recipient-summary/);
   assert.match(html, /src="\.\.\/js\/painel\.js" type="module"/);
   assert.match(script, /import \{ setupClientCatalog \} from "\.\/client-cart\.js"/);
   assert.match(cart, /api\("\/api\/client\/companies"\)/);
   assert.match(cart, /api\(`\/api\/client\/companies\/\$\{company\.id\}\/products`\)/);
   assert.match(cart, /api\("\/api\/client\/orders"/);
+  assert.match(cart, /api\("\/api\/client\/default-address"/);
+  assert.match(cart, /manualAddress\.hidden = !usesManualAddress/);
+  assert.match(cart, /otherRecipient\.hidden = !usesOtherRecipient/);
+  assert.match(cart, /input\.required = usesManualAddress/);
+  assert.match(cart, /recipientName\.required = usesOtherRecipient/);
   const clientPanels = html.slice(
     html.indexOf('<section class="dashboard-section" data-client-panel'),
   );

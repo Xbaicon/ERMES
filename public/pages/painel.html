@@ -59,6 +59,7 @@
           <div class="dashboard-card draft-editor" data-company-draft-detail aria-busy="false" hidden>
             <h3 data-company-draft-title tabindex="-1">Selecione um pedido</h3>
             <p class="form-copy"><strong>Destino preservado:</strong> <span data-company-draft-address></span></p>
+            <p class="form-copy"><strong>Destinatário:</strong> <span data-company-draft-recipient></span></p>
             <div class="cart-items" data-company-draft-items></div>
             <div class="cart-totals"><span>Subtotal: <strong data-company-draft-subtotal>R$ 0,00</strong></span><span>Peso total: <strong data-company-draft-weight>0 kg</strong></span></div>
             <p class="form-copy">A confirma&ccedil;&atilde;o comercial congela a edi&ccedil;&atilde;o direta dos itens. Ela n&atilde;o cria entrega, pagamento ou frete.</p>
@@ -153,6 +154,7 @@
             <p class="catalog-status" data-client-payment-status role="status" aria-live="polite"></p>
             <p class="form-copy"><strong>Confirmado comercialmente em:</strong> <span data-client-payment-confirmed-at></span></p>
             <p class="form-copy"><strong>Pagamento confirmado em:</strong> <span data-client-payment-paid-at></span></p>
+            <p class="form-copy"><strong>Destinatário:</strong> <span data-client-payment-recipient></span></p>
             <div class="cart-items" data-client-payment-items></div>
             <div class="cart-totals">
               <span>Subtotal dos itens: <strong data-client-payment-subtotal>R$ 0,00</strong></span>
@@ -180,6 +182,7 @@
             <h3 data-client-draft-title tabindex="-1">Selecione um pedido</h3>
             <p class="form-copy"><strong>Empresa:</strong> <span data-client-draft-company></span></p>
             <p class="form-copy"><strong>Destino preservado:</strong> <span data-client-draft-address></span></p>
+            <p class="form-copy"><strong>Destinatário:</strong> <span data-client-draft-recipient></span></p>
             <p class="catalog-status" data-client-draft-editor-status role="status" aria-live="polite"></p>
             <div class="cart-items" data-client-draft-items></div>
             <div class="cart-totals"><span>Subtotal: <strong data-client-draft-subtotal>R$ 0,00</strong></span><span>Peso total: <strong data-client-draft-weight>0 kg</strong></span></div>
@@ -217,6 +220,42 @@
           <p class="catalog-status" data-client-cart-status role="status" aria-live="polite">Carrinho vazio.</p>
           <div class="cart-items" data-client-cart-items></div>
           <div class="cart-totals"><span>Subtotal: <strong data-client-cart-subtotal>R$ 0,00</strong></span><span>Peso total: <strong data-client-cart-weight>0 kg</strong></span></div>
+          <div class="order-options">
+            <fieldset class="order-choice">
+              <legend>Destino</legend>
+              <label><input type="radio" name="orderDestinationType" value="default" data-client-destination-type checked /> Usar meu endereço padrão</label>
+              <label><input type="radio" name="orderDestinationType" value="manual" data-client-destination-type /> Informar outro endereço</label>
+            </fieldset>
+            <div class="order-conditional" data-client-manual-address hidden>
+              <div class="form-grid">
+                <div class="form-field"><label for="order-postal-code">CEP</label><input id="order-postal-code" name="orderPostalCode" data-order-address-field="postalCode" inputmode="numeric" autocomplete="shipping postal-code" maxlength="9" /></div>
+                <div class="form-field"><label for="order-state">Estado (UF)</label><input id="order-state" name="orderState" data-order-address-field="state" autocomplete="shipping address-level1" maxlength="2" /></div>
+              </div>
+              <div class="form-grid">
+                <div class="form-field"><label for="order-city">Cidade</label><input id="order-city" name="orderCity" data-order-address-field="city" autocomplete="shipping address-level2" /></div>
+                <div class="form-field"><label for="order-neighborhood">Bairro</label><input id="order-neighborhood" name="orderNeighborhood" data-order-address-field="neighborhood" autocomplete="shipping address-level3" /></div>
+              </div>
+              <div class="form-field"><label for="order-street">Rua/Avenida</label><input id="order-street" name="orderStreet" data-order-address-field="street" autocomplete="shipping address-line1" /></div>
+              <div class="form-grid">
+                <div class="form-field"><label for="order-number">Número</label><input id="order-number" name="orderNumber" data-order-address-field="number" autocomplete="shipping address-line2" /></div>
+                <div class="form-field"><label for="order-complement">Complemento (opcional)</label><input id="order-complement" name="orderComplement" data-order-address-field="complement" autocomplete="shipping address-line3" /></div>
+              </div>
+            </div>
+            <fieldset class="order-choice">
+              <legend>Quem receberá?</legend>
+              <label><input type="radio" name="orderRecipientType" value="self" data-client-recipient-type checked /> Eu</label>
+              <label><input type="radio" name="orderRecipientType" value="other" data-client-recipient-type /> Outra pessoa</label>
+            </fieldset>
+            <div class="order-conditional form-field" data-client-other-recipient hidden>
+              <label for="order-recipient-name">Nome do destinatário</label>
+              <input id="order-recipient-name" name="orderRecipientName" data-client-recipient-name autocomplete="name" />
+              <p class="form-copy">Telefone não é obrigatório nem coletado nesta etapa.</p>
+            </div>
+            <div class="order-summary" aria-live="polite">
+              <p><strong>Destino escolhido:</strong> <span data-client-order-destination-summary></span></p>
+              <p><strong>Destinatário:</strong> <span data-client-order-recipient-summary></span></p>
+            </div>
+          </div>
           <p class="form-copy">Limite de 12 kg por pedido. Subtotal e peso exibidos são uma prévia; o servidor recalcula com os dados atuais ao criar o pedido. Frete ainda não é calculado.</p>
           <div class="form-message" data-client-cart-message role="status" aria-live="polite" hidden></div>
           <button class="button button-dark" type="button" data-client-cart-submit disabled>Criar pedido draft</button>

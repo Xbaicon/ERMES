@@ -29,6 +29,7 @@ const pendingOrder = {
     postalCode: "01001000", state: "SP", city: "Sao Paulo", neighborhood: "Centro",
     street: "Rua Um", number: "10", complement: "",
   },
+  recipientSnapshot: { type: "other", name: "Pessoa Autorizada" },
 };
 
 const summary = {
@@ -48,6 +49,7 @@ const selectors = [
   "[data-client-payments-list]", "[data-client-payments-status]", "[data-client-payments-reload]",
   "[data-client-payment-detail]", "[data-client-payment-title]", "[data-client-payment-company]",
   "[data-client-payment-status]", "[data-client-payment-confirmed-at]", "[data-client-payment-paid-at]",
+  "[data-client-payment-recipient]",
   "[data-client-payment-items]", "[data-client-payment-subtotal]", "[data-client-payment-freight]",
   "[data-client-payment-message]", "[data-client-payment-pay]",
 ];
