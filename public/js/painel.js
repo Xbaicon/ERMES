@@ -115,7 +115,7 @@ import { setupDeliveryPanel } from "./delivery-panels.js";
       loadCouriers(),
       loadFreightConfig(),
       setupCompanyDrafts({ api, money, escapeHtml, showMessage }),
-      setupDeliveryPanel({ role: "company", api, escapeHtml, showMessage }),
+      setupDeliveryPanel({ role: "company", api, escapeHtml, showMessage, money }),
     ]).catch(console.error);
   }
 
@@ -136,7 +136,7 @@ import { setupDeliveryPanel } from "./delivery-panels.js";
       render();
       document.dispatchEvent(new CustomEvent("ermes:delivery-changed"));
     });
-    await setupDeliveryPanel({ role: "courier", api, escapeHtml, showMessage });
+    await setupDeliveryPanel({ role: "courier", api, escapeHtml, showMessage, money });
   }
 
   async function setupDefaultAddress() {
@@ -199,7 +199,7 @@ import { setupDeliveryPanel } from "./delivery-panels.js";
       setupClientCatalog(dependencies),
       setupClientDrafts(dependencies),
       setupClientPayments(dependencies),
-      setupDeliveryPanel({ role: "client", api, escapeHtml, showMessage }),
+      setupDeliveryPanel({ role: "client", api, escapeHtml, showMessage, money }),
     ]);
   }
 

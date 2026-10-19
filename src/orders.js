@@ -2,6 +2,7 @@ import { db, transaction } from "./database.js";
 import { MAX_ORDER_WEIGHT_KG } from "./freight.js";
 import { createDeliveryForEligibleOrderInTransaction } from "./delivery-creation.js";
 import { normalizeAddress } from "./address.js";
+import { orderRefundSummary, recordPaymentInTransaction } from "./finance.js";
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -469,11 +470,14 @@ function paymentSnapshot(order) {
 }
 
 function mapClientConfirmedOrder(order, snapshot, summary = false) {
+  const refund = orderRefundSummary(db, order.id, order.clientId);
   const common = {
     id: order.id,
     status: order.status,
     company: { id: order.companyId, name: order.companyName },
     paymentStatus: order.paymentStatus,
+    refundStatus: refund.refundStatus,
+    refundedTotalCents: refund.refundedTotalCents,
     paymentPaidAt: order.paymentPaidAt,
     confirmedAt: order.confirmedAt,
     itemsTotalCents: snapshot.totals.itemsTotalCents,
@@ -535,6 +539,11 @@ export function confirmSimulatedPayment(clientId, orderId, body) {
     const snapshot = paymentSnapshot(order);
     if (order.paymentStatus === "paid") {
       const ensured = createDeliveryForEligibleOrderInTransaction(order.id);
+      recordPaymentInTransaction(db, {
+        ...order,
+        itemsTotalCents: snapshot.totals.itemsTotalCents,
+        freightTotalCents: snapshot.freightTotalCents,
+      }, ensured.delivery.id);
       return { order: mapClientConfirmedOrder(order, snapshot), ...ensured };
     }
 
@@ -549,7 +558,13 @@ export function confirmSimulatedPayment(clientId, orderId, body) {
     }
     const paid = findOwnedOrderForPayment(clientId, order.id);
     const ensured = createDeliveryForEligibleOrderInTransaction(paid.id);
-    return { order: mapClientConfirmedOrder(paid, paymentSnapshot(paid)), ...ensured };
+    const paidSnapshot = paymentSnapshot(paid);
+    recordPaymentInTransaction(db, {
+      ...paid,
+      itemsTotalCents: paidSnapshot.totals.itemsTotalCents,
+      freightTotalCents: paidSnapshot.freightTotalCents,
+    }, ensured.delivery.id);
+    return { order: mapClientConfirmedOrder(paid, paidSnapshot), ...ensured };
   });
 }
 

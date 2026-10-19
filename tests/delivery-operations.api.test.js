@@ -17,6 +17,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
   const { db, transaction } = await import("../src/database.js");
   const { hashPassword } = await import("../src/security.js");
   const { createDeliveryForEligibleOrderInTransaction } = await import("../src/delivery-creation.js");
+  const { recordPaymentInTransaction } = await import("../src/finance.js");
   await startServer(0);
   context.after(async () => {
     await new Promise((resolve) => server.close(resolve));
@@ -77,7 +78,16 @@ test("acompanhamento operacional completo de entregas", async (context) => {
        payment_status, payment_paid_at, confirmed_at)
       VALUES (?, ?, 'confirmed', ?, ?, 1000, 'paid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
       .run(clientId, companyId, destination, recipient).lastInsertRowid);
-    return transaction(() => createDeliveryForEligibleOrderInTransaction(orderId));
+    return transaction(() => {
+      const result = createDeliveryForEligibleOrderInTransaction(orderId);
+      recordPaymentInTransaction(db, {
+        id: orderId, clientId, itemsTotalCents: 1000,
+        freightTotalCents: null,
+        paymentPaidAt: db.prepare("SELECT payment_paid_at AS value FROM orders WHERE id = ?")
+          .get(orderId).value,
+      }, result.delivery.id);
+      return result;
+    });
   }
   const post = (cookie, id, action, body = {}) => request(`/api/courier/deliveries/${id}/${action}`,
     { cookie, method: "POST", body });

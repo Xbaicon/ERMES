@@ -66,10 +66,34 @@ export function calculateFreight({ weightKg, distanceKm, estimatedMinutes, confi
 }
 
 export function splitNormalFreight(totalCents) {
-  const total = Number(totalCents);
-  if (!Number.isInteger(total) || total < 0) throw new RangeError("O total deve ser informado em centavos.");
-  const courierCents = Math.round(total * 0.7);
-  const companyCents = Math.round(total * 0.25);
-  const ermesCents = total - courierCents - companyCents;
-  return { courierCents, companyCents, ermesCents };
+  if (typeof totalCents !== "number" || !Number.isSafeInteger(totalCents) || totalCents < 0) {
+    throw new RangeError("O total deve ser informado em centavos inteiros seguros.");
+  }
+
+  const totalBigInt = BigInt(totalCents);
+  const shares = [
+    { key: "courierCents", percentage: 70n, priority: 0 },
+    { key: "companyCents", percentage: 25n, priority: 1 },
+    { key: "ermesCents", percentage: 5n, priority: 2 },
+  ].map((share) => {
+    const exactNumerator = totalBigInt * share.percentage;
+    return {
+      ...share,
+      cents: exactNumerator / 100n,
+      remainder: exactNumerator % 100n,
+    };
+  });
+
+  let remaining = totalBigInt - shares.reduce((sum, share) => sum + share.cents, 0n);
+  const byLargestRemainder = [...shares].sort((left, right) => {
+    if (left.remainder !== right.remainder) return left.remainder > right.remainder ? -1 : 1;
+    return left.priority - right.priority;
+  });
+  for (const share of byLargestRemainder) {
+    if (remaining === 0n) break;
+    share.cents += 1n;
+    remaining -= 1n;
+  }
+
+  return Object.fromEntries(shares.map(({ key, cents }) => [key, Number(cents)]));
 }

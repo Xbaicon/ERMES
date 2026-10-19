@@ -209,14 +209,19 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     assert.match(storedDelivery.confirmation_code_ciphertext, /^aes-256-gcm\$/);
     assert.equal(JSON.stringify(storedDelivery).includes(payment.confirmationCode), false);
     assert.equal(db.prepare("SELECT COUNT(*) AS value FROM delivery_events WHERE delivery_id = ? AND event_type = 'delivery_created'").get(storedDelivery.id).value, 1);
-    const forbiddenTables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'
-      AND lower(name) IN ('payments', 'refunds', 'reimbursements', 'financial_distributions')`).all();
-    assert.deepEqual(forbiddenTables, []);
+    assert.deepEqual(db.prepare(`SELECT entry_type AS entryType, component, party_type AS partyType,
+      amount_cents AS amountCents, reason, delivery_id AS deliveryId
+      FROM financial_entries WHERE order_id = ? ORDER BY id`).all(ownConfirmed.id).map((row) => ({ ...row })), [{
+      entryType: "payment", component: "products", partyType: "client",
+      amountCents: before.order.itemsTotalCents, reason: "simulated_payment", deliveryId: storedDelivery.id,
+    }]);
   });
 
   await context.test("repeticao idempotente preserva payment_paid_at e todos os dados", async () => {
     const before = { order: storedOrder(ownConfirmed.id), items: storedItems(ownConfirmed.id),
-      deliveries: db.prepare("SELECT COUNT(*) AS value FROM deliveries").get().value };
+      deliveries: db.prepare("SELECT COUNT(*) AS value FROM deliveries").get().value,
+      financialEntries: db.prepare("SELECT COUNT(*) AS value FROM financial_entries WHERE order_id = ?")
+        .get(ownConfirmed.id).value };
     const response = await pay(firstClient.cookie, ownConfirmed.id);
     assert.equal(response.status, 200);
     const repeatedResult = await response.json();
@@ -229,7 +234,9 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     assert.equal(repeated.paymentStatus, "paid");
     assert.equal(repeated.paymentPaidAt, before.order.paymentPaidAt);
     assert.deepEqual({ order: storedOrder(ownConfirmed.id), items: storedItems(ownConfirmed.id),
-      deliveries: db.prepare("SELECT COUNT(*) AS value FROM deliveries").get().value }, before);
+      deliveries: db.prepare("SELECT COUNT(*) AS value FROM deliveries").get().value,
+      financialEntries: db.prepare("SELECT COUNT(*) AS value FROM financial_entries WHERE order_id = ?")
+        .get(ownConfirmed.id).value }, before);
   });
 
   await context.test("pedido paid permanece consultavel e nao editavel", async () => {
@@ -272,6 +279,8 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     assert.equal(db.prepare("SELECT COUNT(*) AS value FROM deliveries WHERE order_id = ?").get(concurrentConfirmed.id).value, 1);
     assert.equal(db.prepare(`SELECT COUNT(*) AS value FROM delivery_events e JOIN deliveries d ON d.id = e.delivery_id
       WHERE d.order_id = ? AND e.event_type = 'delivery_created'`).get(concurrentConfirmed.id).value, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS value FROM financial_entries WHERE order_id = ?")
+      .get(concurrentConfirmed.id).value, 1);
   });
 
   await context.test("rejeita dados comerciais persistidos inconsistentes sem pagamento parcial", async () => {
@@ -299,18 +308,34 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     assert.equal(storedOrder(confirmed.id).paymentPaidAt, null);
     assert.equal(db.prepare("SELECT COUNT(*) AS total FROM deliveries WHERE order_id = ?")
       .get(confirmed.id).total, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS total FROM financial_entries WHERE order_id = ?")
+      .get(confirmed.id).total, 0);
     db.exec("DROP TRIGGER fail_delivery_created");
   });
 
-  await context.test("rejeita situacao de pagamento persistida incompativel", async () => {
+  await context.test("falha no lançamento financeiro desfaz pagamento, entrega e evento inicial", async () => {
     const draft = await createDraft(firstClient.cookie, company.id, product.id);
     const confirmed = await confirmDraft(companyCookie, draft);
-    db.prepare("UPDATE orders SET payment_status = 'refunded' WHERE id = ?").run(confirmed.id);
-    const before = storedOrder(confirmed.id);
+    db.exec(`CREATE TRIGGER fail_payment_entry BEFORE INSERT ON financial_entries
+             WHEN NEW.order_id = ${confirmed.id}
+             BEGIN SELECT RAISE(ABORT, 'forced payment entry failure'); END;`);
     const response = await pay(firstClient.cookie, confirmed.id);
-    assert.equal(response.status, 409);
-    assert.match((await response.json()).error, /situa..o de pagamento.*incompat.vel/i);
-    assert.deepEqual(storedOrder(confirmed.id), before);
-    assert.equal(before.paymentPaidAt, null);
+    db.exec("DROP TRIGGER fail_payment_entry");
+    assert.equal(response.status, 500);
+    assert.equal(storedOrder(confirmed.id).paymentStatus, "pending");
+    assert.equal(storedOrder(confirmed.id).paymentPaidAt, null);
+    assert.equal(db.prepare("SELECT COUNT(*) AS total FROM deliveries WHERE order_id = ?")
+      .get(confirmed.id).total, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS total FROM financial_entries WHERE order_id = ?")
+      .get(confirmed.id).total, 0);
+  });
+
+  await context.test("banco rejeita situacao de pagamento fora de pending ou paid", async () => {
+    const draft = await createDraft(firstClient.cookie, company.id, product.id);
+    const confirmed = await confirmDraft(companyCookie, draft);
+    assert.throws(() => db.prepare("UPDATE orders SET payment_status = 'refunded' WHERE id = ?")
+      .run(confirmed.id), /invalid payment status/);
+    assert.equal(storedOrder(confirmed.id).paymentStatus, "pending");
+    assert.equal(storedOrder(confirmed.id).paymentPaidAt, null);
   });
 });

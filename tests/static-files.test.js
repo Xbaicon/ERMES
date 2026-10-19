@@ -98,6 +98,7 @@ test("painel conecta consulta e pagamento simulado dos pedidos confirmados", asy
   assert.match(html, /pagamento garante uma entrega dispon.vel/i);
   assert.match(html, /c.digo permanece acess.vel ao cliente/i);
   assert.match(html, /data-delivery-panel="client"/);
+  assert.match(html, /data-courier-financial/);
   assert.doesNotMatch(html, /\uFFFD/);
   assert.doesNotMatch(payments, /\uFFFD/);
   assert.match(panel, /import \{ setupClientPayments \} from "\.\/client-payments\.js"/);
@@ -107,6 +108,9 @@ test("painel conecta consulta e pagamento simulado dos pedidos confirmados", asy
   assert.match(payments, /`\/api\/client\/orders\/\$\{orderId\}\/pay`/);
   assert.match(payments, /method: "POST"/);
   assert.doesNotMatch(payments, /card|cart.o|pix|qr code|gateway/i);
+  const deliveries = await readFile(resolve(publicRoot, "js/delivery-panels.js"), "utf8");
+  assert.match(deliveries, /api\("\/api\/courier\/financial-entries"\)/);
+  assert.match(deliveries, /Total reembolsado/);
 });
 
 test("painel conecta consulta e edição acessíveis dos pedidos draft", async () => {

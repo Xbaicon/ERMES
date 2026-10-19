@@ -5,12 +5,16 @@ import { fileURLToPath } from "node:url";
 import {
   encryptConfirmationCode, hashConfirmationCode, hashPassword, newConfirmationCode,
 } from "./security.js";
+import { backfillFinancialEntries, isCanonicalTimestamp } from "./finance.js";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databasePath = process.env.ERMES_DB_PATH || resolve(projectRoot, "data", "ermes.sqlite");
 mkdirSync(dirname(databasePath), { recursive: true });
 
 export const db = new DatabaseSync(databasePath);
+db.function("is_canonical_timestamp", { deterministic: true }, (value) => (
+  isCanonicalTimestamp(value) ? 1 : 0
+));
 db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
 
 db.exec(`
@@ -96,7 +100,7 @@ db.exec(`
     route_snapshot_json TEXT,
     items_total_cents INTEGER NOT NULL DEFAULT 0,
     freight_total_cents INTEGER,
-    payment_status TEXT NOT NULL DEFAULT 'pending',
+    payment_status TEXT NOT NULL DEFAULT 'pending' CHECK(payment_status IN ('pending', 'paid')),
     payment_paid_at TEXT,
     confirmed_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -143,6 +147,210 @@ db.exec(`
     details_json TEXT NOT NULL DEFAULT '{}',
     occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS financial_entries (
+    id INTEGER PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    delivery_id INTEGER REFERENCES deliveries(id),
+    entry_type TEXT NOT NULL CHECK(entry_type IN ('payment', 'refund', 'distribution')),
+    component TEXT NOT NULL CHECK(component IN ('products', 'freight')),
+    party_type TEXT NOT NULL CHECK(party_type IN ('client', 'courier', 'company', 'ermes')),
+    party_user_id INTEGER REFERENCES users(id),
+    party_company_id INTEGER REFERENCES companies(id),
+    amount_cents INTEGER NOT NULL CHECK(
+      typeof(amount_cents) = 'integer'
+      AND amount_cents >= 0
+      AND amount_cents <= 9007199254740991
+    ),
+    reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),
+    idempotency_key TEXT NOT NULL UNIQUE CHECK(length(trim(idempotency_key)) > 0),
+    occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK(
+      (entry_type = 'payment' AND party_type = 'client')
+      OR (entry_type = 'refund' AND party_type = 'client')
+      OR (entry_type = 'distribution' AND component = 'freight'
+          AND party_type IN ('courier', 'company', 'ermes'))
+    ),
+    CHECK(
+      (party_type IN ('client', 'courier') AND party_user_id IS NOT NULL AND party_company_id IS NULL)
+      OR (party_type = 'company' AND party_user_id IS NULL AND party_company_id IS NOT NULL)
+      OR (party_type = 'ermes' AND party_user_id IS NULL AND party_company_id IS NULL)
+    )
+  );
+
+  CREATE INDEX IF NOT EXISTS financial_entries_order ON financial_entries(order_id, id);
+  CREATE INDEX IF NOT EXISTS financial_entries_delivery ON financial_entries(delivery_id, id);
+  CREATE INDEX IF NOT EXISTS financial_entries_party_user
+    ON financial_entries(party_type, party_user_id, id);
+  CREATE INDEX IF NOT EXISTS financial_entries_party_company
+    ON financial_entries(party_type, party_company_id, id);
+
+  CREATE TRIGGER IF NOT EXISTS order_payment_status_insert
+    BEFORE INSERT ON orders
+    WHEN NEW.payment_status NOT IN ('pending', 'paid')
+    BEGIN SELECT RAISE(ABORT, 'invalid payment status'); END;
+
+  CREATE TRIGGER IF NOT EXISTS order_payment_status_update
+    BEFORE UPDATE OF payment_status ON orders
+    WHEN NEW.payment_status NOT IN ('pending', 'paid')
+    BEGIN SELECT RAISE(ABORT, 'invalid payment status'); END;
+
+  CREATE TRIGGER IF NOT EXISTS order_payment_ledger_regression_update
+    BEFORE UPDATE OF payment_status ON orders
+    WHEN OLD.payment_status = 'paid' AND NEW.payment_status = 'pending'
+      AND EXISTS (
+        SELECT 1 FROM financial_entries payment
+        WHERE payment.order_id = OLD.id AND payment.entry_type = 'payment'
+      )
+    BEGIN SELECT RAISE(ABORT, 'paid order with financial evidence cannot return to pending'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entry_delivery_order_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NEW.delivery_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM deliveries d WHERE d.id = NEW.delivery_id AND d.order_id = NEW.order_id
+    )
+    BEGIN SELECT RAISE(ABORT, 'financial entry delivery does not belong to order'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entry_valid_amount_insert
+    BEFORE INSERT ON financial_entries
+    WHEN typeof(NEW.amount_cents) <> 'integer'
+      OR NEW.amount_cents < 0 OR NEW.amount_cents > 9007199254740991
+    BEGIN SELECT RAISE(ABORT, 'financial amount must be safe integer cents'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entry_valid_kind_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NOT (
+      (NEW.entry_type = 'payment' AND NEW.party_type = 'client'
+        AND NEW.reason = 'simulated_payment')
+      OR (NEW.entry_type = 'refund' AND NEW.party_type = 'client'
+        AND NEW.delivery_id IS NOT NULL
+        AND NEW.reason IN ('client_cancelled_after_pickup', 'product_unavailable'))
+      OR (NEW.entry_type = 'distribution' AND NEW.component = 'freight'
+        AND NEW.delivery_id IS NOT NULL
+        AND ((NEW.reason = 'delivery_completed'
+              AND NEW.party_type IN ('courier', 'company', 'ermes'))
+          OR (NEW.reason = 'client_cancelled_after_pickup' AND NEW.party_type = 'courier')))
+    )
+    BEGIN SELECT RAISE(ABORT, 'invalid financial entry kind'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entry_payment_owner_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NEW.entry_type = 'payment' AND NOT EXISTS (
+      SELECT 1 FROM orders o JOIN users client ON client.id = o.client_id
+      WHERE o.id = NEW.order_id AND client.role = 'client'
+        AND NEW.party_user_id = o.client_id AND NEW.party_company_id IS NULL
+        AND ((NEW.component = 'products' AND NEW.amount_cents = o.items_total_cents)
+          OR (NEW.component = 'freight' AND o.freight_total_cents IS NOT NULL
+              AND NEW.amount_cents = o.freight_total_cents))
+    )
+    BEGIN SELECT RAISE(ABORT, 'payment does not match order and client'); END;
+
+  DROP TRIGGER IF EXISTS financial_entry_payment_state_insert;
+  CREATE TRIGGER financial_entry_payment_state_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NEW.entry_type = 'payment' AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.id = NEW.order_id AND o.payment_status = 'paid'
+        AND is_canonical_timestamp(o.payment_paid_at) = 1
+    )
+    BEGIN SELECT RAISE(ABORT, 'payment requires paid order with valid timestamp'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entry_one_payment_component_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NEW.entry_type = 'payment' AND EXISTS (
+      SELECT 1 FROM financial_entries existing
+      WHERE existing.order_id = NEW.order_id AND existing.entry_type = 'payment'
+        AND existing.component = NEW.component
+    )
+    BEGIN SELECT RAISE(ABORT, 'payment component already recorded'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entry_refund_owner_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NEW.entry_type = 'refund' AND NOT EXISTS (
+      SELECT 1 FROM orders o JOIN users client ON client.id = o.client_id
+      JOIN financial_entries payment ON payment.order_id = o.id
+        AND payment.entry_type = 'payment' AND payment.component = NEW.component
+      WHERE o.id = NEW.order_id AND client.role = 'client'
+        AND NEW.party_user_id = o.client_id AND NEW.party_company_id IS NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'refund does not match paid order component and client'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entry_over_refund_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NEW.entry_type = 'refund' AND (
+      COALESCE((SELECT SUM(amount_cents) FROM financial_entries
+        WHERE order_id = NEW.order_id AND entry_type = 'refund'
+          AND component = NEW.component), 0) + NEW.amount_cents
+    ) > COALESCE((SELECT SUM(amount_cents) FROM financial_entries
+      WHERE order_id = NEW.order_id AND entry_type = 'payment'
+        AND component = NEW.component), 0)
+    BEGIN SELECT RAISE(ABORT, 'refund exceeds effectively paid component'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entry_distribution_owner_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NEW.entry_type = 'distribution' AND NOT EXISTS (
+      SELECT 1 FROM deliveries d JOIN orders o ON o.id = d.order_id
+      WHERE d.id = NEW.delivery_id AND o.id = NEW.order_id
+        AND EXISTS (SELECT 1 FROM financial_entries payment
+          WHERE payment.order_id = o.id AND payment.entry_type = 'payment'
+            AND payment.component = 'freight')
+        AND (
+          (NEW.party_type = 'company' AND NEW.reason = 'delivery_completed'
+            AND d.status = 'completed' AND NEW.party_company_id = o.company_id)
+          OR (NEW.party_type = 'ermes' AND NEW.reason = 'delivery_completed'
+            AND d.status = 'completed')
+          OR (NEW.party_type = 'courier' AND EXISTS (
+            SELECT 1 FROM users courier
+            WHERE courier.id = NEW.party_user_id AND courier.role = 'courier'
+              AND courier.company_id = o.company_id
+              AND (
+                (NEW.reason = 'delivery_completed' AND d.status = 'completed'
+                  AND (d.courier_id = courier.id OR EXISTS (
+                    SELECT 1 FROM delivery_events completed
+                    WHERE completed.delivery_id = d.id
+                      AND completed.event_type = 'delivery_completed'
+                      AND completed.actor_user_id = courier.id)))
+                OR (NEW.reason = 'client_cancelled_after_pickup'
+                  AND d.status IN ('returning', 'awaiting_return_confirmation', 'returned')
+                  AND (d.courier_id = courier.id OR EXISTS (
+                    SELECT 1 FROM delivery_events operated
+                    WHERE operated.delivery_id = d.id AND operated.actor_user_id = courier.id
+                      AND operated.event_type IN ('order_collected', 'return_reported'))))
+              )
+          ))
+        )
+    )
+    BEGIN SELECT RAISE(ABORT, 'distribution beneficiary does not match delivery'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entry_one_distribution_party_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NEW.entry_type = 'distribution' AND EXISTS (
+      SELECT 1 FROM financial_entries existing
+      WHERE existing.delivery_id = NEW.delivery_id AND existing.entry_type = 'distribution'
+        AND existing.reason = NEW.reason AND existing.party_type = NEW.party_type
+        AND COALESCE(existing.party_user_id, -1) = COALESCE(NEW.party_user_id, -1)
+        AND COALESCE(existing.party_company_id, -1) = COALESCE(NEW.party_company_id, -1)
+    )
+    BEGIN SELECT RAISE(ABORT, 'distribution for beneficiary already recorded'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entry_distribution_limit_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NEW.entry_type = 'distribution' AND (
+      COALESCE((SELECT SUM(amount_cents) FROM financial_entries
+        WHERE delivery_id = NEW.delivery_id AND entry_type = 'distribution'
+          AND reason = NEW.reason), 0) + NEW.amount_cents
+    ) > COALESCE((SELECT SUM(amount_cents) FROM financial_entries
+      WHERE order_id = NEW.order_id AND entry_type = 'payment'
+        AND component = 'freight'), 0)
+    BEGIN SELECT RAISE(ABORT, 'distribution exceeds effectively paid freight'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entries_append_only_update
+    BEFORE UPDATE ON financial_entries
+    BEGIN SELECT RAISE(ABORT, 'financial entries are append-only'); END;
+
+  CREATE TRIGGER IF NOT EXISTS financial_entries_append_only_delete
+    BEFORE DELETE ON financial_entries
+    BEGIN SELECT RAISE(ABORT, 'financial entries are append-only'); END;
 
   CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
@@ -232,6 +440,8 @@ export function transaction(work) {
     throw error;
   }
 }
+
+transaction(() => backfillFinancialEntries(db));
 
 export function seedDevelopmentData() {
   const exists = db.prepare("SELECT id FROM companies WHERE cnpj = ?").get("00000000000191");
