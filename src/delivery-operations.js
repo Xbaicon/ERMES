@@ -1,6 +1,11 @@
 import { db, transaction } from "./database.js";
 import { DELIVERY_EVENT_TYPES, DELIVERY_STATES } from "./deliveries.js";
 import { decryptConfirmationCode, verifyConfirmationCode } from "./security.js";
+import {
+  clientFinancialSummary, companyFinancialSummary, courierFinancialSummary,
+  recordClientCancellationAfterPickupInTransaction, recordNormalCompletionInTransaction,
+  recordProductUnavailableInTransaction,
+} from "./finance.js";
 
 const TERMINAL_STATES = Object.freeze([
   DELIVERY_STATES.COMPLETED, DELIVERY_STATES.CANCELLED, DELIVERY_STATES.RETURNED,
@@ -47,6 +52,8 @@ function findDelivery(id) {
                             o.client_id AS clientId, o.company_id AS companyId,
                             o.items_total_cents AS itemsTotalCents,
                             o.freight_total_cents AS freightTotalCents,
+                            o.payment_status AS paymentStatus,
+                            o.payment_paid_at AS paymentPaidAt,
                             o.destination_snapshot_json AS destinationSnapshotJson,
                             o.recipient_snapshot_json AS recipientSnapshotJson,
                             c.name AS companyName, c.address_json AS pickupAddressJson,
@@ -130,15 +137,24 @@ function withHistory(row, options) {
   return { ...publicDelivery(row, options), events: history(row.id) };
 }
 
-const courierView = (row) => withHistory(row, {
-  includeClient: true, includeDestination: true, includePickupAddress: true, includeRecipient: true,
+const courierView = (row) => ({
+  ...withHistory(row, {
+    includeClient: true, includeDestination: true, includePickupAddress: true, includeRecipient: true,
+  }),
+  financial: courierFinancialSummary(db, row),
 });
-const clientView = (row) => withHistory(row, {
-  includeAmounts: true, includeCourier: true, includeDestination: true, includeRecipient: true,
+const clientView = (row) => ({
+  ...withHistory(row, {
+    includeAmounts: true, includeCourier: true, includeDestination: true, includeRecipient: true,
+  }),
+  financial: clientFinancialSummary(db, row),
 });
-const companyView = (row) => withHistory(row, {
-  includeAmounts: true, includeClient: true, includeCourier: true,
-  includeDestination: true, includePickupAddress: true, includeRecipient: true,
+const companyView = (row) => ({
+  ...withHistory(row, {
+    includeAmounts: true, includeClient: true, includeCourier: true,
+    includeDestination: true, includePickupAddress: true, includeRecipient: true,
+  }),
+  financial: companyFinancialSummary(db, row),
 });
 
 function event(deliveryId, actorUserId, eventType, details = {}) {
@@ -275,6 +291,7 @@ export function confirmDelivery(id, courierId, companyId, body) {
       db.prepare(`UPDATE deliveries SET status = ?, completed_at = CURRENT_TIMESTAMP
                   WHERE id = ? AND status = ?`).run(DELIVERY_STATES.COMPLETED, id, delivery.status);
       event(id, courierId, DELIVERY_EVENT_TYPES.COMPLETED);
+      recordNormalCompletionInTransaction(db, delivery);
       return { valid: true, delivery: courierView(requireDelivery(id)) };
     }
     const attempt = delivery.invalidCodeAttempts + 1;
@@ -380,7 +397,8 @@ export function cancelClientDelivery(id, clientId, body) {
         .run(DELIVERY_STATES.RETURNING, "client_cancelled_after_pickup", id);
       if (late) db.prepare("UPDATE users SET order_blocked_until = datetime('now', '+2 hours') WHERE id = ?").run(clientId);
       event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_AFTER_PICKUP,
-        { lateCancellation: late, financialProcessing: "pending" });
+        { lateCancellation: late });
+      recordClientCancellationAfterPickupInTransaction(db, delivery);
     } else {
       throw deliveryError("A entrega não pode ser cancelada pelo cliente no estado atual.");
     }
@@ -397,6 +415,7 @@ export function cancelForUnavailableProduct(id, companyUserId, companyId, body) 
     db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, cancelled_at = CURRENT_TIMESTAMP
                 WHERE id = ?`).run(DELIVERY_STATES.CANCELLED, id);
     event(id, companyUserId, DELIVERY_EVENT_TYPES.PRODUCT_UNAVAILABLE);
+    recordProductUnavailableInTransaction(db, delivery);
     return companyView(requireDelivery(id));
   });
 }

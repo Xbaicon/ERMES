@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeAddress } from "./address.js";
 import { db, seedDevelopmentData, transaction } from "./database.js";
 import { calculateFreight, splitNormalFreight } from "./freight.js";
+import { listCourierFinancialEntries } from "./finance.js";
 import { confirmCompanyDraftOrder, confirmSimulatedPayment, createDraftOrder, getClientConfirmedOrder, getCompanyDraftOrder, getDraftOrder, listClientConfirmedOrders, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
 import { assertPassword, isEmail, isValidCnpj, isValidCpf, normalizeEmail, onlyDigits, requireFields } from "./validation.js";
@@ -461,6 +462,10 @@ async function api(request, response, url) {
   if (request.method === "GET" && pathname === "/api/courier/deliveries/current") {
     const user = requireUser(request, ["courier"]);
     return json(response, 200, { delivery: getCourierCurrentDelivery(user.id, user.companyId) });
+  }
+  if (request.method === "GET" && pathname === "/api/courier/financial-entries") {
+    const user = requireUser(request, ["courier"]);
+    return json(response, 200, listCourierFinancialEntries(db, user.id, user.companyId));
   }
   const courierActionMatch = pathname.match(/^\/api\/courier\/deliveries\/([^/]+)\/(accept|arrive-pickup|collect|arrive-destination|confirm|fail|occurrences|report-return)$/);
   if (request.method === "POST" && courierActionMatch) {

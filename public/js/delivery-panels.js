@@ -11,6 +11,42 @@ function address(value = {}) {
     .filter(Boolean).join(", ");
 }
 
+const pendingLabels = Object.freeze({
+  freight_amount_unavailable: "O efeito sobre o frete aguarda um valor de frete legitimamente preservado.",
+  freight_payment_reconciliation_required: "O frete preservado exige reconciliação com o histórico de pagamento.",
+  freight_distribution_rule_undefined: "A distribuição interna do frete permanece pendente na Baseline 0.1.",
+  client_cancellation_before_pickup_refund_rule_undefined: "A Baseline 0.1 não definiu o reembolso do cancelamento antes da coleta.",
+});
+const paymentStatusLabels = Object.freeze({
+  pending: "Pendente", paid: "Pago",
+});
+const refundStatusLabels = Object.freeze({
+  none: "Sem reembolso", partial: "Parcial", full: "Integral",
+});
+
+function financialDetails(role, financial, money, escapeHtml) {
+  if (!financial) return "";
+  if (role === "client") {
+    const paidFreight = financial.paidFreightCents === null
+      ? "frete sem valor preservado" : money(financial.paidFreightCents);
+    const refunds = financial.refunds.length
+      ? financial.refunds.map((entry) => `<li>${entry.component === "products" ? "Produtos" : "Frete"}: <strong>${money(entry.amountCents)}</strong></li>`).join("")
+      : "<li>Nenhum reembolso registrado.</li>";
+    return `<div class="delivery-financial"><h4>Financeiro</h4>
+      <p class="form-copy"><strong>Situação:</strong> ${escapeHtml(paymentStatusLabels[financial.paymentStatus] || financial.paymentStatus)}</p>
+      <p class="form-copy"><strong>Reembolso:</strong> ${escapeHtml(refundStatusLabels[financial.refundStatus] || financial.refundStatus)}</p>
+      <p class="form-copy"><strong>Pagamento preservado:</strong> produtos ${financial.paidItemsCents === null ? "não registrado" : money(financial.paidItemsCents)} · frete ${paidFreight}</p>
+      <ul>${refunds}</ul><p class="form-copy"><strong>Total reembolsado:</strong> ${money(financial.refundedTotalCents)}</p>
+      ${financial.pending.map((item) => `<p class="form-copy">${escapeHtml(pendingLabels[item] || item)}</p>`).join("")}</div>`;
+  }
+  const distributions = financial.distributions.length
+    ? financial.distributions.map((entry) => `<li>Frete: <strong>${money(entry.amountCents)}</strong></li>`).join("")
+    : "<li>Nenhuma parcela registrada.</li>";
+  return `<div class="delivery-financial"><h4>Financeiro</h4><ul>${distributions}</ul>
+    <p class="form-copy"><strong>Total destinado a este perfil:</strong> ${money(financial.totalReceivedCents)}</p>
+    ${financial.pending.map((item) => `<p class="form-copy">${escapeHtml(pendingLabels[item] || item)}</p>`).join("")}</div>`;
+}
+
 function actions(role, delivery, courierCanAccept) {
   if (role === "client" && ["available", "heading_to_pickup", "awaiting_pickup", "in_transit", "awaiting_confirmation"].includes(delivery.status)) {
     return '<button class="button button-outline button-small" data-delivery-action="cancel">Cancelar entrega</button>';
@@ -45,7 +81,8 @@ function actions(role, delivery, courierCanAccept) {
   return html;
 }
 
-export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage }) {
+export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage,
+  money = (cents) => `R$ ${(Number(cents) / 100).toFixed(2)}` }) {
   const panel = document.querySelector(`[data-delivery-panel="${role}"]`);
   if (!panel) return;
   panel.hidden = false;
@@ -53,6 +90,7 @@ export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage })
   const detail = panel.querySelector("[data-delivery-detail]");
   const message = panel.querySelector("[data-delivery-message]");
   const reload = panel.querySelector("[data-delivery-reload]");
+  const courierFinancial = panel.querySelector("[data-courier-financial]");
   let deliveries = [];
   let selected = null;
   let courierCanAccept = false;
@@ -79,6 +117,7 @@ export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage })
       <p class="form-copy"><strong>Motoboy:</strong> ${escapeHtml(selected.courier?.fullName || "Ainda não atribuído")}</p>
       ${selected.courier ? `<p class="form-copy"><strong>Veículo:</strong> ${escapeHtml([selected.courier.vehicleType, selected.courier.vehicleIdentifier, selected.courier.plate].filter(Boolean).join(" · "))}</p>` : ""}
       ${selected.confirmationCode ? `<p class="confirmation-code"><strong>Código de confirmação:</strong> <code>${escapeHtml(selected.confirmationCode)}</code></p>` : ""}
+      ${financialDetails(role, selected.financial, money, escapeHtml)}
       <div class="delivery-actions">${actions(role, selected, courierCanAccept)}</div>
       <h4>Histórico</h4>
       <ol class="delivery-events">${events.map((item) => `<li><strong>${escapeHtml(item.eventType)}</strong><small>${escapeHtml(item.occurredAt)}</small></li>`).join("")}</ol>`;
@@ -87,10 +126,21 @@ export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage })
   async function load() {
     message.hidden = true;
     if (role === "courier") {
-      const [available, current, availability] = await Promise.all([
+      const [available, current, availability, earnings] = await Promise.all([
         api("/api/courier/deliveries/available"), api("/api/courier/deliveries/current"),
         api("/api/courier/availability"),
+        api("/api/courier/financial-entries").catch((error) => ({
+          entries: [], totalReceivedCents: 0, unavailableMessage: error.message,
+        })),
       ]);
+      if (courierFinancial) {
+        const financialEntries = Array.isArray(earnings?.entries) ? earnings.entries : [];
+        courierFinancial.innerHTML = `<h3>Remunerações registradas</h3>
+          <p class="form-copy"><strong>Total:</strong> ${money(earnings?.totalReceivedCents ?? 0)}</p>
+          ${earnings?.unavailableMessage
+    ? `<p class="empty-copy">Informações financeiras indisponíveis: ${escapeHtml(earnings.unavailableMessage)}</p>`
+    : financialEntries.length ? `<ul>${financialEntries.map((entry) => `<li>Entrega #${entry.deliveryId}: <strong>${money(entry.amountCents)}</strong><small>${escapeHtml(entry.occurredAt)}</small></li>`).join("")}</ul>` : '<p class="empty-copy">Nenhuma remuneração registrada.</p>'}`;
+      }
       courierCanAccept = availability.isOnline && current.delivery === null;
       deliveries = [...(current.delivery ? [current.delivery] : []), ...available.deliveries];
       if (selected) selected = deliveries.find(({ id }) => id === selected.id) || current.delivery || null;

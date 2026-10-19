@@ -326,8 +326,10 @@ disponível para edição direta.
 
 `GET /client/orders/confirmed` lista somente pedidos com `status = confirmed`
 cujo `client_id` corresponde à sessão. A lista inclui pedidos com pagamento
-`pending` e `paid`, a empresa, quantidade de itens, subtotal preservado,
+`pending` ou `paid`, a empresa, quantidade de itens, subtotal preservado,
 `freightTotalCents`, situação e datas do pagamento e da confirmação comercial.
+Quando houver lançamentos, `refundStatus` é derivado separadamente como `none`,
+`partial` ou `full`, e `refundedTotalCents` informa o total restituído.
 Quando o frete ainda não foi definido, `freightTotalCents` é `null`; ele não é
 convertido para zero nem apresentado como frete grátis.
 
@@ -348,7 +350,8 @@ Listagens, empresa e motoboy nunca recebem o código nem seus dados internos.
 protótipo acadêmico. O corpo deve ser um objeto vazio (`{}`); valores de itens,
 frete, total, situação ou data de pagamento enviados pelo navegador são
 rejeitados. O servidor exige ownership, `status = confirmed`, dados comerciais
-persistidos íntegros e `payment_status = pending` ou `paid` no caso idempotente.
+persistidos íntegros e `payment_status = pending`; `paid` é aceito somente como
+repetição idempotente da operação já consolidada.
 
 Na primeira confirmação válida, a transição atômica é:
 
@@ -359,19 +362,24 @@ payment_paid_at: null -> horário do servidor
 ```
 
 A transação atualiza somente uma linha elegível e garante uma Entrega
-`available` com `delivery_created`. Pedido, Entrega, hash do código e evento
-inicial são atômicos. A primeira resposta inclui `order`, `delivery`,
+`available` com `delivery_created`. Pedido, Entrega, hash do código, evento
+inicial e lançamentos conhecidos do pagamento são atômicos. A primeira resposta inclui `order`, `delivery`,
 `created: true` e `confirmationCode`. O banco mantém hash `scrypt` para validar
 e uma representação cifrada para que somente a consulta autenticada do cliente
 possa recuperar o mesmo código durante a operação. Requisições simultâneas
 produzem uma única Entrega e um único evento. Repetições preservam
 identificadores, timestamps, estado e código, retornando `created: false`.
 
-O significado de `paid` nesta etapa é exclusivamente a confirmação simulada do
+O significado inicial de `paid` é exclusivamente a confirmação simulada do
 passo acadêmico: não há Pix, cartão, gateway, banco, cobrança real, webhook ou
-comprovante. A operação não calcula nem altera frete, não soma um total fictício
-de produtos com frete ausente e não cria tabela financeira, reembolso ou
-distribuição.
+comprovante. A operação não calcula nem altera frete e não soma um total fictício
+quando o frete está ausente. Ela persiste em `financial_entries` o componente de
+produtos e, somente se `freight_total_cents` já possuir valor válido, o componente
+de frete. Cada componente tem chave idempotente, referência ao Pedido e à Entrega,
+valor em centavos e o mesmo horário preservado do pagamento. Repetições não criam
+outro lançamento. `paymentStatus` continua `paid` após qualquer reembolso; a API
+expõe `refundStatus` separadamente, derivado dos lançamentos como `none`, `partial`
+ou `full`.
 
 Identificador ou corpo inválido retorna `400`; ausência de sessão retorna `401`;
 empresa, motoboy e administrador recebem `403`; recurso alheio ou inexistente
@@ -385,6 +393,7 @@ incompatíveis retornam `409`.
 | GET/PATCH | `/courier/availability` | Consultar ou alterar online/offline |
 | GET | `/courier/deliveries/available` | Listar Entregas disponíveis da empresa do motoboy |
 | GET | `/courier/deliveries/current` | Consultar a Entrega ativa atribuída e seu histórico |
+| GET | `/courier/financial-entries` | Listar somente as remunerações de frete do motoboy autenticado |
 | POST | `/courier/deliveries/:id/accept` | Aceitar Entrega disponível |
 | POST | `/courier/deliveries/:id/arrive-pickup` | Registrar chegada ao estabelecimento |
 | POST | `/courier/deliveries/:id/collect` | Registrar coleta |
@@ -416,6 +425,48 @@ grava apenas número e horário da tentativa; a resposta usa HTTP `422` com
 para `returning`; não há método alternativo de conclusão. O motoboy registra o
 retorno e a empresa confirma o recebimento. Hashes, códigos digitados, sessão e
 dados cadastrais sensíveis não aparecem nas respostas.
+
+### Projeções financeiras
+
+O detalhe da Entrega inclui uma projeção `financial` própria do papel. O cliente
+recebe `paymentStatus`, `refundStatus`, componentes pagos conhecidos, reembolsos e total
+reembolsado; não recebe a distribuição destinada à empresa, ao motoboy ou ao
+ERMES. A empresa recebe somente parcelas destinadas à própria empresa. O motoboy
+recebe somente parcelas destinadas a ele. Identificadores internos das partes e
+chaves idempotentes não são expostos.
+
+`GET /courier/financial-entries` exige papel `courier` e usa exclusivamente o
+usuário e a empresa da sessão. Retorna `{ "entries": [], "totalReceivedCents": 0 }`
+quando não há remuneração. Cada item contém apenas `deliveryId`, `orderId`,
+`component`, `amountCents`, `reason` e `occurredAt`. Um motoboy não consegue
+consultar remunerações de outro.
+
+Na conclusão normal, a mesma transação que grava `delivery_completed` persiste
+70% do frete para o motoboy, 25% para a empresa e 5% para o ERMES. A soma das
+parcelas sempre coincide com o frete preservado. O cálculo usa aritmética inteira,
+trunca as três parcelas e distribui resíduos pela maior fração, com desempate na
+ordem motoboy, empresa e ERMES. No cancelamento do cliente após
+a coleta, a mesma transação registra reembolso integral dos produtos, metade do
+frete ao cliente e o restante do frete ao motoboy; em frete ímpar, a metade do
+cliente é arredondada para o centavo superior e o motoboy recebe o restante.
+Produto indisponível registra reembolso integral somente dos componentes
+efetivamente pagos e persistidos; componente não pago não gera lançamento.
+
+`financial_entries` é append-only no banco. Chaves idempotentes repetidas somente
+são aceitas quando Pedido, Entrega, tipo, componente, parte, valor e motivo são
+semanticamente iguais; colisão divergente aborta para reconciliação. Timestamps e
+IDs internos não alteram essa equivalência. UPDATE e DELETE são rejeitados.
+
+Quando `freight_total_cents` é `NULL`, nenhum valor de frete é criado: os efeitos
+sobre o frete ficam indicados em `financial.pending`. Destinatário ausente,
+recusa, endereço incorreto atribuído ao cliente e três códigos inválidos não
+recebem distribuição interna, porque a Baseline 0.1 ainda não a definiu. O mesmo
+vale para o reembolso de cancelamento antes da coleta, que não é inferido pela API.
+Se o frete estiver preservado, mas faltar o lançamento de pagamento correspondente,
+a conclusão aborta com reconciliação financeira e não mantém estado, evento ou
+distribuição parciais; esse caso não é apresentado como frete indisponível.
+Ausência de sessão retorna `401`; papel diferente retorna `403`; os detalhes de
+Entrega de outro cliente ou empresa continuam retornando `404`.
 
 Falha do motoboy antes da coleta redisponibiliza a mesma Entrega; depois da
 coleta exige retorno e, após a dupla verificação, permite redisponibilização.

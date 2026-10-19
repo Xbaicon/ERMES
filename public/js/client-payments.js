@@ -46,9 +46,19 @@ export async function setupClientPayments({ api, money, escapeHtml, showMessage 
     element.textContent = value;
     element.className = `catalog-status${type ? ` ${type}` : ""}`;
   };
-  const paymentLabel = (paymentStatus) => paymentStatus === "paid"
-    ? "Pagamento simulado confirmado"
-    : "Pagamento simulado pendente";
+  const paymentLabels = Object.freeze({
+    pending: "Pagamento simulado pendente",
+    paid: "Pagamento simulado confirmado",
+  });
+  const refundLabels = Object.freeze({
+    none: "Sem reembolso",
+    partial: "Reembolso parcial",
+    full: "Reembolso integral",
+  });
+  const paymentLabel = (paymentStatus) => paymentLabels[paymentStatus] || paymentStatus;
+  const orderFinancialLabel = (order) => order.refundStatus && order.refundStatus !== "none"
+    ? `${paymentLabel(order.paymentStatus)} · ${refundLabels[order.refundStatus]}`
+    : paymentLabel(order.paymentStatus);
 
   const renderList = () => {
     list.innerHTML = orders.map((order) => `
@@ -56,7 +66,7 @@ export async function setupClientPayments({ api, money, escapeHtml, showMessage 
               data-client-payment-order-id="${order.id}" aria-pressed="${order.id === selectedId}"
               ${busy() ? "disabled" : ""}>
         <span>Pedido #${order.id} • ${escapeHtml(order.company.name)}</span>
-        <small>${paymentLabel(order.paymentStatus)} • ${money(order.itemsTotalCents)}</small>
+        <small>${escapeHtml(orderFinancialLabel(order))} • ${money(order.itemsTotalCents)}</small>
       </button>`).join("");
     reloadButton.disabled = busy();
   };
@@ -65,8 +75,8 @@ export async function setupClientPayments({ api, money, escapeHtml, showMessage 
     if (!selectedOrder) return;
     title.textContent = `Pedido #${selectedOrder.id}`;
     company.textContent = selectedOrder.company.name;
-    setStatus(status, paymentLabel(selectedOrder.paymentStatus),
-      selectedOrder.paymentStatus === "paid" ? "success" : "");
+    setStatus(status, orderFinancialLabel(selectedOrder),
+      selectedOrder.paymentStatus === "pending" ? "" : "success");
     confirmedAt.textContent = selectedOrder.confirmedAt;
     paidAt.textContent = selectedOrder.paymentPaidAt || "Ainda não confirmado";
     recipient.textContent = selectedOrder.recipientSnapshot.type === "self"
@@ -165,6 +175,8 @@ export async function setupClientPayments({ api, money, escapeHtml, showMessage 
       const summary = orders.find(({ id }) => id === order.id);
       if (summary) Object.assign(summary, {
         paymentStatus: order.paymentStatus,
+        refundStatus: order.refundStatus,
+        refundedTotalCents: order.refundedTotalCents,
         paymentPaidAt: order.paymentPaidAt,
       });
       renderDetail();

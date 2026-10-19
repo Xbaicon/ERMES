@@ -19,13 +19,14 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Consulta e confirmação de drafts pela empresa | Implementado inicialmente | Lista, detalhe e confirmação `draft -> confirmed` isolados por `company_id`; usa versão otimista, `confirmed_at` e idempotência, sem criar entrega, pagamento ou frete |
 | Endereço padrão do cliente | Implementado inicialmente | Consulta, cadastro e substituição isolados por sessão; geocodificação não bloqueia; snapshots de pedidos permanecem independentes |
 | Destino e destinatário do Pedido | Implementado | Criação aceita endereço padrão ou manual exclusivo do Pedido e destinatário `self` ou `other`; preserva endereço e nome em snapshots históricos, sem múltiplos endereços salvos ou usuário para destinatário |
-| Itens e snapshots históricos | Implementado parcialmente | Draft preserva preço e peso unitários, subtotal, destino e destinatário; frete final e divisão financeira aguardam etapas futuras |
+| Itens e snapshots históricos | Implementado parcialmente | Draft preserva preço e peso unitários, subtotal, destino e destinatário; lançamentos preservam valores financeiros conhecidos; somente a fonte do frete operacional final continua pendente |
 | Cálculo tarifário de frete | Regra e testes implementados | Fórmula, faixas, valores por km/minuto, centavos, limite de 12 kg e entradas técnicas para exercício da fórmula |
 | Frete operacional final | Parcial / pendente de clarificação | Falta somente decisão explícita sobre a fonte operacional de distância e tempo; não autoriza provedor externo, API de rotas, geocodificação, valor fixo, entrada manual ou simulação |
 | Parâmetros tarifários da empresa | Implementado inicialmente | Consulta e edição isoladas por sessão; seis tarifas monetárias persistidas em centavos; limite de 12 kg permanece fixo na aplicação |
 | Geocodificação, rotas e mapas | Opcional/futuro — não bloqueador | Não selecionar nem implementar provedor externo, API de rotas ou solução substituta sem decisão explícita |
-| Pagamento e financeiro | Implementado parcialmente | Pagamento simulado `pending -> paid` garante atomicamente a Entrega; não há gateway, cobrança real, frete inventado, reembolso nem distribuição financeira |
-| Divisão 70/25/5 | Regra e testes implementados | Persistência financeira será ligada ao fluxo da entrega |
+| Pagamento e financeiro | Implementado para regras definidas da 0.1 | Pagamento simulado garante atomicamente a Entrega e lançamentos dos componentes conhecidos; `payment_status` permanece `pending|paid`, `refundStatus` é derivado e o livro-razão append-only protege idempotência semântica, valores seguros e over-refund |
+| Divisão 70/25/5 | Implementado | Conclusão normal usa aritmética inteira e maior resto, com desempate motoboy → empresa → ERMES e soma exata |
+| Reembolsos e exceções financeiras | Implementado para regras definidas da 0.1 | Cancelamento pós-coleta usa `ceil/floor` no 50/50, favorecendo o cliente no centavo ímpar; produto indisponível devolve somente componentes efetivamente pagos; regras pendentes não recebem distribuição inferida |
 | Aceite concorrente da entrega | Implementado | Mesmo estabelecimento, motoboy online, uma entrega ativa por motoboy e aceite único protegidos por transação e índices |
 | Acompanhamento operacional da entrega | Implementado para regras definidas da 0.1 | Nascimento, fluxo normal, histórico, consultas isoladas, falhas, cancelamentos, ocorrências e retorno com dupla verificação; sem GPS ou mapa |
 | Código de confirmação | Implementado | Código de seis dígitos disponível ao cliente durante a operação, validado por hash `scrypt`, cifrado para recuperação autorizada, oculto do motoboy e limitado a três erros |
@@ -56,8 +57,9 @@ Consulte também `BASELINE_0.1_SCOPE_CORRECTION.md` antes de implementar qualque
 - provedor e fluxo técnico de pagamento;
 - nomenclatura final dos estados UML.
 
-As regras financeiras de reembolso e distribuição decorrentes de cancelamentos,
-ausência, recusa, endereço incorreto e falha após três códigos permanecem sem
-persistência porque parte da distribuição está pendente na 0.1 e não existe
-infraestrutura financeira real. A interface de tentativa de contato também
-permanece pendente. Nenhum conceito da Baseline 0.2 foi introduzido.
+A infraestrutura financeira e as consequências expressamente definidas estão
+persistidas. Continuam sem distribuição interna destinatário ausente, recusa,
+endereço incorreto confirmado pelo cliente e falha após três códigos; também não
+foi inferido reembolso para cancelamento antes da coleta. Erro comprovável do
+sistema continua sem valores exatos. A interface de tentativa de contato também
+permanece pendente.

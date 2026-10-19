@@ -550,7 +550,8 @@ Aplica-se quando produto, coleta, transporte e endereço estão corretos e o des
 - Empresa deve marcar produto indisponível quando não puder vendê-lo.
 - Se a empresa permitir a venda e depois não conseguir disponibilizar a mercadoria, a falha é atribuída à empresa.
 - A entrega não volta a DISPONÍVEL para outro motoboy, pois trocar de entregador não resolve falta de produto.
-- Cliente recebe reembolso integral.
+- Cliente recebe de volta todo valor efetivamente pago naquela operação; componente ainda não pago não gera cobrança nem reembolso fictício.
+- A apuração usa exclusivamente a evidência financeira histórica persistida, sem reconstruir valores por configuração atual e sem converter frete desconhecido em zero.
 - Motoboy não recebe compensação especial e fica livre para aceitar outra entrega disponível.
 
 ## Regra geral de retorno da mercadoria — DEFINIDO
@@ -656,6 +657,11 @@ Em entrega concluída normalmente:
 - Empresa: 25% do valor do frete.
 - ERMES: 5% do valor do frete.
 
+A divisão usa somente aritmética inteira. Cada parcela percentual é truncada em
+centavos; os centavos restantes são atribuídos pelas maiores frações residuais.
+Empates seguem a prioridade motoboy, empresa e ERMES, nessa ordem. As três
+parcelas devem somar exatamente o frete preservado.
+
 Exemplo: frete de R$ 20,00 → R$ 14,00 motoboy, R$ 5,00 empresa, R$ 1,00 ERMES.
 
 A distribuição utilizada deve ser preservada no histórico da operação.
@@ -665,7 +671,16 @@ A distribuição utilizada deve ser preservada no histórico da operação.
 - Produtos: reembolso integral ao cliente.
 - Frete: reembolso de 50% ao cliente.
 - Motoboy: recebe 50% do frete.
+- Em frete com quantidade ímpar de centavos, o cliente recebe o centavo indivisível: reembolso `ceil(frete / 2)` e remuneração do motoboy `floor(frete / 2)`.
 - Após tolerância de 3 minutos: mesma regra financeira + restrição de 2 horas para novos pedidos.
+
+## Estado e histórico financeiro — DEFINIDO
+
+- `payment_status` representa somente o pagamento original e admite `pending` ou `paid`; um reembolso não apaga nem renomeia o pagamento histórico.
+- A situação de reembolso é um eixo separado, derivado do livro-razão: `none`, `partial` ou `full` conforme o total efetivamente pago e o total reembolsado.
+- O total reembolsado nunca pode superar o total efetivamente pago.
+- O livro-razão é append-only: lançamentos não são atualizados nem apagados. Correções futuras devem usar lançamentos compensatórios.
+- Recomposição de histórico legado só ocorre com evidência confiável e coerente de pagamento, horário, snapshots e relações. Casos incompletos ou ambíguos permanecem para reconciliação, sem valores inventados nem alteração de estado.
 
 ## Outras falhas
 
