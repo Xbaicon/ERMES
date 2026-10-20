@@ -151,3 +151,23 @@ test("painel da empresa conecta consulta e confirmação comercial dos pedidos d
   assert.ok(drafts.includes("/confirm"));
   for (const method of ["PUT", "PATCH", "DELETE"]) assert.equal(drafts.includes('method: "' + method + '"'), false);
 });
+
+test("painéis conectam o chat por Pedido somente para cliente e empresa", async () => {
+  const html = await readFile(resolve(publicRoot, "pages/painel.html"), "utf8");
+  const panel = await readFile(resolve(publicRoot, "js/painel.js"), "utf8");
+  const chat = await readFile(resolve(publicRoot, "js/order-chat.js"), "utf8");
+
+  assert.match(html, /data-order-chat-panel="client"/);
+  assert.match(html, /data-order-chat-panel="company"/);
+  assert.doesNotMatch(html, /data-order-chat-panel="courier"/);
+  assert.match(html, /data-chat-order-list-status role="status" aria-live="polite"/);
+  assert.match(html, /data-chat-input maxlength="2000"/);
+  assert.match(panel, /import \{ setupOrderChat \} from "\.\/order-chat\.js"/);
+  assert.match(panel, /async function setupClient\(user\)/);
+  assert.match(panel, /setupOrderChat\(\{ role: "client"/);
+  assert.match(panel, /setupOrderChat\(\{ role: "company"/);
+  assert.doesNotMatch(panel, /setupOrderChat\(\{ role: "courier"/);
+  assert.match(chat, /const basePath = `\/api\/\$\{role\}`/);
+  assert.match(chat, /`\$\{basePath\}\/order-chats`/);
+  assert.match(chat, /POLLING_INTERVAL_MS = 5000/);
+});

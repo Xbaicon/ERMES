@@ -3,6 +3,7 @@ import { setupClientDrafts } from "./client-drafts.js";
 import { setupClientPayments } from "./client-payments.js";
 import { setupCompanyDrafts } from "./company-drafts.js";
 import { setupDeliveryPanel } from "./delivery-panels.js";
+import { setupOrderChat } from "./order-chat.js";
 
 (function () {
   "use strict";
@@ -116,6 +117,7 @@ import { setupDeliveryPanel } from "./delivery-panels.js";
       loadFreightConfig(),
       setupCompanyDrafts({ api, money, escapeHtml, showMessage }),
       setupDeliveryPanel({ role: "company", api, escapeHtml, showMessage, money }),
+      setupOrderChat({ role: "company", api, escapeHtml, showMessage }),
     ]).catch(console.error);
   }
 
@@ -200,6 +202,7 @@ import { setupDeliveryPanel } from "./delivery-panels.js";
       setupClientDrafts(dependencies),
       setupClientPayments(dependencies),
       setupDeliveryPanel({ role: "client", api, escapeHtml, showMessage, money }),
+      setupOrderChat({ role: "client", api, escapeHtml, showMessage }),
     ]);
   }
 

@@ -31,7 +31,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Acompanhamento operacional da entrega | Implementado para regras definidas da 0.1 | Nascimento, fluxo normal, histórico, consultas isoladas, falhas, cancelamentos, ocorrências e retorno com dupla verificação; sem GPS ou mapa |
 | Código de confirmação | Implementado | Código de seis dígitos disponível ao cliente durante a operação, validado por hash `scrypt`, cifrado para recuperação autorizada, oculto do motoboy e limitado a três erros |
 | Rastreamento geográfico | Opcional/futuro — não bloqueador | GPS, coordenadas, posição atual/última conhecida, histórico de posições e mapa em tempo real não são pré-requisitos |
-| Chat | Não implementado | Forma exata permanece pendente |
+| Chat cliente ↔ empresa | Implementado | Uma conversa por Pedido, texto livre e sugestões fixas; histórico append-only, autorização por sessão, somente leitura após terminalidade e atualização por polling HTTP |
 | Administrador do ERMES | Não implementado | Casos de uso e permissões permanecem pendentes |
 | Promoções | Não implementado | Opcional e ainda não detalhado |
 
@@ -53,7 +53,6 @@ Consulte também `BASELINE_0.1_SCOPE_CORRECTION.md` antes de implementar qualque
 - fonte operacional e política de falha para distância/tempo do frete;
 - interface de tentativa de contato;
 - campos definitivos do destinatário;
-- tecnologia do chat;
 - provedor e fluxo técnico de pagamento;
 - nomenclatura final dos estados UML.
 
