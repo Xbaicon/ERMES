@@ -90,6 +90,47 @@ test("motoboy offline visualiza a entrega disponível sem receber ação de acei
   }
 });
 
+test("motoboy visualiza a própria atribuição e veículo depois do aceite", async () => {
+  const { panel, elements } = panelFixture();
+  const originalDocument = globalThis.document;
+  const currentDelivery = {
+    ...delivery,
+    status: "heading_to_pickup",
+    courier: {
+      fullName: "Motoboy Teste",
+      vehicleType: "motorcycle",
+      vehicleIdentifier: "Moto vermelha",
+      plate: "ABC1D23",
+    },
+  };
+  globalThis.document = {
+    querySelector: () => panel,
+    addEventListener() {},
+  };
+  try {
+    await setupDeliveryPanel({
+      role: "courier",
+      api: async (path) => ({
+        "/api/courier/deliveries/available": { deliveries: [] },
+        "/api/courier/deliveries/current": { delivery: currentDelivery },
+        "/api/courier/availability": { isOnline: true },
+      })[path],
+      escapeHtml: (value) => String(value),
+      showMessage() {},
+    });
+    elements.get("[data-delivery-list]").listener("click")({
+      target: { closest: () => ({ dataset: { deliveryId: "8" } }) },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const html = elements.get("[data-delivery-detail]").innerHTML;
+    assert.match(html, /Motoboy:<\/strong> Motoboy Teste/);
+    assert.match(html, /motorcycle · Moto vermelha · ABC1D23/);
+    assert.doesNotMatch(html, /Ainda não atribuído/);
+  } finally {
+    globalThis.document = originalDocument;
+  }
+});
+
 test("falha da projeção financeira não bloqueia painel do motoboy e é escapada", async () => {
   const { panel, elements } = panelFixture({ courierFinancial: true });
   const originalDocument = globalThis.document;
