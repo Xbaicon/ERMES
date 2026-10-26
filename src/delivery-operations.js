@@ -139,7 +139,8 @@ function withHistory(row, options) {
 
 const courierView = (row) => ({
   ...withHistory(row, {
-    includeClient: true, includeDestination: true, includePickupAddress: true, includeRecipient: true,
+    includeClient: true, includeCourier: true, includeDestination: true,
+    includePickupAddress: true, includeRecipient: true,
   }),
   financial: courierFinancialSummary(db, row),
 });

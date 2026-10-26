@@ -140,6 +140,37 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       .get(item.delivery.id).total, 1);
   });
 
+  await context.test("motoboy consulta a própria atribuição após aceitar a entrega", async () => {
+    const item = createDelivery();
+    const available = await (await request("/api/courier/deliveries/available",
+      { cookie: cookies.courier1 })).json();
+    const availableDelivery = available.deliveries.find(({ id }) => id === item.delivery.id);
+    assert.ok(availableDelivery);
+    assert.equal(db.prepare("SELECT courier_id AS courierId FROM deliveries WHERE id = ?")
+      .get(item.delivery.id).courierId, null);
+    assert.equal(Object.hasOwn(availableDelivery, "courier"), false);
+
+    const accepted = await post(cookies.courier1, item.delivery.id, "accept");
+    assert.equal(accepted.status, 200);
+    assert.equal((await accepted.json()).delivery.status, "heading_to_pickup");
+
+    const current = await (await request("/api/courier/deliveries/current",
+      { cookie: cookies.courier1 })).json();
+    assert.equal(current.delivery.id, item.delivery.id);
+    assert.equal(current.delivery.status, "heading_to_pickup");
+    assert.deepEqual(current.delivery.courier, {
+      fullName: "motoboy1@ermes.local",
+      vehicleType: "motorcycle",
+      vehicleIdentifier: "Moto vermelha",
+      plate: "ABC1D23",
+    });
+    assert.deepEqual(Object.keys(current.delivery.courier).sort(),
+      ["fullName", "plate", "vehicleIdentifier", "vehicleType"]);
+
+    db.prepare("UPDATE deliveries SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(item.delivery.id);
+  });
+
   await context.test("aceite exige disponibilidade e resolve disputa concorrente uma única vez", async () => {
     const item = createDelivery();
     assert.equal((await post(cookies.offline, item.delivery.id, "accept")).status, 409);
