@@ -428,11 +428,14 @@ async function api(request, response, url) {
   if (request.method === "POST" && pathname === "/api/company/products") {
     const user = requireUser(request, ["company"]);
     const body = await readJson(request);
+    if (!body || Array.isArray(body) || typeof body !== "object") throw badRequest("Informe um produto válido.");
     requireFields(body, ["name", "priceCents", "unitWeightKg"]);
-    if (Number(body.unitWeightKg) <= 0 || Number(body.priceCents) < 0) throw Object.assign(new Error("Preço e peso devem ser válidos."), { statusCode: 400 });
+    if (!Number.isSafeInteger(body.priceCents) || body.priceCents < 0
+      || typeof body.unitWeightKg !== "number" || !Number.isFinite(body.unitWeightKg)
+      || body.unitWeightKg <= 0) throw badRequest("Preço e peso devem ser válidos: centavos inteiros seguros e peso positivo finito.");
     const result = db.prepare(`INSERT INTO products (company_id, name, description, price_cents, unit_weight_kg)
                                VALUES (?, ?, ?, ?, ?)`)
-      .run(user.companyId, String(body.name).trim(), String(body.description || "").trim(), Math.round(Number(body.priceCents)), Number(body.unitWeightKg));
+      .run(user.companyId, String(body.name).trim(), String(body.description || "").trim(), body.priceCents, body.unitWeightKg);
     return json(response, 201, { id: Number(result.lastInsertRowid), message: "Produto cadastrado." });
   }
   const productPatch = pathname.match(/^\/api\/company\/products\/(\d+)$/);
@@ -534,7 +537,7 @@ async function api(request, response, url) {
       if (error instanceof RangeError) error.statusCode = 400;
       throw error;
     }
-    return json(response, 200, { quote, split: splitNormalFreight(quote.totalCents), note: "Distância e tempo devem vir do futuro provedor de rotas, nunca do cliente." });
+    return json(response, 200, { quote, split: splitNormalFreight(quote.totalCents), note: "A fonte operacional de distância e tempo permanece pendente de definição na Baseline 0.1." });
   }
   return false;
 }

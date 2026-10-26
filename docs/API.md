@@ -35,6 +35,14 @@ O e-mail de acesso é normalizado e único em `users.email`, independentemente d
 | POST | `/company/deliveries/:deliveryId/confirm-return` | Confirmar recebimento físico do retorno |
 | POST | `/freight/quote` | Exercitar tecnicamente a fórmula com entradas de teste |
 
+### Valores numéricos dos produtos
+
+`POST /company/products` exige `priceCents` como número inteiro não negativo até
+`Number.MAX_SAFE_INTEGER` e `unitWeightKg` como número finito positivo.
+Strings, valores não finitos, preço fracionário ou fora do intervalo seguro e
+peso não positivo retornam `400` antes de persistir. Não há novo limite comercial
+de preço. O PATCH existente altera somente disponibilidade, não preço ou peso.
+
 ### Parâmetros tarifários
 
 As duas rotas de parâmetros tarifários exigem sessão com papel `company`. A empresa é identificada exclusivamente pelo `companyId` da sessão armazenada no servidor; a API não aceita identificadores de empresa ou usuário no corpo ou na URL.
@@ -539,6 +547,11 @@ também exigem retorno. Os corpos de transições sem parâmetros devem ser `{}`
 Não há dependência de GPS, mapa, geocodificação, rota, distância ou tempo.
 
 ## Observação sobre frete
+
+Total arredondado acima do intervalo de centavos inteiros seguros é rejeitado
+antes da conversão para `Number`; a cotação retorna `400`, sem persistência ou
+lançamento financeiro. O texto `note` informa que a fonte operacional de
+distância e tempo permanece pendente de definição na Baseline 0.1.
 
 `distanceKm` e `estimatedMinutes` são parâmetros técnicos do serviço para
 exercitar a fórmula; eles não constituem contrato de entrada do cliente nem

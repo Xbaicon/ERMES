@@ -7,7 +7,7 @@ const labels = Object.freeze({
 });
 
 function address(value = {}) {
-  return [value.street, value.number, value.neighborhood, value.city, value.state]
+  return [value.street, value.number, value.complement, value.neighborhood, value.city, value.state, value.postalCode]
     .filter(Boolean).join(", ");
 }
 
@@ -51,6 +51,7 @@ function actions(role, delivery, courierCanAccept) {
   if (role === "client" && ["available", "heading_to_pickup", "awaiting_pickup", "in_transit", "awaiting_confirmation"].includes(delivery.status)) {
     return '<button class="button button-outline button-small" data-delivery-action="cancel">Cancelar entrega</button>';
   }
+  if (role === "client") return "";
   if (role === "company") {
     if (["available", "heading_to_pickup", "awaiting_pickup"].includes(delivery.status)) {
       return '<button class="button button-outline button-small" data-delivery-action="product-unavailable">Produto indisponível</button>';
@@ -60,6 +61,7 @@ function actions(role, delivery, courierCanAccept) {
     }
     return "";
   }
+  if (role !== "courier") return "";
   const simple = {
     available: ["accept", courierCanAccept ? "Aceitar entrega" : "Aceite indisponível"],
     heading_to_pickup: ["arrive-pickup", "Registrar chegada à coleta"],
@@ -111,6 +113,7 @@ export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage,
       <p class="catalog-status success"><strong>${escapeHtml(labels[selected.status] || selected.status)}</strong></p>
       <p class="form-copy"><strong>Pedido:</strong> #${selected.orderId} · <strong>Empresa:</strong> ${escapeHtml(selected.company.name)}</p>
       ${selected.destination ? `<p class="form-copy"><strong>Destino:</strong> ${escapeHtml(address(selected.destination))}</p>` : ""}
+      ${role === "courier" && selected.pickupAddress && address(selected.pickupAddress) ? `<p class="form-copy"><strong>Ponto de coleta / devolução:</strong> ${escapeHtml(address(selected.pickupAddress))}</p>` : ""}
       ${selected.recipient ? `<p class="form-copy"><strong>Destinatário:</strong> ${escapeHtml(selected.recipient.type === "self"
         ? `Próprio cliente: ${selected.recipient.name}` : `Outra pessoa: ${selected.recipient.name}`)}</p>` : ""}
       ${selected.client ? `<p class="form-copy"><strong>Cliente:</strong> ${escapeHtml(selected.client.fullName)}${selected.client.phone ? ` · ${escapeHtml(selected.client.phone)}` : ""}</p>` : ""}

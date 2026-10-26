@@ -53,3 +53,11 @@ test("distribui o frete normal sem perder centavos", () => {
   assert.deepEqual(split, { courierCents: 1400, companyCents: 500, ermesCents: 100 });
   assert.equal(Object.values(split).reduce((sum, value) => sum + value, 0), 2000);
 });
+
+test("cotação aceita total no limite seguro e rejeita overflow antes da conversão", () => {
+  const input = { weightKg: 0.5, distanceKm: 0, estimatedMinutes: 0,
+    config: { ...DEFAULT_FREIGHT_CONFIG, under1KgCents: Number.MAX_SAFE_INTEGER, perKmCents: 1 } };
+  assert.equal(calculateFreight(input).totalCents, Number.MAX_SAFE_INTEGER);
+  assert.throws(() => calculateFreight({ ...input, distanceKm: 1 }), /inteiros seguros/);
+  assert.throws(() => calculateFreight({ weightKg: 1, distanceKm: 1e20, estimatedMinutes: 1 }), /inteiros seguros/);
+});
