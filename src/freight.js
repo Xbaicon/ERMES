@@ -49,7 +49,11 @@ export function calculateFreight({ weightKg, distanceKm, estimatedMinutes, confi
   const exactTotal = BigInt(weightCents) * scale
     + distanceNumerator * 10n ** BigInt(decimalPlaces - distanceParts.decimalPlaces)
     + timeNumerator * 10n ** BigInt(decimalPlaces - timeParts.decimalPlaces);
-  const totalCents = Number((2n * exactTotal + scale) / (2n * scale));
+  const roundedTotal = (2n * exactTotal + scale) / (2n * scale);
+  if (roundedTotal > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError("O total do frete excede o limite de centavos inteiros seguros.");
+  }
+  const totalCents = Number(roundedTotal);
 
   return {
     weightKg: Number(weightKg),

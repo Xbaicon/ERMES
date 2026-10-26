@@ -25,6 +25,69 @@ const delivery = {
   company: { id: 2, name: "Empresa" }, courier: null, events: [],
 };
 
+async function renderedDelivery(role, selected) {
+  const { panel, elements } = panelFixture();
+  const originalDocument = globalThis.document;
+  globalThis.document = { querySelector: () => panel, addEventListener() {} };
+  try {
+    await setupDeliveryPanel({ role,
+      api: async (path) => {
+        if (path.endsWith("/availability")) return { isOnline: true };
+        if (path.endsWith("/financial-entries")) return { entries: [], totalReceivedCents: 0 };
+        if (path.endsWith("/available")) return { deliveries: [] };
+        if (path.endsWith("/deliveries")) return { deliveries: [selected] };
+        return { delivery: selected };
+      },
+      escapeHtml: (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+      showMessage() {},
+    });
+    elements.get("[data-delivery-list]").listener("click")({
+      target: { closest: () => ({ dataset: { deliveryId: String(selected.id) } }) },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    return elements.get("[data-delivery-detail]").innerHTML;
+  } finally { globalThis.document = originalDocument; }
+}
+
+test("motoboy vê complemento e ponto de coleta também durante o retorno", async () => {
+  for (const status of ["heading_to_pickup", "returning", "awaiting_return_confirmation"]) {
+    const html = await renderedDelivery("courier", { ...delivery, status,
+      destination: { street: "Rua X", number: "123", complement: "Apartamento 905", neighborhood: "Bairro Y", city: "Salvador", state: "BA" },
+      pickupAddress: { street: "Rua da Coleta", number: "7", complement: "<Portaria>" },
+    });
+    assert.match(html, /Rua X, 123, Apartamento 905, Bairro Y, Salvador, BA/);
+    assert.match(html, /Ponto de coleta \/ devolução:<\/strong> Rua da Coleta, 7, &lt;Portaria&gt;/);
+    assert.doesNotMatch(html, /<Portaria>/);
+  }
+});
+
+test("painel não inventa complemento nem origem ausentes", async () => {
+  const html = await renderedDelivery("courier", { ...delivery, status: "returning",
+    destination: { street: "Rua X", number: "123", complement: "" }, pickupAddress: {},
+  });
+  assert.match(html, /Destino:<\/strong> Rua X, 123<\/p>/);
+  assert.doesNotMatch(html, /Ponto de coleta|Apartamento|undefined|null/);
+});
+
+test("ações são isoladas por papel em todos os estados operacionais", async () => {
+  const courierActions = {
+    available: ["accept"], heading_to_pickup: ["arrive-pickup", "fail"],
+    awaiting_pickup: ["collect", "fail"], in_transit: ["arrive-destination", "fail"],
+    awaiting_confirmation: ["fail", "confirm", "occurrences"], returning: ["report-return"],
+    awaiting_return_confirmation: [], completed: [], cancelled: [], returned: [],
+  };
+  for (const [status, expectedCourier] of Object.entries(courierActions)) {
+    for (const role of ["client", "company", "courier"]) {
+      const expected = role === "courier" ? expectedCourier
+        : role === "client" ? (["available", "heading_to_pickup", "awaiting_pickup", "in_transit", "awaiting_confirmation"].includes(status) ? ["cancel"] : [])
+          : ["available", "heading_to_pickup", "awaiting_pickup"].includes(status) ? ["product-unavailable"]
+            : status === "awaiting_return_confirmation" ? ["confirm-return"] : [];
+      const html = await renderedDelivery(role, { ...delivery, status });
+      assert.deepEqual([...html.matchAll(/data-delivery-action="([^"]+)"/g)].map((match) => match[1]), expected, `${role}: ${status}`);
+    }
+  }
+});
+
 test("cliente recupera e visualiza o código ao reabrir o detalhe da entrega", async () => {
   const { panel, elements } = panelFixture();
   const originalDocument = globalThis.document;

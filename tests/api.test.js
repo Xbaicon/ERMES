@@ -37,6 +37,58 @@ test("servidor responde, autentica e protege rotas da empresa", async (context) 
 
   const duplicateEmailMessage = "Este e-mail já está cadastrado. Use outro e-mail ou faça login.";
 
+  await context.test("produto rejeita números inválidos sem persistir ou quebrar a listagem", async () => {
+    const create = (body) => fetch(`${base}/api/company/products`, {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify(body),
+    });
+    for (const priceCents of [0, 1234, Number.MAX_SAFE_INTEGER]) {
+      const response = await create({ name: "Produto válido", priceCents, unitWeightKg: 0.5 });
+      assert.equal(response.status, 201);
+      const { id } = await response.json();
+      assert.equal(db.prepare("SELECT price_cents AS price FROM products WHERE id = ?").get(id).price, priceCents);
+    }
+    const before = db.prepare("SELECT * FROM products ORDER BY id").all();
+    const invalid = [
+      ...[Number.MAX_SAFE_INTEGER + 1, -1, 1.5, Infinity, -Infinity, NaN,
+        "Infinity", "-Infinity", "NaN", "100", null, true, [], {}]
+        .map((priceCents) => ({ name: "Inválido", priceCents, unitWeightKg: 1 })),
+      ...[Infinity, -Infinity, NaN, "Infinity", "-Infinity", "NaN", "abc", "1", 0, -1, null, true, [], {}]
+        .map((unitWeightKg) => ({ name: "Inválido", priceCents: 100, unitWeightKg })),
+      null, [],
+    ];
+    // JSON serializa Infinity/NaN como null; as strings exercitam a entrada textual original.
+    for (const body of invalid) {
+      const response = await create(body);
+      assert.equal(response.status, 400, JSON.stringify(body));
+      assert.deepEqual(db.prepare("SELECT * FROM products ORDER BY id").all(), before);
+      const listing = await fetch(`${base}/api/company/products`, { headers: { Cookie: cookie } });
+      assert.equal(listing.status, 200);
+      assert.equal((await listing.json()).products.length, before.length);
+    }
+  });
+
+  await context.test("cotação rejeita overflow com 400 e mantém fórmula e ledger intactos", async () => {
+    const before = db.prepare("SELECT * FROM financial_entries ORDER BY id").all();
+    for (const [distanceKm, status] of [[1, 200], [1e20, 400]]) {
+      const response = await fetch(`${base}/api/freight/quote`, {
+        method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ weightKg: 1, distanceKm, estimatedMinutes: 1 }),
+      });
+      assert.equal(response.status, status);
+      const body = await response.json();
+      if (status === 200) {
+        assert.equal(body.quote.totalCents, 580);
+        assert.deepEqual(body.split, { courierCents: 406, companyCents: 145, ermesCents: 29 });
+        assert.equal(body.note, "A fonte operacional de distância e tempo permanece pendente de definição na Baseline 0.1.");
+      } else {
+        assert.match(body.error, /inteiros seguros/);
+        assert.equal(Object.hasOwn(body, "split"), false);
+      }
+      assert.deepEqual(db.prepare("SELECT * FROM financial_entries ORDER BY id").all(), before);
+    }
+  });
+
   await context.test("cadastro de cliente rejeita e-mail de acesso existente sem expor SQLite", async () => {
     const response = await fetch(`${base}/api/auth/register/client`, {
       method: "POST",

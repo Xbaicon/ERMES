@@ -199,7 +199,9 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     assert.equal((await post(cookies.courier1, item.delivery.id, "arrive-pickup")).status, 200);
     assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 200);
     assert.equal((await post(cookies.courier1, item.delivery.id, "arrive-destination")).status, 200);
-    for (const code of ["111111", "222222"]) {
+    const wrongCodes = ["111111", "222222", "333333"]
+      .filter((code) => code !== item.confirmationCode).slice(0, 2);
+    for (const code of wrongCodes) {
       const response = await post(cookies.courier1, item.delivery.id, "confirm", { code });
       assert.equal(response.status, 422);
       assert.match((await response.json()).error, /código inválido/i);
@@ -215,7 +217,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       "courier_arrived_at_destination", "confirmation_code_invalid", "confirmation_code_invalid",
       "delivery_completed",
     ]);
-    assert.doesNotMatch(JSON.stringify(delivery.events), /111111|222222/);
+    for (const code of wrongCodes) assert.equal(JSON.stringify(delivery.events).includes(code), false);
     const accepted = delivery.events.find(({ eventType }) => eventType === "delivery_accepted");
     assert.deepEqual(accepted.actor, { fullName: "motoboy1@ermes.local", role: "courier" });
     assert.equal(Object.hasOwn(accepted, "actorUserId"), false);
@@ -234,7 +236,9 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
       assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
     }
-    for (const code of ["111111", "222222", "333333"]) {
+    const wrongCodes = ["111111", "222222", "333333", "444444"]
+      .filter((code) => code !== item.confirmationCode).slice(0, 3);
+    for (const code of wrongCodes) {
       assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", { code })).status, 422);
     }
     assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(item.delivery.id).status, "returning");
