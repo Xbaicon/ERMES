@@ -27,6 +27,8 @@ O e-mail de acesso é normalizado e único em `users.email`, independentemente d
 | GET | `/company/orders/drafts` | Listar os pedidos `draft` da própria empresa |
 | GET | `/company/orders/:orderId` | Consultar o detalhe de um pedido `draft` da própria empresa |
 | POST | `/company/orders/:orderId/confirm` | Confirmar comercialmente um `draft` da própria empresa |
+| GET | `/company/order-chats` | Listar os Pedidos da empresa disponíveis no painel de chat |
+| GET/POST | `/company/orders/:orderId/chat` | Consultar o histórico ou enviar mensagem no chat do Pedido |
 | GET | `/company/deliveries` | Listar Entregas da própria empresa |
 | GET | `/company/deliveries/:deliveryId` | Consultar Entrega e histórico da própria empresa |
 | POST | `/company/deliveries/:deliveryId/product-unavailable` | Cancelar antes da coleta por produto indisponível |
@@ -134,6 +136,8 @@ mapa, GPS, distância ou tempo operacional.
 | GET | `/client/orders/:orderId` | Consultar um pedido `draft` do próprio cliente |
 | PUT | `/client/orders/:orderId/items` | Substituir integralmente os itens de um pedido `draft` próprio |
 | POST | `/client/orders/:orderId/pay` | Confirmar de forma simulada o pagamento de um pedido `confirmed` próprio |
+| GET | `/client/order-chats` | Listar os próprios Pedidos disponíveis no painel de chat |
+| GET/POST | `/client/orders/:orderId/chat` | Consultar o histórico ou enviar mensagem no chat do Pedido |
 | GET | `/client/deliveries` | Listar as próprias Entregas |
 | GET | `/client/deliveries/:deliveryId` | Consultar estado e histórico de Entrega própria |
 | POST | `/client/deliveries/:deliveryId/cancel` | Cancelar Entrega própria quando permitido |
@@ -385,6 +389,64 @@ Identificador ou corpo inválido retorna `400`; ausência de sessão retorna `40
 empresa, motoboy e administrador recebem `403`; recurso alheio ou inexistente
 retorna `404`; e estado comercial, financeiro ou dados persistidos
 incompatíveis retornam `409`.
+
+### Chat por Pedido
+
+O chat usa as rotas equivalentes de cliente e empresa. O servidor deriva o
+remetente e o proprietário exclusivamente da sessão; não recebe `clientId`,
+`companyId`, papel ou identificador de remetente do navegador. Pedido inexistente
+ou alheio retorna `404`, sem revelar sua existência. Motoboy, administrador e
+qualquer papel diferente do prefixo autenticado recebem `403`.
+
+`GET /client/order-chats` e `GET /company/order-chats` retornam `{ "orders": [] }`
+quando não existem Pedidos. Cada item contém somente `orderId`, `orderStatus`,
+`deliveryStatus`, `readOnly`, `hasMessages`, `createdAt` e `updatedAt`. A listagem
+abrange drafts e pedidos confirmados, mesmo antes de pagamento ou Entrega.
+
+`GET /{role}/orders/:orderId/chat` retorna:
+
+```json
+{
+  "chat": {
+    "orderId": 12,
+    "orderStatus": "draft",
+    "deliveryStatus": null,
+    "readOnly": false,
+    "messages": [
+      {
+        "id": 31,
+        "senderRole": "client",
+        "message": "Olá, gostaria de tirar uma dúvida sobre o pedido.",
+        "sentAt": "2026-10-20 14:30:00"
+      }
+    ]
+  }
+}
+```
+
+O histórico é ordenado por ID crescente, que também desempata mensagens com o
+mesmo segundo. IDs de usuário, sessão e dados cadastrais dos participantes não
+são expostos. Uma conversa sem mensagens retorna `messages: []` e não cria
+registro vazio no banco.
+
+`POST /{role}/orders/:orderId/chat` recebe exclusivamente:
+
+```json
+{ "message": "Texto da mensagem" }
+```
+
+O texto tem espaços externos removidos, deve continuar não vazio e possui limite
+técnico de 2.000 caracteres. Corpo nulo, lista, tipo não textual, campo ausente,
+somente espaços ou campos adicionais retornam `400`. Cada envio válido retorna
+HTTP `201` com a mensagem persistida. Textos idênticos não são deduplicados.
+
+Os únicos estados de Pedido atualmente graváveis são `draft` e `confirmed`.
+Quando a Entrega vinculada está `completed`, `cancelled` ou `returned`, o GET
+continua disponível com `readOnly: true` e o POST retorna `409`. Estados de
+Pedido desconhecidos também são tratados com segurança como somente leitura.
+Mensagens não possuem endpoints de edição ou exclusão, e o banco rejeita UPDATE
+e DELETE. A interface oferece as listas fixas aprovadas na Baseline 0.1 e atualiza
+a conversa selecionada por polling HTTP a cada cinco segundos.
 
 ## Motoboy autenticado
 

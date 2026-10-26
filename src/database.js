@@ -148,6 +148,53 @@ db.exec(`
     occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS order_chat_messages (
+    id INTEGER PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    sender_user_id INTEGER NOT NULL REFERENCES users(id),
+    sender_role TEXT NOT NULL CHECK(sender_role IN ('client', 'company')),
+    content TEXT NOT NULL CHECK(
+      typeof(content) = 'text'
+      AND length(trim(content)) BETWEEN 1 AND 2000
+    ),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS order_chat_messages_order
+    ON order_chat_messages(order_id, id);
+
+  CREATE TRIGGER IF NOT EXISTS order_chat_message_participant_insert
+    BEFORE INSERT ON order_chat_messages
+    WHEN NOT EXISTS (
+      SELECT 1 FROM orders o JOIN users sender ON sender.id = NEW.sender_user_id
+      WHERE o.id = NEW.order_id AND (
+        (NEW.sender_role = 'client' AND sender.role = 'client'
+          AND sender.id = o.client_id)
+        OR (NEW.sender_role = 'company' AND sender.role = 'company'
+          AND sender.company_id = o.company_id)
+      )
+    )
+    BEGIN SELECT RAISE(ABORT, 'chat sender does not belong to order'); END;
+
+  CREATE TRIGGER IF NOT EXISTS order_chat_message_open_order_insert
+    BEFORE INSERT ON order_chat_messages
+    WHEN EXISTS (
+      SELECT 1 FROM orders o LEFT JOIN deliveries d ON d.order_id = o.id
+      WHERE o.id = NEW.order_id AND (
+        o.status NOT IN ('draft', 'confirmed')
+        OR d.status IN ('completed', 'cancelled', 'returned')
+      )
+    )
+    BEGIN SELECT RAISE(ABORT, 'order chat is read-only'); END;
+
+  CREATE TRIGGER IF NOT EXISTS order_chat_messages_append_only_update
+    BEFORE UPDATE ON order_chat_messages
+    BEGIN SELECT RAISE(ABORT, 'chat messages are append-only'); END;
+
+  CREATE TRIGGER IF NOT EXISTS order_chat_messages_append_only_delete
+    BEFORE DELETE ON order_chat_messages
+    BEGIN SELECT RAISE(ABORT, 'chat messages are append-only'); END;
+
   CREATE TABLE IF NOT EXISTS financial_entries (
     id INTEGER PRIMARY KEY,
     order_id INTEGER NOT NULL REFERENCES orders(id),

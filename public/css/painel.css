@@ -82,9 +82,22 @@
 [data-courier-financial] small { display: block; color: var(--muted); }
 .confirmation-code { padding: 12px; border: 1px solid #a9dec4; border-radius: 10px; background: var(--green-soft); }
 .confirmation-code code { font-size: 1.15em; letter-spacing: .14em; }
+.chat-layout { grid-template-columns: minmax(230px, .7fr) minmax(0, 1.5fr); }
+.chat-detail { display: grid; gap: 14px; }
+.chat-detail[hidden] { display: none; }
+.chat-history { min-height: 180px; max-height: 420px; overflow-y: auto; padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: #fafbfc; }
+.chat-message-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.chat-message { max-width: min(82%, 620px); padding: 11px 13px; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+.chat-message.own { justify-self: end; border-color: #bdd2f9; background: var(--blue-soft); }
+.chat-message p { margin: 5px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.chat-message time { color: var(--muted); font-size: .78rem; }
+.chat-suggestions, .chat-form { display: flex; flex-wrap: wrap; gap: 10px; }
+.chat-form { display: grid; }
+.chat-form textarea { width: 100%; resize: vertical; padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; font: inherit; }
+.chat-form .button { justify-self: start; }
 @media (max-width: 760px) {
   .dashboard-header, .dashboard-user, .status-banner, .availability-card { align-items: flex-start; flex-direction: column; }
-  .two-columns, .client-catalog, .client-drafts, .catalog-product-grid { grid-template-columns: 1fr; }
+  .two-columns, .client-catalog, .client-drafts, .catalog-product-grid, .chat-layout { grid-template-columns: 1fr; }
   .three-columns { grid-template-columns: 1fr; }
   .dashboard-user { width: 100%; }
   .cart-heading, .cart-item { align-items: flex-start; flex-direction: column; }

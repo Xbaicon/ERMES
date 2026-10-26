@@ -70,6 +70,14 @@ test("migra banco existente, cria financeiro e repete sem perder ou duplicar dad
   assert.equal(table.name, "client_default_addresses");
   assert.equal(db.prepare(`SELECT name FROM sqlite_master
     WHERE type = 'table' AND name = 'financial_entries'`).get().name, "financial_entries");
+  assert.equal(db.prepare(`SELECT name FROM sqlite_master
+    WHERE type = 'table' AND name = 'order_chat_messages'`).get().name, "order_chat_messages");
+  assert.equal(db.prepare("SELECT COUNT(*) AS total FROM order_chat_messages").get().total, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM sqlite_master
+    WHERE type = 'table' AND name = 'order_chats'`).get().total, 0);
+  db.prepare(`INSERT INTO order_chat_messages
+    (order_id, sender_user_id, sender_role, content, created_at)
+    VALUES (1, 1, 'client', 'Mensagem legada preservada', '2026-10-20 10:00:00')`).run();
   const orderColumns = db.prepare("PRAGMA table_info(orders)").all().map(({ name }) => name);
   assert.ok(orderColumns.includes("version"));
   assert.ok(orderColumns.includes("confirmed_at"));
@@ -216,6 +224,12 @@ test("migra banco existente, cria financeiro e repete sem perder ou duplicar dad
   assert.deepEqual(JSON.parse(migratedAgain.prepare(
     "SELECT recipient_snapshot_json AS value FROM orders WHERE id = 1",
   ).get().value), { type: "self", name: "Cliente Legado" });
+  assert.deepEqual({ ...migratedAgain.prepare(`SELECT order_id AS orderId,
+    sender_user_id AS senderUserId, sender_role AS senderRole, content, created_at AS createdAt
+    FROM order_chat_messages`).get() }, {
+    orderId: 1, senderUserId: 1, senderRole: "client",
+    content: "Mensagem legada preservada", createdAt: "2026-10-20 10:00:00",
+  });
   assert.equal(migratedAgain.prepare("SELECT count(*) AS total FROM client_default_addresses")
     .get().total, 1);
   assert.deepEqual(migratedAgain.prepare(`SELECT entry_type AS entryType, component,
@@ -260,6 +274,8 @@ test("migra banco existente, cria financeiro e repete sem perder ou duplicar dad
     financialCount);
   assert.equal(migratedThirdTime.prepare(`SELECT count(*) AS total FROM financial_entries
     WHERE order_id = 8`).get().total, 0);
+  assert.equal(migratedThirdTime.prepare("SELECT count(*) AS total FROM order_chat_messages")
+    .get().total, 1);
   migratedThirdTime.close();
 
   migratedAgain.close();

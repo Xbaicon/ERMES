@@ -220,11 +220,27 @@ Produto 1 → 0..* ItemPedido
 - Se houver alteração após o envio para análise e antes da confirmação, a empresa deve analisar a versão atualizada; a modelagem final do estado “alterado após envio” ainda poderá ser refinada.
 - Alterar itens ou quantidades deve disparar novo cálculo do peso total e, quando aplicável, novo cálculo do frete.
 
-## Chat
+## Chat — DEFINIDO
 
-- Cliente e empresa devem poder se comunicar por chat dentro do ERMES.
-- O chat deve oferecer mensagens predefinidas para agilizar solicitações e respostas.
-- O cliente pode selecionar produtos e usar o chat como canal de confirmação/negociação, sem transformar o ERMES em uma plataforma completa de marketplace.
+- Cada Pedido pode possuir uma conversa própria entre o cliente proprietário e a empresa proprietária.
+- Não existe chat geral desvinculado de Pedido na Baseline 0.1.
+- A conversa pode ser materializada somente na primeira mensagem; não é obrigatório criar registro vazio quando o Pedido nasce.
+- Somente cliente e empresa participam. Motoboy e Administrador do ERMES não possuem caso de uso de chat nesta baseline.
+- O chat fica disponível desde o estado `draft` e permanece gravável enquanto o Pedido não estiver encerrado. Quando a operação vinculada alcançar um estado terminal já existente, o histórico continua consultável, mas novas mensagens são rejeitadas.
+- Mensagens são textos livres persistentes e imutáveis, identificados pelo Pedido, remetente, papel/origem e momento do envio.
+- A tecnologia da Baseline 0.1 é HTTP normal com polling periódico. WebSocket, Server-Sent Events, broker e mensageria externa não pertencem a este fluxo.
+- Mensagens predefinidas são listas fixas no código, sem tabela, CRUD, categorias, favoritos, personalização, variáveis ou atalhos por empresa.
+- Sugestões do cliente:
+  - "Olá, gostaria de tirar uma dúvida sobre o pedido."
+  - "Gostaria de confirmar a disponibilidade dos produtos."
+  - "Preciso informar algo sobre a entrega."
+- Sugestões da empresa:
+  - "Olá! Como podemos ajudar?"
+  - "Seu pedido está sendo analisado."
+  - "Precisamos confirmar uma informação do seu pedido."
+  - "O produto solicitado está indisponível."
+- Não pertencem ao chat 0.1: anexos, imagem, áudio, vídeo, localização, chamadas, reações, edição, exclusão, respostas encadeadas, menções, grupos, busca, arquivamento, presença, “digitando”, confirmação de leitura, contagem sofisticada de não lidas, push e chat com motoboy.
+- O chat pode apoiar confirmação e negociação, sem transformar o ERMES em uma plataforma completa de marketplace.
 
 ---
 
@@ -915,7 +931,6 @@ Estas decisões NÃO devem ser inventadas por outra conversa, Codex ou desenvolv
 - Valores e política exata de reembolso quando a falha for comprovadamente causada pelo ERMES/serviço interno de endereço/rota.
 - Detalhamento da interface de tentativa de contato quando destinatário está ausente ou endereço apresenta problema.
 - Campos definitivos obrigatórios do destinatário além do nome/endereço, como telefone.
-- Forma exata de implementação do chat e das mensagens predefinidas.
 - Regras detalhadas de promoção, caso a funcionalidade opcional seja implementada.
 - Integração real de pagamento: provedor, meios aceitos e fluxo técnico.
 - Refinamento final dos nomes de estados e dos estados terminais na UML.

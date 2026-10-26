@@ -6,6 +6,7 @@ import { normalizeAddress } from "./address.js";
 import { db, seedDevelopmentData, transaction } from "./database.js";
 import { calculateFreight, splitNormalFreight } from "./freight.js";
 import { listCourierFinancialEntries } from "./finance.js";
+import { getOrderChat, listOrderChats, sendOrderChatMessage } from "./order-chat.js";
 import { confirmCompanyDraftOrder, confirmSimulatedPayment, createDraftOrder, getClientConfirmedOrder, getCompanyDraftOrder, getDraftOrder, listClientConfirmedOrders, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
 import { assertPassword, isEmail, isValidCnpj, isValidCpf, normalizeEmail, onlyDigits, requireFields } from "./validation.js";
@@ -287,6 +288,22 @@ async function api(request, response, url) {
     const user = requireUser(request, ["client"]);
     return json(response, 200, { orders: listClientConfirmedOrders(user.id) });
   }
+  if (request.method === "GET" && pathname === "/api/client/order-chats") {
+    const user = requireUser(request, ["client"]);
+    return json(response, 200, { orders: listOrderChats(user) });
+  }
+  const clientOrderChatMatch = pathname.match(/^\/api\/client\/orders\/([^/]+)\/chat$/);
+  if (request.method === "GET" && clientOrderChatMatch) {
+    const user = requireUser(request, ["client"]);
+    const chat = getOrderChat(user, parseOrderId(clientOrderChatMatch[1]));
+    return json(response, 200, { chat });
+  }
+  if (request.method === "POST" && clientOrderChatMatch) {
+    const user = requireUser(request, ["client"]);
+    const message = sendOrderChatMessage(user, parseOrderId(clientOrderChatMatch[1]),
+      await readJson(request));
+    return json(response, 201, { message });
+  }
   const clientConfirmedOrderMatch = pathname.match(/^\/api\/client\/orders\/confirmed\/([^/]+)$/);
   if (request.method === "GET" && clientConfirmedOrderMatch) {
     const user = requireUser(request, ["client"]);
@@ -331,6 +348,22 @@ async function api(request, response, url) {
   if (request.method === "GET" && pathname === "/api/company/orders/drafts") {
     const user = requireUser(request, ["company"]);
     return json(response, 200, { drafts: listCompanyDraftOrders(user.companyId) });
+  }
+  if (request.method === "GET" && pathname === "/api/company/order-chats") {
+    const user = requireUser(request, ["company"]);
+    return json(response, 200, { orders: listOrderChats(user) });
+  }
+  const companyOrderChatMatch = pathname.match(/^\/api\/company\/orders\/([^/]+)\/chat$/);
+  if (request.method === "GET" && companyOrderChatMatch) {
+    const user = requireUser(request, ["company"]);
+    const chat = getOrderChat(user, parseOrderId(companyOrderChatMatch[1]));
+    return json(response, 200, { chat });
+  }
+  if (request.method === "POST" && companyOrderChatMatch) {
+    const user = requireUser(request, ["company"]);
+    const message = sendOrderChatMessage(user, parseOrderId(companyOrderChatMatch[1]),
+      await readJson(request));
+    return json(response, 201, { message });
   }
   const companyOrderConfirmationMatch = pathname.match(/^\/api\/company\/orders\/([^/]+)\/confirm$/);
   if (request.method === "POST" && companyOrderConfirmationMatch) {

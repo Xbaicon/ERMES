@@ -11,6 +11,6 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test",
-    "check": "node --check src/server.js && node --check src/address.js && node --check src/orders.js && node --check src/deliveries.js && node --check src/delivery-creation.js && node --check src/delivery-operations.js && node --check src/finance.js && node --check public/js/script.js && node --check public/js/painel.js && node --check public/js/client-cart.js && node --check public/js/client-drafts.js && node --check public/js/client-payments.js && node --check public/js/company-drafts.js && node --check public/js/delivery-panels.js"
+    "check": "node --check src/server.js && node --check src/address.js && node --check src/orders.js && node --check src/order-chat.js && node --check src/deliveries.js && node --check src/delivery-creation.js && node --check src/delivery-operations.js && node --check src/finance.js && node --check public/js/script.js && node --check public/js/painel.js && node --check public/js/client-cart.js && node --check public/js/client-drafts.js && node --check public/js/client-payments.js && node --check public/js/company-drafts.js && node --check public/js/delivery-panels.js && node --check public/js/order-chat.js"
   }
 }
