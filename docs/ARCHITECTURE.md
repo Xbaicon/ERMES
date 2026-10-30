@@ -1,4 +1,11 @@
-# Arquitetura técnica provisória — ERMES 0.1
+# Arquitetura técnica atual — checkpoint da Baseline 0.1
+
+## Estado da transição
+
+Esta arquitetura descreve a implementação congelada na tag `baseline-0.1`.
+A Baseline 0.2 é a referência funcional ativa, mas suas mudanças ainda não estão
+representadas nesta arquitetura. O próximo passo é uma auditoria de migração
+0.1 → 0.2 em modo somente leitura.
 
 ## Objetivo
 
@@ -51,12 +58,12 @@ Não há dependências npm externas nesta etapa.
 - Recuperação de senha não foi simulada de forma insegura.
 - O SQLite atende ao desenvolvimento e demonstração local. Uma futura mudança de banco exigirá migrações e testes de concorrência equivalentes.
 
-## Próximas integrações técnicas
+## Próxima etapa técnica
 
-1. Completar somente as distribuições e políticas de reembolso que continuam pendentes na Baseline 0.1 após decisão explícita.
-2. Interface de tentativa de contato no destino.
+1. Auditar o impacto da Baseline 0.2 sobre domínio, persistência, API, interface e testes, sem alterar a implementação durante a auditoria.
+2. Tratar a futura migração SQLite → MySQL como etapa técnica separada, anterior às grandes alterações funcionais da 0.2, com plano próprio de migração, integridade e concorrência.
 
 Geocodificação, provedor real de rotas, mapas e rastreamento geográfico são
-opcionais/futuros e não bloqueiam esta baseline. Acompanhar a operação por
-estados e eventos permanece obrigatório. A classificação completa está em
-`BASELINE_0.1_SCOPE_CORRECTION.md`.
+itens futuros e não bloqueiam a Baseline 0.2. A classificação vigente está em
+`ERMES_Baseline_0.2.md`; a correção de escopo da 0.1 permanece como registro
+histórico e referência para comportamentos herdados.

@@ -25,7 +25,30 @@ Antes de editar código:
 5. Mostre o plano de implementação em etapas pequenas e coerentes.
 6. Não implemente geocodificação/rotas, alteração voluntária de pedido pelo cliente, avaliações ou recuperação por segundo motoboy.
 
-## Fase 2 — Ordem recomendada de implementação
+## Fase 2 — Gate técnico separado: SQLite → MySQL
+
+Somente depois da auditoria 0.1 → 0.2, planeje e implemente a migração de
+persistência SQLite → MySQL como uma etapa técnica própria, separada das novas
+regras funcionais da Baseline 0.2. MySQL é uma decisão de implementação e não
+uma nova regra funcional da baseline.
+
+1. Produza o plano da migração a partir do modelo e das invariantes encontrados
+   na auditoria, antes de alterar a persistência.
+2. Mantenha schema e código sincronizados. Toda alteração estrutural deve ser
+   reproduzível e versionada por mecanismo de migração apropriado.
+3. Implemente a migração em PR própria, sem misturar funcionalidades da 0.2,
+   salvo necessidade técnica inevitável, explicitamente justificada e
+   documentada.
+4. Não trate, por padrão, os dados locais do arquivo SQLite de desenvolvimento
+   como patrimônio que precise ser migrado. Qualquer necessidade de preservar
+   esses dados depende de decisão explícita.
+5. Execute novamente os testes e o smoke do comportamento consolidado da 0.1
+   usando MySQL, verificando integridade, transações, concorrência e contratos
+   existentes.
+6. Só avance às grandes mudanças funcionais e estruturais da 0.2 depois que a
+   aplicação mantiver o comportamento esperado sobre MySQL.
+
+## Fase 3 — Ordem recomendada de implementação funcional da Baseline 0.2
 
 1. Atualizar enums/estados sem quebrar persistência existente.
 2. Introduzir `TentativaEntrega` e seus relacionamentos.

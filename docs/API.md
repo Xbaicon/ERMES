@@ -1,5 +1,10 @@
 # API inicial
 
+> **Estado documental:** este arquivo descreve a API efetivamente implementada
+> e congelada no checkpoint `baseline-0.1`. A Baseline 0.2 é a referência
+> funcional ativa, mas nenhuma rota ou regra 0.2 deve ser considerada
+> implementada até a auditoria e as alterações técnicas correspondentes.
+
 Base local: `http://localhost:3000/api`
 
 ## Pública

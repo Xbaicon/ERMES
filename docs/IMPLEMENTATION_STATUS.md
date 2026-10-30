@@ -1,6 +1,17 @@
-# Estado de implementação — ERMES 0.1
+# Estado de implementação — ERMES
 
 Atualize este documento sempre que uma funcionalidade mudar de estado.
+
+## Estado das baselines
+
+| Marco | Estado | Observação |
+| --- | --- | --- |
+| Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
+| Baseline 0.2 | Iniciada documentalmente | É a baseline ativa de desenvolvimento, mas nenhuma funcionalidade específica da 0.2 deve ser considerada implementada apenas por constar na especificação |
+| Próximo passo técnico | Auditoria somente leitura | Auditar a migração Baseline 0.1 → Baseline 0.2 antes de alterar código, banco, API ou regras de negócio |
+| Persistência futura | Etapa técnica separada | Planejar e executar a migração SQLite → MySQL separadamente, antes das grandes alterações funcionais da 0.2 |
+
+## Implementação existente no checkpoint da Baseline 0.1
 
 | Área | Estado | Observação |
 | --- | --- | --- |
@@ -43,9 +54,12 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 - Substituída autenticação em `localStorage` por sessão no servidor.
 - Descartado o `admin.js` recebido, que continha erro de sintaxe e blocos duplicados.
 
-## Pendências que bloqueiam decisões automáticas
+## Pendências registradas no checkpoint da Baseline 0.1
 
-Consulte também `BASELINE_0.1_SCOPE_CORRECTION.md` antes de implementar qualquer item novo. Em especial, não presumir:
+Estas pendências registram o estado congelado da 0.1. A Baseline 0.2 e seu
+changelog devem ser consultados para identificar quais foram explicitamente
+alteradas, sem presumir que a nova regra já esteja implementada. No checkpoint
+0.1, não presumir:
 
 - quantidade final de usuários por empresa;
 - poderes do Administrador do ERMES;
