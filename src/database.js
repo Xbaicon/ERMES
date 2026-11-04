@@ -135,6 +135,40 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS delivery_attempts (
+    id INTEGER PRIMARY KEY,
+    delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+    attempt_number INTEGER NOT NULL CHECK(attempt_number > 0),
+    courier_id INTEGER NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL CHECK(
+      status IN ('active', 'returning', 'completed', 'closed_unsuccessfully')
+    ),
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ended_at TEXT,
+    end_reason TEXT,
+    end_nature TEXT CHECK(end_nature IS NULL OR end_nature IN ('recoverable', 'terminal')),
+    UNIQUE(delivery_id, attempt_number),
+    CHECK(
+      (status IN ('active', 'returning') AND ended_at IS NULL
+        AND end_reason IS NULL AND end_nature IS NULL)
+      OR (status = 'completed' AND ended_at IS NOT NULL
+        AND end_reason IS NULL AND end_nature IS NULL)
+      OR (status = 'closed_unsuccessfully' AND ended_at IS NOT NULL
+        AND end_reason IS NOT NULL AND length(trim(end_reason)) > 0
+        AND end_nature IS NOT NULL)
+    )
+  );
+
+  CREATE INDEX IF NOT EXISTS delivery_attempts_delivery
+    ON delivery_attempts(delivery_id, attempt_number);
+
+  CREATE INDEX IF NOT EXISTS delivery_attempts_courier
+    ON delivery_attempts(courier_id, id);
+
+  CREATE UNIQUE INDEX IF NOT EXISTS one_open_attempt_per_delivery
+    ON delivery_attempts(delivery_id)
+    WHERE status IN ('active', 'returning');
+
   CREATE UNIQUE INDEX IF NOT EXISTS one_active_delivery_per_courier
     ON deliveries(courier_id)
     WHERE courier_id IS NOT NULL AND status NOT IN ('completed', 'cancelled', 'returned');

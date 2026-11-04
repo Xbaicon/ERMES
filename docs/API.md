@@ -1,9 +1,8 @@
 # API inicial
 
-> **Estado documental:** este arquivo descreve a API efetivamente implementada
-> e congelada no checkpoint `baseline-0.1`. A Baseline 0.2 é a referência
-> funcional ativa, mas nenhuma rota ou regra 0.2 deve ser considerada
-> implementada até a auditoria e as alterações técnicas correspondentes.
+> **Estado documental:** este contrato parte do checkpoint `baseline-0.1` e
+> inclui o primeiro incremento funcional da Baseline 0.2: a projeção aditiva de
+> `TentativaEntrega` nos detalhes de Entrega. As rotas existentes permanecem.
 
 Base local: `http://localhost:3000/api`
 
@@ -490,16 +489,46 @@ Identificadores de cliente, empresa e motoboy vêm da sessão e das relações n
 banco. Recursos de outra empresa ou cliente retornam `404`. Aceite exige
 motoboy online, da mesma empresa e sem outra Entrega ativa. A Entrega aceita
 passa para `heading_to_pickup` e grava `accepted_at`; coleta grava
-`collected_at`; conclusão grava `completed_at`. Atalhos, retrocessos e ator
-incorreto retornam conflito ou recurso não encontrado.
+`collected_at` e cria exatamente uma tentativa ativa; conclusão grava
+`completed_at`. Aceite, deslocamento, chegada ao estabelecimento e falha antes
+da coleta não criam tentativa. Atalhos, retrocessos e ator incorreto retornam
+conflito ou recurso não encontrado.
+
+As consultas de detalhe de Entrega para cliente, empresa e motoboy incluem
+`attempts`, ordenado por `attemptNumber`. A inclusão é aditiva; as listagens
+resumidas permanecem inalteradas. Cada item tem a forma:
+
+```json
+{
+  "id": 7,
+  "attemptNumber": 1,
+  "status": "active",
+  "startedAt": "2026-11-04 14:30:00",
+  "endedAt": null,
+  "endReason": null,
+  "endNature": null,
+  "courier": { "fullName": "Motoboy Exemplo" }
+}
+```
+
+Os status expostos neste incremento são `active`, `returning`, `completed` e
+`closed_unsuccessfully`. `endNature` é `recoverable`, `terminal` ou `null`. O
+código de confirmação não faz parte da tentativa e continua na Entrega; somente
+o cliente autorizado o recebe durante os estados já documentados.
 
 `POST .../confirm` recebe somente `{ "code": "123456" }`. Código correto em
-`awaiting_confirmation` conclui a Entrega. Cada erro incrementa o contador e
-grava apenas número e horário da tentativa; a resposta usa HTTP `422` com
+`awaiting_confirmation` conclui a Entrega e a tentativa ativa na mesma
+transação. Cada erro incrementa o contador atual de validações e grava apenas
+número e horário da validação; a resposta usa HTTP `422` com
 `{ "error": "Código inválido." }`. No terceiro erro, a Entrega passa
 para `returning`; não há método alternativo de conclusão. O motoboy registra o
 retorno e a empresa confirma o recebimento. Hashes, códigos digitados, sessão e
 dados cadastrais sensíveis não aparecem nas respostas.
+
+Por compatibilidade transitória, `invalidCodeAttempts` ainda é projetado a
+partir de `deliveries`. A mudança de propriedade para `TentativaEntrega` está
+pendente do incremento específico de validação de código; não há contador
+duplicado em `delivery_attempts`.
 
 ### Projeções financeiras
 

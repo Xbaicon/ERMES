@@ -258,9 +258,12 @@ test("chat por Pedido entre cliente e empresa", async (context) => {
     const createRaceOrder = () => createOrder(client1, company1, "confirmed");
     const completionOrder = createRaceOrder();
     const completionDelivery = Number(db.prepare(`INSERT INTO deliveries
-      (order_id, courier_id, status, confirmation_code_hash)
-      VALUES (?, ?, 'awaiting_confirmation', ?)`)
+      (order_id, courier_id, status, confirmation_code_hash, collected_at)
+      VALUES (?, ?, 'awaiting_confirmation', ?, CURRENT_TIMESTAMP)`)
       .run(completionOrder, courier, hashConfirmationCode("123456")).lastInsertRowid);
+    db.prepare(`INSERT INTO delivery_attempts
+      (delivery_id, attempt_number, courier_id, status)
+      VALUES (?, 1, ?, 'active')`).run(completionDelivery, courier);
     const cancellationOrder = createRaceOrder();
     const cancellationDelivery = Number(db.prepare(`INSERT INTO deliveries (order_id, status)
       VALUES (?, 'available')`).run(cancellationOrder).lastInsertRowid);
@@ -317,9 +320,13 @@ test("chat por Pedido entre cliente e empresa", async (context) => {
     });
     const returnOrder = createRaceOrder();
     const returnDelivery = Number(db.prepare(`INSERT INTO deliveries
-      (order_id, courier_id, status, return_reason, return_reported_at)
-      VALUES (?, ?, 'awaiting_return_confirmation', 'recipient_absent', CURRENT_TIMESTAMP)`)
+      (order_id, courier_id, status, return_reason, collected_at, return_reported_at)
+      VALUES (?, ?, 'awaiting_return_confirmation', 'recipient_absent',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
       .run(returnOrder, courier).lastInsertRowid);
+    db.prepare(`INSERT INTO delivery_attempts
+      (delivery_id, attempt_number, courier_id, status)
+      VALUES (?, 1, ?, 'returning')`).run(returnDelivery, courier);
     await assertTerminalRace({
       orderId: returnOrder,
       deliveryId: returnDelivery,

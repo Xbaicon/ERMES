@@ -1,4 +1,13 @@
 import { db, transaction } from "./database.js";
+import {
+  closeDeliveryAttemptWithoutSuccessInTransaction,
+  completeDeliveryAttemptInTransaction,
+  createDeliveryAttemptInTransaction,
+  DELIVERY_ATTEMPT_END_NATURES,
+  findOpenDeliveryAttempt,
+  listDeliveryAttempts,
+  markOpenDeliveryAttemptReturningInTransaction,
+} from "./delivery-attempts.js";
 import { DELIVERY_EVENT_TYPES, DELIVERY_STATES } from "./deliveries.js";
 import { decryptConfirmationCode, verifyConfirmationCode } from "./security.js";
 import {
@@ -134,7 +143,13 @@ function history(deliveryId) {
 }
 
 function withHistory(row, options) {
-  return { ...publicDelivery(row, options), events: history(row.id) };
+  const attempts = listDeliveryAttempts(db, row.id).map(({
+    deliveryId, courierId, courierName, ...attempt
+  }) => ({
+    ...attempt,
+    courier: { fullName: courierName },
+  }));
+  return { ...publicDelivery(row, options), attempts, events: history(row.id) };
 }
 
 const courierView = (row) => ({
@@ -267,10 +282,28 @@ export const arriveAtPickup = (id, courierId, companyId, body) => courierTransit
   id, courierId, companyId, body, DELIVERY_STATES.HEADING_TO_PICKUP,
   DELIVERY_STATES.AWAITING_PICKUP, DELIVERY_EVENT_TYPES.ARRIVED_AT_PICKUP,
 );
-export const collectDelivery = (id, courierId, companyId, body) => courierTransition(
-  id, courierId, companyId, body, DELIVERY_STATES.AWAITING_PICKUP,
-  DELIVERY_STATES.IN_TRANSIT, DELIVERY_EVENT_TYPES.COLLECTED, "collected_at",
-);
+export function collectDelivery(id, courierId, companyId, body) {
+  requireEmptyDeliveryBody(body);
+  return transaction(() => {
+    const delivery = requireCourierDelivery(id, courierId, companyId);
+    if (delivery.status !== DELIVERY_STATES.AWAITING_PICKUP) {
+      throw deliveryError(`A entrega não pode avançar a partir de ${delivery.status}.`);
+    }
+    if (findOpenDeliveryAttempt(db, id)) {
+      throw deliveryError("A entrega já possui uma tentativa ativa.");
+    }
+    createDeliveryAttemptInTransaction(db, id, courierId);
+    const update = db.prepare(`UPDATE deliveries
+      SET status = ?, collected_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = ? AND courier_id = ?`)
+      .run(DELIVERY_STATES.IN_TRANSIT, id, DELIVERY_STATES.AWAITING_PICKUP, courierId);
+    if (Number(update.changes) !== 1) {
+      throw deliveryError("A entrega foi alterada. Recarregue o estado atual.");
+    }
+    event(id, courierId, DELIVERY_EVENT_TYPES.COLLECTED);
+    return courierView(requireDelivery(id));
+  });
+}
 export const arriveAtDestination = (id, courierId, companyId, body) => courierTransition(
   id, courierId, companyId, body, DELIVERY_STATES.IN_TRANSIT,
   DELIVERY_STATES.AWAITING_CONFIRMATION, DELIVERY_EVENT_TYPES.ARRIVED_AT_DESTINATION,
@@ -289,6 +322,7 @@ export function confirmDelivery(id, courierId, companyId, body) {
     if (delivery.invalidCodeAttempts >= 3) throw deliveryError("O limite de três tentativas foi atingido.");
     if (!delivery.confirmationCodeHash) throw deliveryError("A entrega não possui código de confirmação válido.");
     if (verifyConfirmationCode(body.code, delivery.confirmationCodeHash)) {
+      completeDeliveryAttemptInTransaction(db, id);
       db.prepare(`UPDATE deliveries SET status = ?, completed_at = CURRENT_TIMESTAMP
                   WHERE id = ? AND status = ?`).run(DELIVERY_STATES.COMPLETED, id, delivery.status);
       event(id, courierId, DELIVERY_EVENT_TYPES.COMPLETED);
@@ -301,6 +335,7 @@ export function confirmDelivery(id, courierId, companyId, body) {
       event(id, courierId, DELIVERY_EVENT_TYPES.CONFIRMATION_CODE_INVALID,
         { attempt, remainingAttempts: 3 - attempt });
     } else {
+      markOpenDeliveryAttemptReturningInTransaction(db, id);
       db.prepare(`UPDATE deliveries SET invalid_code_attempts = 3, status = ?, return_reason = ?
                   WHERE id = ?`).run(DELIVERY_STATES.RETURNING, "confirmation_failed", id);
       event(id, courierId, DELIVERY_EVENT_TYPES.CONFIRMATION_FAILED,
@@ -323,6 +358,7 @@ export function reportCourierFailure(id, courierId, companyId, body) {
                   WHERE id = ?`).run(DELIVERY_STATES.AVAILABLE, id);
       event(id, courierId, DELIVERY_EVENT_TYPES.COURIER_FAILED_BEFORE_PICKUP, details);
     } else if ([DELIVERY_STATES.IN_TRANSIT, DELIVERY_STATES.AWAITING_CONFIRMATION].includes(delivery.status)) {
+      markOpenDeliveryAttemptReturningInTransaction(db, id);
       db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
         .run(DELIVERY_STATES.RETURNING, "courier_failure_after_pickup", id);
       event(id, courierId, DELIVERY_EVENT_TYPES.COURIER_FAILED_AFTER_PICKUP, details);
@@ -347,6 +383,7 @@ export function reportDeliveryOccurrence(id, courierId, companyId, body) {
     if (delivery.status !== DELIVERY_STATES.AWAITING_CONFIRMATION) {
       throw deliveryError("A ocorrência só pode ser registrada no destino.");
     }
+    markOpenDeliveryAttemptReturningInTransaction(db, id);
     db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
       .run(DELIVERY_STATES.RETURNING, body.type, id);
     event(id, courierId, occurrenceEvents[body.type]);
@@ -369,11 +406,15 @@ export function confirmReturn(id, companyUserId, companyId, body) {
       throw deliveryError("A entrega não está aguardando confirmação de retorno.");
     }
     if (delivery.returnReason === "courier_failure_after_pickup") {
+      closeDeliveryAttemptWithoutSuccessInTransaction(db, id, delivery.returnReason,
+        DELIVERY_ATTEMPT_END_NATURES.RECOVERABLE);
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, accepted_at = NULL,
                     collected_at = NULL, return_reason = NULL, return_reported_at = NULL
                   WHERE id = ?`).run(DELIVERY_STATES.AVAILABLE, id);
       event(id, companyUserId, DELIVERY_EVENT_TYPES.REAVAILABLE, { previousReason: delivery.returnReason });
     } else {
+      closeDeliveryAttemptWithoutSuccessInTransaction(db, id, delivery.returnReason,
+        DELIVERY_ATTEMPT_END_NATURES.TERMINAL);
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, returned_at = CURRENT_TIMESTAMP
                   WHERE id = ?`).run(DELIVERY_STATES.RETURNED, id);
       event(id, companyUserId, DELIVERY_EVENT_TYPES.RETURN_CONFIRMED, { reason: delivery.returnReason });
@@ -394,6 +435,7 @@ export function cancelClientDelivery(id, clientId, body) {
     } else if ([DELIVERY_STATES.IN_TRANSIT, DELIVERY_STATES.AWAITING_CONFIRMATION].includes(delivery.status)) {
       const late = Boolean(db.prepare("SELECT collected_at < datetime('now', '-3 minutes') AS value FROM deliveries WHERE id = ?")
         .get(id).value);
+      markOpenDeliveryAttemptReturningInTransaction(db, id);
       db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
         .run(DELIVERY_STATES.RETURNING, "client_cancelled_after_pickup", id);
       if (late) db.prepare("UPDATE users SET order_blocked_until = datetime('now', '+2 hours') WHERE id = ?").run(clientId);

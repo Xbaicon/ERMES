@@ -91,6 +91,12 @@ test("acompanhamento operacional completo de entregas", async (context) => {
   }
   const post = (cookie, id, action, body = {}) => request(`/api/courier/deliveries/${id}/${action}`,
     { cookie, method: "POST", body });
+  const storedAttempts = (deliveryId) => db.prepare(`SELECT id, delivery_id AS deliveryId,
+    attempt_number AS attemptNumber, courier_id AS courierId, status,
+    started_at AS startedAt, ended_at AS endedAt,
+    end_reason AS endReason, end_nature AS endNature
+    FROM delivery_attempts WHERE delivery_id = ? ORDER BY attempt_number`).all(deliveryId)
+    .map((row) => ({ ...row }));
 
   await context.test("isola consultas por papel, cliente e empresa", async () => {
     const own = createDelivery();
@@ -191,6 +197,174 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     db.prepare("UPDATE deliveries SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?").run(item.delivery.id);
   });
 
+  await context.test("não cria tentativa antes da coleta nem na falha pré-coleta", async () => {
+    const item = createDelivery();
+    assert.deepEqual(storedAttempts(item.delivery.id), []);
+    assert.equal((await post(cookies.courier1, item.delivery.id, "accept")).status, 200);
+    assert.deepEqual(storedAttempts(item.delivery.id), []);
+    assert.equal((await post(cookies.courier1, item.delivery.id, "arrive-pickup")).status, 200);
+    assert.deepEqual(storedAttempts(item.delivery.id), []);
+    const failed = await post(cookies.courier1, item.delivery.id, "fail", { reason: "Pneu furou" });
+    assert.equal(failed.status, 200);
+    assert.equal((await failed.json()).delivery.status, "available");
+    assert.deepEqual(storedAttempts(item.delivery.id), []);
+  });
+
+  await context.test("coleta cria atomicamente a tentativa 1 e código válido a conclui", async () => {
+    const item = createDelivery();
+    await post(cookies.courier1, item.delivery.id, "accept");
+    await post(cookies.courier1, item.delivery.id, "arrive-pickup");
+    const collectedResponse = await post(cookies.courier1, item.delivery.id, "collect");
+    assert.equal(collectedResponse.status, 200);
+    const collected = (await collectedResponse.json()).delivery;
+    const attempts = storedAttempts(item.delivery.id);
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0].attemptNumber, 1);
+    assert.equal(attempts[0].courierId, courier1);
+    assert.equal(attempts[0].status, "active");
+    assert.match(attempts[0].startedAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    assert.equal(attempts[0].endedAt, null);
+    assert.deepEqual(collected.attempts.map(({ attemptNumber, status, courier }) => (
+      { attemptNumber, status, courier }
+    )), [{ attemptNumber: 1, status: "active", courier: { fullName: "motoboy1@ermes.local" } }]);
+    assert.deepEqual({ ...db.prepare(`SELECT confirmation_code_hash IS NOT NULL AS hasHash,
+      confirmation_code_ciphertext IS NOT NULL AS hasCiphertext
+      FROM deliveries WHERE id = ?`).get(item.delivery.id) }, { hasHash: 1, hasCiphertext: 1 });
+    const attemptColumns = db.prepare("PRAGMA table_info(delivery_attempts)").all().map(({ name }) => name);
+    assert.ok(!attemptColumns.some((name) => name.includes("confirmation_code")));
+    assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 409);
+    assert.equal(storedAttempts(item.delivery.id).length, 1);
+
+    await post(cookies.courier1, item.delivery.id, "arrive-destination");
+    const completedResponse = await post(cookies.courier1, item.delivery.id, "confirm", {
+      code: item.confirmationCode,
+    });
+    assert.equal(completedResponse.status, 200);
+    const completedAttempt = storedAttempts(item.delivery.id)[0];
+    assert.equal(completedAttempt.status, "completed");
+    assert.match(completedAttempt.endedAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    assert.equal(completedAttempt.endReason, null);
+    assert.equal(completedAttempt.endNature, null);
+    assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", {
+      code: item.confirmationCode,
+    })).status, 409);
+    assert.equal(storedAttempts(item.delivery.id).length, 1);
+  });
+
+  await context.test("falha no evento da coleta desfaz tentativa, horário e transição", async () => {
+    const item = createDelivery();
+    await post(cookies.courier1, item.delivery.id, "accept");
+    await post(cookies.courier1, item.delivery.id, "arrive-pickup");
+    db.exec(`CREATE TRIGGER fail_order_collected BEFORE INSERT ON delivery_events
+      WHEN NEW.event_type = 'order_collected'
+      BEGIN SELECT RAISE(ABORT, 'forced collected event failure'); END;`);
+    const failed = await post(cookies.courier1, item.delivery.id, "collect");
+    db.exec("DROP TRIGGER fail_order_collected");
+    assert.equal(failed.status, 500);
+    assert.deepEqual({ ...db.prepare(`SELECT status, collected_at AS collectedAt
+      FROM deliveries WHERE id = ?`).get(item.delivery.id) }, {
+      status: "awaiting_pickup", collectedAt: null,
+    });
+    assert.deepEqual(storedAttempts(item.delivery.id), []);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
+      WHERE delivery_id = ? AND event_type = 'order_collected'`).get(item.delivery.id).total, 0);
+    await post(cookies.courier1, item.delivery.id, "collect");
+    await post(cookies.courier1, item.delivery.id, "arrive-destination");
+    await post(cookies.courier1, item.delivery.id, "confirm", { code: item.confirmationCode });
+  });
+
+  await context.test("coletas concorrentes convergem para uma única tentativa ativa", async () => {
+    const item = createDelivery();
+    await post(cookies.courier1, item.delivery.id, "accept");
+    await post(cookies.courier1, item.delivery.id, "arrive-pickup");
+    const responses = await Promise.all([
+      post(cookies.courier1, item.delivery.id, "collect"),
+      post(cookies.courier1, item.delivery.id, "collect"),
+    ]);
+    assert.deepEqual(responses.map(({ status }) => status).sort(), [200, 409]);
+    const attempts = storedAttempts(item.delivery.id);
+    assert.equal(attempts.length, 1);
+    assert.deepEqual({ attemptNumber: attempts[0].attemptNumber, status: attempts[0].status }, {
+      attemptNumber: 1, status: "active",
+    });
+    await post(cookies.courier1, item.delivery.id, "arrive-destination");
+    await post(cookies.courier1, item.delivery.id, "confirm", { code: item.confirmationCode });
+  });
+
+  await context.test("índice impede duas tentativas abertas e cada Entrega inicia sua sequência em 1", async () => {
+    const first = createDelivery();
+    for (const action of ["accept", "arrive-pickup", "collect"]) {
+      await post(cookies.courier1, first.delivery.id, action);
+    }
+    assert.throws(() => db.prepare(`INSERT INTO delivery_attempts
+      (delivery_id, attempt_number, courier_id, status) VALUES (?, 2, ?, 'active')`)
+      .run(first.delivery.id, courier1), /UNIQUE constraint failed/);
+    await post(cookies.courier1, first.delivery.id, "arrive-destination");
+    await post(cookies.courier1, first.delivery.id, "confirm", { code: first.confirmationCode });
+
+    const second = createDelivery();
+    for (const action of ["accept", "arrive-pickup", "collect"]) {
+      await post(cookies.courier1, second.delivery.id, action);
+    }
+    assert.equal(storedAttempts(second.delivery.id)[0].attemptNumber, 1);
+    await post(cookies.courier1, second.delivery.id, "arrive-destination");
+    await post(cookies.courier1, second.delivery.id, "confirm", { code: second.confirmationCode });
+  });
+
+  await context.test("retorno recuperável confirmado permite a tentativa 2 somente na nova coleta", async () => {
+    const item = createDelivery();
+    for (const action of ["accept", "arrive-pickup", "collect"]) {
+      assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
+    }
+    assert.deepEqual(storedAttempts(item.delivery.id).map(({ attemptNumber, status }) => (
+      { attemptNumber, status }
+    )), [{ attemptNumber: 1, status: "active" }]);
+
+    assert.equal((await post(cookies.courier1, item.delivery.id, "fail", {
+      reason: "Veículo avariado",
+    })).status, 200);
+    const returningAttempt = storedAttempts(item.delivery.id)[0];
+    assert.deepEqual({
+      status: returningAttempt.status,
+      endedAt: returningAttempt.endedAt,
+      endNature: returningAttempt.endNature,
+    }, { status: "returning", endedAt: null, endNature: null });
+    assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 409);
+    assert.equal(storedAttempts(item.delivery.id).length, 1);
+
+    assert.equal((await post(cookies.courier1, item.delivery.id, "report-return")).status, 200);
+    assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 409);
+    assert.equal(storedAttempts(item.delivery.id).length, 1);
+
+    const confirmed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`,
+      { cookie: cookies.company1, method: "POST", body: {} });
+    assert.equal(confirmed.status, 200);
+    const firstAttempt = storedAttempts(item.delivery.id)[0];
+    assert.equal(firstAttempt.status, "closed_unsuccessfully");
+    assert.match(firstAttempt.endedAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    assert.equal(firstAttempt.endNature, "recoverable");
+    assert.equal(firstAttempt.endReason, "courier_failure_after_pickup");
+
+    assert.equal((await post(cookies.courier1, item.delivery.id, "accept")).status, 200);
+    assert.equal(storedAttempts(item.delivery.id).length, 1);
+    assert.equal((await post(cookies.courier1, item.delivery.id, "arrive-pickup")).status, 200);
+    assert.equal(storedAttempts(item.delivery.id).length, 1);
+    assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 200);
+
+    const attempts = storedAttempts(item.delivery.id);
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(attempts.map(({ deliveryId, attemptNumber, status }) => (
+      { deliveryId, attemptNumber, status }
+    )), [
+      { deliveryId: item.delivery.id, attemptNumber: 1, status: "closed_unsuccessfully" },
+      { deliveryId: item.delivery.id, attemptNumber: 2, status: "active" },
+    ]);
+    assert.equal(attempts.filter(({ status }) => ["active", "returning"].includes(status)).length, 1);
+
+    await post(cookies.courier1, item.delivery.id, "arrive-destination");
+    await post(cookies.courier1, item.delivery.id, "confirm", { code: item.confirmationCode });
+  });
+
   await context.test("executa fluxo normal, rejeita atalhos e conclui somente com código correto", async () => {
     const item = createDelivery();
     assert.equal((await post(cookies.courier1, item.delivery.id, "accept")).status, 200);
@@ -242,6 +416,10 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", { code })).status, 422);
     }
     assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(item.delivery.id).status, "returning");
+    const returningAttempt = storedAttempts(item.delivery.id)[0];
+    assert.equal(returningAttempt.status, "returning");
+    assert.equal(returningAttempt.endedAt, null);
+    assert.equal(returningAttempt.endNature, null);
     assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", { code: item.confirmationCode })).status, 409);
     assert.equal((await post(cookies.courier1, item.delivery.id, "report-return")).status, 200);
     const confirmed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`,
@@ -259,6 +437,10 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     const after = createDelivery();
     for (const action of ["accept", "arrive-pickup", "collect"]) await post(cookies.courier1, after.delivery.id, action);
     assert.equal((await post(cookies.courier1, after.delivery.id, "fail", { reason: "Veículo avariado" })).status, 200);
+    const returningAttempt = storedAttempts(after.delivery.id)[0];
+    assert.equal(returningAttempt.status, "returning");
+    assert.equal(returningAttempt.endedAt, null);
+    assert.equal(returningAttempt.endNature, null);
     await post(cookies.courier1, after.delivery.id, "report-return");
     const confirmed = await request(`/api/company/deliveries/${after.delivery.id}/confirm-return`,
       { cookie: cookies.company1, method: "POST", body: {} });
@@ -266,6 +448,11 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     assert.equal(returned.status, "available");
     assert.equal(db.prepare("SELECT courier_id AS value FROM deliveries WHERE id = ?").get(after.delivery.id).value, null);
     assert.ok(returned.events.some(({ eventType }) => eventType === "delivery_reavailable"));
+    const closedAttempt = storedAttempts(after.delivery.id)[0];
+    assert.equal(closedAttempt.status, "closed_unsuccessfully");
+    assert.match(closedAttempt.endedAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    assert.equal(closedAttempt.endNature, "recoverable");
+    assert.equal(closedAttempt.endReason, "courier_failure_after_pickup");
   });
 
   await context.test("ocorrências definidas no destino exigem retorno confirmado pela empresa", async () => {
@@ -277,6 +464,10 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       const occurrence = await post(cookies.courier1, item.delivery.id, "occurrences", { type });
       assert.equal(occurrence.status, 200);
       assert.equal((await occurrence.json()).delivery.status, "returning");
+      const returningAttempt = storedAttempts(item.delivery.id)[0];
+      assert.equal(returningAttempt.status, "returning");
+      assert.equal(returningAttempt.endedAt, null);
+      assert.equal(returningAttempt.endNature, null);
       await post(cookies.courier1, item.delivery.id, "report-return");
       const confirmed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`,
         { cookie: cookies.company1, method: "POST", body: {} });
@@ -284,6 +475,11 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       assert.equal(delivery.status, "returned");
       assert.ok(delivery.events.some(({ eventType }) => eventType === type));
       assert.ok(delivery.events.some(({ eventType }) => eventType === "return_confirmed"));
+      const closedAttempt = storedAttempts(item.delivery.id)[0];
+      assert.equal(closedAttempt.status, "closed_unsuccessfully");
+      assert.match(closedAttempt.endedAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+      assert.equal(closedAttempt.endNature, "terminal");
+      assert.equal(closedAttempt.endReason, type);
     }
   });
 
