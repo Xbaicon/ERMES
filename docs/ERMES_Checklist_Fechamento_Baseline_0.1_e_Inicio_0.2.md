@@ -2,11 +2,12 @@
 
 > **Estado atual:** o gate de fechamento foi concluído e a Baseline 0.1 está
 > congelada na tag `baseline-0.1`. A Baseline 0.2 foi iniciada documentalmente;
-> o próximo passo é a auditoria de migração em modo somente leitura. Os itens
+> a auditoria técnica 0.1 → 0.2 foi concluída. O próximo passo é a
+> implementação incremental da 0.2 sobre SQLite. Os itens
 > abaixo permanecem como checklist de rastreabilidade e não indicam, por si só,
-> que funcionalidades específicas da 0.2 já estejam implementadas. A futura
-> migração SQLite → MySQL será tratada como etapa técnica separada antes das
-> grandes mudanças funcionais.
+> que funcionalidades específicas da 0.2 já estejam implementadas. A
+> implementação funcional da 0.2 ocorrerá sobre SQLite. MySQL não é gate; sua
+> migração será etapa técnica posterior e isolada, em ambiente apropriado.
 
 ## Fechar Baseline 0.1
 
@@ -25,11 +26,13 @@
 
 - [x] Ler integralmente `ERMES_Baseline_0.2.md`.
 - [x] Ler `ERMES_Changelog_0.1_para_0.2.md`.
-- [ ] Executar auditoria do Codex antes de editar.
+- [x] Executar auditoria técnica 0.1 → 0.2 antes de editar código.
 - [ ] Identificar migrações de banco.
 - [ ] Criar plano de implementação incremental.
 - [ ] Implementar e testar por blocos.
-- [ ] Executar suíte completa no final.
+- [ ] Executar suíte completa no final da implementação funcional sobre SQLite.
+- [ ] Migrar SQLite → MySQL em etapa técnica isolada e ambiente apropriado.
+- [ ] Repetir regressão automatizada e smoke completo após a migração.
 - [ ] Realizar smoke test humano.
 - [ ] Comparar resultado com critérios de aceitação da 0.2.
 - [ ] Só após aprovação humana criar checkpoint da 0.2.

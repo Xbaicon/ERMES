@@ -8,8 +8,10 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | --- | --- | --- |
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
 | Baseline 0.2 | Iniciada documentalmente | É a baseline ativa de desenvolvimento, mas nenhuma funcionalidade específica da 0.2 deve ser considerada implementada apenas por constar na especificação |
-| Próximo passo técnico | Auditoria somente leitura | Auditar a migração Baseline 0.1 → Baseline 0.2 antes de alterar código, banco, API ou regras de negócio |
-| Persistência futura | Etapa técnica separada | Planejar e executar a migração SQLite → MySQL separadamente, antes das grandes alterações funcionais da 0.2 |
+| Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
+| Próximo passo técnico | Implementação incremental | Implementar o modelo funcional da Baseline 0.2 sobre SQLite; nenhuma feature específica da 0.2 está declarada como implementada |
+| Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
+| Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |
 
 ## Implementação existente no checkpoint da Baseline 0.1
 

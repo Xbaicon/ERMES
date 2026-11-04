@@ -14,9 +14,10 @@ Atue como engenheiro de software responsável por migrar o projeto ERMES da Base
 
 Se houver conflito entre código da 0.1 e a 0.2, não escolha silenciosamente um lado: identifique o conflito, explique seu impacto e adapte o código conforme a 0.2 apenas quando a regra estiver explicitamente definida.
 
-## Fase 1 — Auditoria antes de alterar
+## Fase 1 — Auditoria antes de alterar (concluída)
 
-Antes de editar código:
+A auditoria técnica 0.1 → 0.2 já foi concluída. Os pontos abaixo registram
+o escopo dessa fase e servem de referência para a implementação:
 
 1. Identifique entidades/classes, enums, serviços, controllers, repositories, DTOs, telas e testes afetados.
 2. Localize o fluxo atual de Pedido, Entrega, aceite, coleta, código, cancelamento, retorno e financeiro.
@@ -25,30 +26,13 @@ Antes de editar código:
 5. Mostre o plano de implementação em etapas pequenas e coerentes.
 6. Não implemente geocodificação/rotas, alteração voluntária de pedido pelo cliente, avaliações ou recuperação por segundo motoboy.
 
-## Fase 2 — Gate técnico separado: SQLite → MySQL
+## Fase 2 — Diretriz de persistência durante a implementação
 
-Somente depois da auditoria 0.1 → 0.2, planeje e implemente a migração de
-persistência SQLite → MySQL como uma etapa técnica própria, separada das novas
-regras funcionais da Baseline 0.2. MySQL é uma decisão de implementação e não
-uma nova regra funcional da baseline.
+A auditoria técnica 0.1 → 0.2 foi concluída. Por restrições do ambiente
+acadêmico atual do SENAI, SQLite permanece como banco de desenvolvimento e
+testes da implementação funcional da 0.2. MySQL não é gate para essas features.
 
-1. Produza o plano da migração a partir do modelo e das invariantes encontrados
-   na auditoria, antes de alterar a persistência.
-2. Mantenha schema e código sincronizados. Toda alteração estrutural deve ser
-   reproduzível e versionada por mecanismo de migração apropriado.
-3. Implemente a migração em PR própria, sem misturar funcionalidades da 0.2,
-   salvo necessidade técnica inevitável, explicitamente justificada e
-   documentada.
-4. Não trate, por padrão, os dados locais do arquivo SQLite de desenvolvimento
-   como patrimônio que precise ser migrado. Qualquer necessidade de preservar
-   esses dados depende de decisão explícita.
-5. Execute novamente os testes e o smoke do comportamento consolidado da 0.1
-   usando MySQL, verificando integridade, transações, concorrência e contratos
-   existentes.
-6. Só avance às grandes mudanças funcionais e estruturais da 0.2 depois que a
-   aplicação mantiver o comportamento esperado sobre MySQL.
-
-## Fase 3 — Ordem recomendada de implementação funcional da Baseline 0.2
+## Fase 3 — Ordem recomendada de implementação funcional da Baseline 0.2 sobre SQLite
 
 1. Atualizar enums/estados sem quebrar persistência existente.
 2. Introduzir `TentativaEntrega` e seus relacionamentos.
@@ -62,6 +46,16 @@ uma nova regra funcional da baseline.
 10. Atualizar APIs/DTOs/telas conforme necessário.
 11. Atualizar e ampliar testes.
 12. Executar suíte completa e smoke test.
+
+## Fase 4 — Migração posterior SQLite → MySQL
+
+Depois da regressão funcional completa da 0.2, planeje e execute a migração
+em ambiente apropriado como etapa técnica isolada, sem misturar novas regras
+funcionais. Preserve comportamento, integridade, transações, concorrência e
+contratos consolidados. Execute novamente regressão automatizada e smoke
+completo sobre MySQL. Não presuma migração de `data/ermes.sqlite` nem dos dados
+de smoke; qualquer necessidade de preservar dados locais requer decisão
+explícita. Nenhuma feature pode depender do conteúdo de um banco local pessoal.
 
 ## Regras críticas que não podem ser violadas
 
