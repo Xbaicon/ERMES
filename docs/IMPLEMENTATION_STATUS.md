@@ -7,11 +7,27 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Marco | Estado | Observação |
 | --- | --- | --- |
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
-| Baseline 0.2 | Iniciada documentalmente | É a baseline ativa de desenvolvimento, mas nenhuma funcionalidade específica da 0.2 deve ser considerada implementada apenas por constar na especificação |
+| Baseline 0.2 | Em implementação incremental | A entidade `TentativaEntrega` e a fronteira da coleta têm o primeiro incremento funcional; os demais requisitos da baseline continuam pendentes |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
-| Próximo passo técnico | Implementação incremental | Implementar o modelo funcional da Baseline 0.2 sobre SQLite; nenhuma feature específica da 0.2 está declarada como implementada |
+| Incremento atual | `TentativaEntrega` — PARCIAL | A coleta cria a tentativa persistente e a conclusão normal a conclui; o ciclo completo da entidade ainda não está implementado |
+| Próximo passo técnico | Implementação incremental | Continuar os incrementos funcionais da Baseline 0.2 sobre SQLite, preservando as pendências registradas abaixo |
 | Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
 | Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |
+
+## Primeiro incremento funcional da Baseline 0.2
+
+| Regra | Estado | Observação |
+| --- | --- | --- |
+| Entidade persistente `TentativaEntrega` | PARCIAL | `delivery_attempts` preserva identidade, sequência por Entrega, motoboy, status, início e dados de encerramento |
+| Fronteira da coleta | IMPLEMENTADO | Aceite, deslocamento, chegada à coleta e falha pré-coleta não criam tentativa; a confirmação da coleta cria a tentativa na mesma transação da Entrega e do histórico |
+| Numeração e tentativa aberta | IMPLEMENTADO | A numeração usa `MAX(attempt_number) + 1` dentro de `BEGIN IMMEDIATE`; unicidade por Entrega e índice de tentativa aberta protegem concorrência e repetição |
+| Conclusão normal | IMPLEMENTADO | Código válido conclui a tentativa ativa na mesma transação da Entrega, do evento e dos lançamentos financeiros já existentes |
+| Projeção da Entrega | IMPLEMENTADO | Consultas de detalhe incluem `attempts` de modo aditivo; não foi criado endpoint ou interface visual |
+| Retorno recuperável herdado da 0.1 | PARCIAL | A tentativa passa a `returning` e só é encerrada como recuperável após confirmação do retorno; uma coleta posterior recebe o próximo número |
+| Ocorrências, revalidação e classificação 0.2 | NÃO IMPLEMENTADO | Permanecem fora deste incremento; os fluxos 0.1 existentes só foram ligados ao ciclo mínimo da tentativa para não deixar uma tentativa aberta órfã |
+| Estados completos de Pedido e Entrega da 0.2 | NÃO IMPLEMENTADO | Os valores operacionais atuais, como `completed`, foram preservados por compatibilidade |
+| Contador de códigos inválidos por tentativa | PENDENTE | `invalid_code_attempts` continua temporariamente em `deliveries`; movê-lo agora exigiria antecipar o fluxo de três erros, ocorrências, responsabilidade, retorno e financeiro e criaria risco de duas fontes de verdade |
+| Bancos SQLite existentes | IMPLEMENTADO COM LIMITAÇÃO | A tabela é criada aditivamente e não há backfill heurístico. Entregas históricas em andamento sem tentativa são preservadas, mas precisam de reconciliação antes de uma transição que exija tentativa ativa |
 
 ## Implementação existente no checkpoint da Baseline 0.1
 

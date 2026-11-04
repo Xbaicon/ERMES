@@ -1,11 +1,13 @@
-# Arquitetura técnica atual — checkpoint da Baseline 0.1
+# Arquitetura técnica atual — primeiro incremento funcional da Baseline 0.2
 
 ## Estado da transição
 
-Esta arquitetura descreve a implementação congelada na tag `baseline-0.1`.
-A Baseline 0.2 é a referência funcional ativa, mas suas mudanças ainda não estão
-representadas nesta arquitetura. A auditoria técnica 0.1 → 0.2 foi concluída;
-o próximo passo é a implementação incremental da 0.2 sobre SQLite.
+O checkpoint `baseline-0.1` permanece congelado. O desenvolvimento da Baseline
+0.2 avança incrementalmente sobre SQLite após a conclusão da auditoria técnica
+0.1 → 0.2. Este documento inclui o primeiro incremento de `TentativaEntrega`.
+Isso não declara implementado o ciclo completo da 0.2 nem altera a baseline
+normativa. MySQL permanece uma etapa técnica posterior e não é gate para as
+funcionalidades da 0.2.
 
 ## Objetivo
 
@@ -30,6 +32,12 @@ Não há dependências npm externas nesta etapa.
 - `src/deliveries.js` concentra estados, eventos e a matriz pura do fluxo normal `available -> heading_to_pickup -> awaiting_pickup -> in_transit -> awaiting_confirmation -> completed`. Os estados operacionais de exceção são `returning` e `awaiting_return_confirmation`; `completed`, `cancelled` e `returned` são terminais.
 - `src/delivery-creation.js` garante uma única Entrega para um pedido `confirmed`, `paid` e com destino válido. A variante interna participa da transação do pagamento, evitando transações SQLite aninhadas. A unicidade de `deliveries.order_id`, `BEGIN IMMEDIATE`, a inserção de `delivery_created` e o hash do código ficam na mesma transação.
 - `src/delivery-operations.js` implementa consultas isoladas e transições transacionais. Atualizações condicionadas ao estado, o índice parcial `one_active_delivery_per_courier` e a serialização do SQLite protegem aceite e avanço concorrentes. Cada mudança efetiva grava exatamente um evento.
+- `src/delivery-attempts.js` concentra a persistência e o ciclo mínimo de `TentativaEntrega`. `delivery_attempts` usa os estados conceituais `active`, `returning`, `completed` e `closed_unsuccessfully`, equivalentes a `ATIVA`, `EM_RETORNO`, `CONCLUIDA` e `ENCERRADA_SEM_SUCESSO`. A entidade não replica os estados operacionais detalhados da Entrega.
+- A confirmação da coleta executa em um único `BEGIN IMMEDIATE`: valida a Entrega atribuída em `awaiting_pickup`, verifica a ausência de tentativa aberta, calcula `MAX(attempt_number) + 1`, insere a tentativa, muda a Entrega para `in_transit`, grava `collected_at` e registra `order_collected`. Qualquer falha desfaz todos esses efeitos.
+- `UNIQUE(delivery_id, attempt_number)` protege a sequência. O índice parcial único `one_open_attempt_per_delivery`, para `active` e `returning`, protege no banco a regra de uma tentativa aberta por Entrega; a aplicação também verifica a regra dentro da transação. Uma futura mudança de banco deverá reproduzir essa invariante com mecanismo equivalente.
+- Código válido muda a tentativa ativa para `completed` e grava `ended_at` na mesma transação que conclui a Entrega, registra o evento e executa o financeiro existente. O código de confirmação, seu hash e sua representação cifrada continuam exclusivamente em `deliveries`.
+- Os fluxos de retorno herdados da 0.1 mudam a tentativa aberta para `returning` e a encerram somente na confirmação física do retorno: `recoverable` para falha do motoboy após coleta e `terminal` nos demais motivos já existentes. Isso mantém coerência com o fluxo atual sem introduzir `OcorrenciaEntrega`, classificação de responsabilidade, revalidação ou novas regras financeiras da 0.2.
+- Os detalhes de Entrega projetam o histórico `attempts` de forma aditiva. Listagens, rotas e interface visual permanecem inalteradas.
 - `src/finance.js` concentra as regras e o livro-razão financeiro. `financial_entries` registra lançamentos append-only de pagamento, reembolso e distribuição por componente (`products` ou `freight`), parte relacionada, motivo, Pedido, Entrega, horário e chave idempotente única. Triggers rejeitam UPDATE, DELETE, over-refund, valores fora do inteiro seguro, relações divergentes e combinações incompatíveis de tipo, componente e beneficiário. Colisões de chave comparam o conteúdo financeiro relevante e exigem reconciliação quando divergentes. As transições operacionais chamam essas regras dentro da mesma transação SQLite; falha financeira desfaz também estado e evento.
 - O pagamento acadêmico simulado atualiza `orders` e garante a Entrega dentro da mesma transação. O código de seis dígitos usa hash `scrypt` para validação e AES-256-GCM para recuperação exclusiva pelo cliente durante a operação. A chave pode vir de `ERMES_CONFIRMATION_CODE_KEY` ou de arquivo local com permissão restrita ao lado do banco; banco e chave precisam ser preservados juntos em backup. Repetições retornam a mesma Entrega e o mesmo código sem novo evento ou timestamp.
 - `Pedido` e `Entrega` são entidades distintas.
@@ -41,7 +49,8 @@ Não há dependências npm externas nesta etapa.
 - O catálogo de consulta fica sob `/api/client`: a sessão limita o acesso ao papel `client`, empresas bloqueadas não são elegíveis e a consulta de produtos combina `company_id` com `is_available = 1`; as antigas rotas públicas de catálogo não fazem parte do contrato.
 - `src/orders.js` concentra validação, consultas isoladas por cliente ou empresa, recálculo decimal do peso, subtotal seguro, criação/edição do `draft` e confirmação comercial transacional. A criação grava atomicamente os snapshots de destino e destinatário; a edição atual continua restrita aos itens e preserva ambos. A confirmação usa `orders.version` para concorrência otimista, grava `confirmed_at` e não cria entrega, pagamento ou frete. `src/server.js` mantém a autorização e o contrato HTTP. O carrinho efêmero fica em `public/js/client-cart.js`; a consulta e a edição dos drafts em `public/js/client-drafts.js`; a consulta e confirmação empresarial em `public/js/company-drafts.js`. `order_items` preserva os snapshots comerciais, e a migração aditiva de `orders` mantém bancos SQLite existentes.
 - `src/order-chat.js` implementa uma conversa por Pedido sem entidade vazia separada. `order_chat_messages` relaciona diretamente Pedido, remetente, papel preservado, texto e horário; índices ordenam por ID crescente, e triggers validam participante, bloqueiam escrita após terminalidade e proíbem UPDATE/DELETE. A aplicação aceita somente `draft` e `confirmed` como estados graváveis e deriva encerramento pelos estados terminais existentes da Entrega (`completed`, `cancelled`, `returned`). `public/js/order-chat.js` usa HTTP com polling de cinco segundos somente após a seleção de uma conversa, substitui a projeção completa para não duplicar mensagens e suspende a atualização quando a página fica oculta.
-- Existe índice parcial no banco para impedir mais de uma entrega ativa por motoboy. Migrações aditivas por `PRAGMA table_info` mantêm bancos SQLite anteriores. Pedidos legados sem `recipient_snapshot_json` são migrados como `self` com o nome então disponível do cliente, coerente com o único comportamento anterior.
+- Existem índices parciais no banco para impedir mais de uma entrega ativa por motoboy e mais de uma tentativa aberta por Entrega. Migrações aditivas por `PRAGMA table_info` e `CREATE TABLE IF NOT EXISTS` mantêm bancos SQLite anteriores. Pedidos legados sem `recipient_snapshot_json` são migrados como `self` com o nome então disponível do cliente, coerente com o único comportamento anterior.
+- A evolução cria `delivery_attempts` vazia em bancos anteriores. Não há backfill de tentativas porque os estados legados não provam quando uma coleta ocorreu nem todos os dados semânticos do ciclo. Entregas históricas são preservadas; uma entrega em andamento sem tentativa exige reconciliação antes de concluir ou entrar em retorno.
 - Entregas ativas de bancos anteriores que não possuam a representação cifrada recebem um novo código durante a migração; o cliente passa a consultá-lo pelo painel. Entregas terminais não são alteradas.
 - `public/js/delivery-panels.js` fornece a interface mínima de cliente, empresa e motoboy, sempre subordinada às autorizações e validações do servidor. As projeções operacionais usam destino e destinatário preservados; o motoboy não depende de dados mutáveis do cadastro para executar a Entrega.
 - Dinheiro é representado em centavos inteiros seguros e somado com `BigInt`. A conclusão normal divide 70/25/5 pelo maior resto a partir do frete efetivamente pago, com desempate motoboy, empresa e ERMES; nunca usa configuração atual. No cancelamento pós-coleta, a metade do cliente usa arredondamento para cima quando há centavo ímpar e o motoboy recebe o restante, de modo que a soma continue exatamente igual ao frete histórico.
@@ -57,6 +66,8 @@ Não há dependências npm externas nesta etapa.
 - O cadastro atual cria um usuário responsável inicial para a empresa, sem declarar que a versão final terá apenas um usuário.
 - Recuperação de senha não foi simulada de forma insegura.
 - O SQLite atende ao desenvolvimento e demonstração local. Uma futura mudança de banco exigirá migrações e testes de concorrência equivalentes.
+- `invalid_code_attempts` permanece temporariamente em `deliveries`. Sua transferência para `delivery_attempts` pertence ao incremento específico de validação de código, junto das regras de ocorrência, responsabilidade, retorno e financeiro necessárias para evitar duas fontes de verdade.
+- A migração completa dos estados de Pedido e Entrega para a nomenclatura da 0.2 permanece pendente; este incremento preserva valores como `completed` por compatibilidade.
 
 ## Portabilidade durante a fase SQLite
 
@@ -80,8 +91,9 @@ aplicação para MySQL agora.
 
 ## Próxima etapa técnica
 
-1. Implementar incrementalmente as funcionalidades da 0.2 sobre SQLite, preservando as invariantes e documentando alterações de schema. A auditoria técnica 0.1 → 0.2 já foi concluída.
-2. Após regressão funcional completa da 0.2, migrar SQLite → MySQL como etapa técnica isolada em ambiente apropriado, com plano próprio para integridade, transações e concorrência; repetir regressão automatizada e smoke completo.
+1. Implementar o incremento específico de validações de código por `TentativaEntrega` sobre SQLite, sem antecipar ocorrência, responsabilidade ou financeiro antes de defini-los em conjunto. A auditoria técnica 0.1 → 0.2 já foi concluída.
+2. Evoluir em incrementos separados os estados de Pedido/Entrega, `OcorrenciaEntrega`, classificação, revalidação e consequências financeiras da 0.2.
+3. Após regressão funcional completa da 0.2, migrar SQLite → MySQL como etapa técnica isolada em ambiente apropriado, com plano próprio para integridade, transações e concorrência; repetir regressão automatizada e smoke completo.
 
 Geocodificação, provedor real de rotas, mapas e rastreamento geográfico são
 itens futuros e não bloqueiam a Baseline 0.2. A classificação vigente está em

@@ -269,6 +269,10 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
     assert.equal(response.status, 500);
     assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(item.delivery.id).status,
       "awaiting_confirmation");
+    assert.deepEqual({ ...db.prepare(`SELECT status, ended_at AS endedAt
+      FROM delivery_attempts WHERE delivery_id = ?`).get(item.delivery.id) }, {
+      status: "active", endedAt: null,
+    });
     assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
       WHERE delivery_id = ? AND event_type = 'delivery_completed'`).get(item.delivery.id).total, 0);
     assert.equal(ledger(item.orderId).some(({ entryType }) => entryType === "distribution"), false);
@@ -479,6 +483,10 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
     assert.equal(response.status, 500);
     assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(item.delivery.id).status,
       "awaiting_confirmation");
+    assert.deepEqual({ ...db.prepare(`SELECT status, ended_at AS endedAt
+      FROM delivery_attempts WHERE delivery_id = ?`).get(item.delivery.id) }, {
+      status: "active", endedAt: null,
+    });
     assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
       WHERE delivery_id = ? AND event_type = 'delivery_completed'`).get(item.delivery.id).total, 0);
     assert.deepEqual(new Set(ledger(item.orderId).map(({ entryType }) => entryType)), new Set(["payment"]));
