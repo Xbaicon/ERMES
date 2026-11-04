@@ -2,8 +2,9 @@
 
 A implementação estável da **Baseline 0.1** está congelada na tag
 `baseline-0.1`. A **Baseline 0.2** é a baseline ativa de desenvolvimento; o
-código permanece no estado 0.1 até a auditoria técnica de migração e as etapas
-de implementação posteriores.
+código ainda permanece no estado 0.1. A auditoria técnica 0.1 → 0.2 foi
+concluída; o próximo passo é implementar a 0.2 incrementalmente sobre SQLite.
+A migração para MySQL permanece planejada como etapa técnica posterior.
 
 O objetivo deste repositório é oferecer uma base segura para a equipe continuar o desenvolvimento com o Codex sem transformar especificações ainda não implementadas ou pendências de negócio em decisões automáticas.
 

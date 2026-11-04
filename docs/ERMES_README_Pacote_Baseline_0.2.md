@@ -6,9 +6,10 @@ Este pacote reúne os artefatos necessários para preservar as decisões da Base
 
 A Baseline 0.1 foi concluída e congelada na tag `baseline-0.1`. A Baseline 0.2
 é agora a baseline ativa de desenvolvimento. A presença destes documentos não
-declara suas funcionalidades como implementadas: o próximo passo é a auditoria
-de migração 0.1 → 0.2 em modo somente leitura. A futura migração SQLite → MySQL
-deve ocorrer como etapa técnica separada antes das grandes mudanças funcionais.
+declara suas funcionalidades como implementadas. A auditoria técnica 0.1 → 0.2
+foi concluída. O próximo passo é a implementação incremental da 0.2 sobre
+SQLite. A migração SQLite → MySQL será uma etapa técnica posterior e isolada,
+em ambiente apropriado.
 
 ## Arquivos
 
@@ -20,8 +21,9 @@ deve ocorrer como etapa técnica separada antes das grandes mudanças funcionais
 
 ## Regra de uso
 
-A condição de fechamento da 0.1 foi atendida pela tag `baseline-0.1`. Não iniciar
-a implementação funcional da 0.2 antes da auditoria técnica de migração e da
-etapa separada de persistência planejada.
+A condição de fechamento da 0.1 foi atendida pela tag `baseline-0.1`, e a
+auditoria técnica 0.1 → 0.2 já foi concluída.
+A migração para MySQL não é pré-requisito das features; ocorrerá após a regressão
+funcional da 0.2, seguida de nova regressão automatizada e smoke completo.
 
 Novas funcionalidades após o fechamento da 0.2 devem ser direcionadas à 0.3, salvo correção de contradição ou erro documental comprovado.

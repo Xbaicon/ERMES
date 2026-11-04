@@ -4,8 +4,8 @@
 
 Esta arquitetura descreve a implementação congelada na tag `baseline-0.1`.
 A Baseline 0.2 é a referência funcional ativa, mas suas mudanças ainda não estão
-representadas nesta arquitetura. O próximo passo é uma auditoria de migração
-0.1 → 0.2 em modo somente leitura.
+representadas nesta arquitetura. A auditoria técnica 0.1 → 0.2 foi concluída;
+o próximo passo é a implementação incremental da 0.2 sobre SQLite.
 
 ## Objetivo
 
@@ -58,10 +58,30 @@ Não há dependências npm externas nesta etapa.
 - Recuperação de senha não foi simulada de forma insegura.
 - O SQLite atende ao desenvolvimento e demonstração local. Uma futura mudança de banco exigirá migrações e testes de concorrência equivalentes.
 
+## Portabilidade durante a fase SQLite
+
+- Persistir valores monetários como inteiros em centavos; manter foreign keys,
+  unicidades e constraints explícitas.
+- Evitar novos acoplamentos desnecessários a `rowid`. Evitar novos `PRAGMA`,
+  `GLOB`, `typeof()` e outras construções específicas do SQLite quando houver
+  solução simples e clara na aplicação. Qualquer acoplamento novo necessário
+  deve ser deliberado e documentado.
+- Definir fronteiras explícitas para novas transações; documentar cada alteração
+  de schema da 0.2. Evitar migrations e backfills improvisados no startup quando
+  houver solução mais organizada.
+- Manter lógica de negócio separada da persistência quando isso não exigir
+  refatoração desproporcional.
+- Cada teste deve criar seu próprio estado, sem depender de `data/ermes.sqlite`.
+  O arquivo local e os dados de smoke não são presumidos como origem da futura
+  migração; nenhuma feature pode depender de banco local pessoal.
+
+Essas orientações reduzem o custo da migração futura; não implicam portar a
+aplicação para MySQL agora.
+
 ## Próxima etapa técnica
 
-1. Auditar o impacto da Baseline 0.2 sobre domínio, persistência, API, interface e testes, sem alterar a implementação durante a auditoria.
-2. Tratar a futura migração SQLite → MySQL como etapa técnica separada, anterior às grandes alterações funcionais da 0.2, com plano próprio de migração, integridade e concorrência.
+1. Implementar incrementalmente as funcionalidades da 0.2 sobre SQLite, preservando as invariantes e documentando alterações de schema. A auditoria técnica 0.1 → 0.2 já foi concluída.
+2. Após regressão funcional completa da 0.2, migrar SQLite → MySQL como etapa técnica isolada em ambiente apropriado, com plano próprio para integridade, transações e concorrência; repetir regressão automatizada e smoke completo.
 
 Geocodificação, provedor real de rotas, mapas e rastreamento geográfico são
 itens futuros e não bloqueiam a Baseline 0.2. A classificação vigente está em

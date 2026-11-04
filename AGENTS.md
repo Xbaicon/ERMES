@@ -49,10 +49,10 @@ de negócio.
 
 ## Convenções técnicas atuais
 
-Estas convenções descrevem o checkpoint congelado da Baseline 0.1. Qualquer
-mudança para a 0.2 depende primeiro da auditoria de migração em modo somente
-leitura. A futura migração SQLite → MySQL deve ser uma etapa técnica separada,
-anterior às grandes alterações funcionais da 0.2.
+Estas convenções descrevem o checkpoint congelado da Baseline 0.1. A transição para a Baseline 0.2 passou pela auditoria técnica 0.1 → 0.2, já concluída.
+SQLite permanece o banco de desenvolvimento e testes durante a implementação
+funcional da 0.2. MySQL não é pré-requisito; a migração será uma etapa técnica
+posterior e isolada, em ambiente apropriado, seguida de regressão completa.
 
 - Node.js 22.5+ com módulos ES.
 - Backend sem dependências externas, baseado em `node:http` e `node:sqlite`.
