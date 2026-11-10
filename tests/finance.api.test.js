@@ -426,7 +426,7 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
   });
 
   await context.test("regras pendentes e frete ausente não recebem distribuição inventada", async () => {
-    for (const type of ["recipient_absent", "recipient_refused", "address_problem"]) {
+    for (const type of ["recipient_absent", "recipient_refused"]) {
       const item = createDelivery();
       await advanceToDestination(item);
       assert.equal((await postCourier(item.delivery.id, "occurrences", { type })).status, 200);
@@ -497,7 +497,7 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
     })).status, 200);
   });
 
-  await context.test("falha financeira desfaz cancelamento pós-coleta e eventual bloqueio", async () => {
+  await context.test("falha financeira desfaz cancelamento pós-coleta sem criar sanção temporal", async () => {
     const item = createDelivery({ freightCents: 1000 });
     for (const action of ["accept", "arrive-pickup", "collect"]) {
       assert.equal((await postCourier(item.delivery.id, action)).status, 200);
@@ -610,6 +610,13 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
     const divergentCounter = createHistoricalDelivery();
     completeHistoricalDelivery(divergentCounter, courier1, "2099-01-01 11:00:00",
       { attempts: 1, persistedAttempts: 2 });
+    const divergentAttemptCounter = createHistoricalDelivery();
+    completeHistoricalDelivery(divergentAttemptCounter, courier1, "2099-01-01 11:00:00",
+      { attempts: 1 });
+    db.prepare(`INSERT INTO delivery_attempts
+      (delivery_id, attempt_number, courier_id, status, invalid_code_attempts, started_at, ended_at)
+      VALUES (?, 1, ?, 'completed', 2, '2099-01-01 10:30:00', '2099-01-01 11:00:00')`)
+      .run(divergentAttemptCounter.deliveryId, courier1);
     const incoherentDetails = createHistoricalDelivery();
     completeHistoricalDelivery(incoherentDetails, courier1, "2099-01-01 11:00:00",
       { attempts: 1, attemptDetails: [{ attempt: 2, remainingAttempts: 1 }] });
@@ -644,11 +651,12 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
     markHistoricalProductUnavailable(invalidUnavailable, companyUser2);
 
     transaction(() => backfillFinancialEntries(db));
-    for (const item of [coherent, oneInvalidAttempt, twoInvalidAttempts]) {
+    for (const item of [coherent, oneInvalidAttempt, twoInvalidAttempts,
+      persistedLimit, divergentCounter]) {
       assert.equal(ledger(item.orderId).filter(({ entryType }) => entryType === "distribution").length, 3);
     }
     for (const item of [threeInvalidAttempts, fourInvalidAttempts, definitiveFailure,
-      persistedLimit, divergentCounter, incoherentDetails, attemptOutOfOrder,
+      divergentAttemptCounter, incoherentDetails, attemptOutOfOrder,
       wrongCourier, wrongRole, wrongCompany, invalidTimestamp, impossibleTimestamp,
       emptyTimestamp, wrongOrder]) {
       assert.equal(ledger(item.orderId).filter(({ entryType }) => entryType === "distribution").length, 0);

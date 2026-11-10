@@ -88,6 +88,13 @@ test("ações são isoladas por papel em todos os estados operacionais", async (
   }
 });
 
+test("painel não oferece problema genérico de endereço antes da classificação 0.2", async () => {
+  const html = await renderedDelivery("courier", { ...delivery, status: "awaiting_confirmation" });
+  assert.match(html, /recipient_absent/);
+  assert.match(html, /recipient_refused/);
+  assert.doesNotMatch(html, /address_problem|Endereço informado incorreto/);
+});
+
 test("cliente recupera e visualiza o código ao reabrir o detalhe da entrega", async () => {
   const { panel, elements } = panelFixture();
   const originalDocument = globalThis.document;

@@ -6,6 +6,7 @@ import {
   encryptConfirmationCode, hashConfirmationCode, hashPassword, newConfirmationCode,
 } from "./security.js";
 import { backfillFinancialEntries, isCanonicalTimestamp } from "./finance.js";
+import { migrateLegacyInvalidCodeAttempts } from "./delivery-attempts.js";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databasePath = process.env.ERMES_DB_PATH || resolve(projectRoot, "data", "ermes.sqlite");
@@ -143,6 +144,8 @@ db.exec(`
     status TEXT NOT NULL CHECK(
       status IN ('active', 'returning', 'completed', 'closed_unsuccessfully')
     ),
+    invalid_code_attempts INTEGER NOT NULL DEFAULT 0
+      CHECK(invalid_code_attempts IN (0, 1, 2, 3)),
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ended_at TEXT,
     end_reason TEXT,
@@ -478,6 +481,21 @@ if (ordersWithoutRecipientSnapshot.length) {
 const userColumns = new Set(db.prepare("PRAGMA table_info(users)").all().map(({ name }) => name));
 if (!userColumns.has("order_blocked_until")) {
   db.exec("ALTER TABLE users ADD COLUMN order_blocked_until TEXT");
+}
+
+db.exec("BEGIN IMMEDIATE");
+try {
+  const attemptColumns = new Set(db.prepare("PRAGMA table_info(delivery_attempts)").all()
+    .map(({ name }) => name));
+  if (!attemptColumns.has("invalid_code_attempts")) {
+    db.exec(`ALTER TABLE delivery_attempts ADD COLUMN invalid_code_attempts INTEGER NOT NULL DEFAULT 0
+      CHECK(invalid_code_attempts IN (0, 1, 2, 3))`);
+    migrateLegacyInvalidCodeAttempts(db);
+  }
+  db.exec("COMMIT");
+} catch (error) {
+  db.exec("ROLLBACK");
+  throw error;
 }
 
 const deliveryColumns = new Set(db.prepare("PRAGMA table_info(deliveries)").all().map(({ name }) => name));

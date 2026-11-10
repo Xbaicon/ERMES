@@ -17,6 +17,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
   const { db, transaction } = await import("../src/database.js");
   const { hashPassword } = await import("../src/security.js");
   const { createDeliveryForEligibleOrderInTransaction } = await import("../src/delivery-creation.js");
+  const { createDeliveryAttemptInTransaction } = await import("../src/delivery-attempts.js");
   const { recordPaymentInTransaction } = await import("../src/finance.js");
   await startServer(0);
   context.after(async () => {
@@ -93,6 +94,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     { cookie, method: "POST", body });
   const storedAttempts = (deliveryId) => db.prepare(`SELECT id, delivery_id AS deliveryId,
     attempt_number AS attemptNumber, courier_id AS courierId, status,
+    invalid_code_attempts AS invalidCodeAttempts,
     started_at AS startedAt, ended_at AS endedAt,
     end_reason AS endReason, end_nature AS endNature
     FROM delivery_attempts WHERE delivery_id = ? ORDER BY attempt_number`).all(deliveryId)
@@ -291,6 +293,23 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     await post(cookies.courier1, item.delivery.id, "confirm", { code: item.confirmationCode });
   });
 
+  await context.test("Entrega legada pós-coleta sem tentativa exige reconciliação explícita", async () => {
+    const item = createDelivery();
+    db.prepare(`UPDATE deliveries SET courier_id = ?, status = 'awaiting_confirmation',
+      accepted_at = CURRENT_TIMESTAMP, collected_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(courier1, item.delivery.id);
+    const response = await post(cookies.courier1, item.delivery.id, "confirm", {
+      code: item.confirmationCode,
+    });
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /reconciliação dos dados legados/i);
+    assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(item.delivery.id).status,
+      "awaiting_confirmation");
+    assert.deepEqual(storedAttempts(item.delivery.id), []);
+    db.prepare("UPDATE deliveries SET courier_id = NULL, status = 'cancelled' WHERE id = ?")
+      .run(item.delivery.id);
+  });
+
   await context.test("índice impede duas tentativas abertas e cada Entrega inicia sua sequência em 1", async () => {
     const first = createDelivery();
     for (const action of ["accept", "arrive-pickup", "collect"]) {
@@ -311,58 +330,112 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     await post(cookies.courier1, second.delivery.id, "confirm", { code: second.confirmationCode });
   });
 
-  await context.test("retorno recuperável confirmado permite a tentativa 2 somente na nova coleta", async () => {
-    const item = createDelivery();
-    for (const action of ["accept", "arrive-pickup", "collect"]) {
-      assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
+  await context.test("criação interna valida inteiro, papel, empresa e atribuição do motoboy", () => {
+    const invalidRole = createDelivery().delivery.id;
+    db.prepare("UPDATE deliveries SET courier_id = ?, status = 'awaiting_pickup' WHERE id = ?")
+      .run(client1, invalidRole);
+    assert.throws(() => transaction(() => createDeliveryAttemptInTransaction(db, invalidRole, client1)),
+      /motoboy atribuído não é válido/i);
+    assert.equal(storedAttempts(invalidRole).length, 0);
+    db.prepare("UPDATE deliveries SET courier_id = NULL, status = 'cancelled' WHERE id = ?").run(invalidRole);
+
+    const wrongCompany = createDelivery().delivery.id;
+    db.prepare("UPDATE deliveries SET courier_id = ?, status = 'awaiting_pickup' WHERE id = ?")
+      .run(otherCourier, wrongCompany);
+    assert.throws(() => transaction(() => createDeliveryAttemptInTransaction(db, wrongCompany, otherCourier)),
+      /motoboy atribuído não é válido/i);
+    assert.equal(storedAttempts(wrongCompany).length, 0);
+    db.prepare("UPDATE deliveries SET courier_id = NULL, status = 'cancelled' WHERE id = ?").run(wrongCompany);
+
+    const wrongAssignment = createDelivery().delivery.id;
+    db.prepare("UPDATE deliveries SET courier_id = ?, status = 'awaiting_pickup' WHERE id = ?")
+      .run(courier1, wrongAssignment);
+    assert.throws(() => transaction(() => createDeliveryAttemptInTransaction(db, wrongAssignment, courier2)),
+      /motoboy atribuído não é válido/i);
+    assert.throws(() => transaction(() => createDeliveryAttemptInTransaction(db, wrongAssignment, 1.5)),
+      /identificadores inteiros positivos/i);
+    assert.equal(storedAttempts(wrongAssignment).length, 0);
+    db.prepare("UPDATE deliveries SET courier_id = NULL, status = 'cancelled' WHERE id = ?")
+      .run(wrongAssignment);
+  });
+
+  await context.test("cada tentativa 2 começa em zero após 0, 1 ou 2 erros na tentativa anterior", async () => {
+    for (const previousInvalidAttempts of [0, 1, 2]) {
+      const item = createDelivery();
+      for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+        assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
+      }
+      const wrongCodes = ["111111", "222222", "333333", "444444"]
+        .filter((code) => code !== item.confirmationCode).slice(0, 3);
+      for (const code of wrongCodes.slice(0, previousInvalidAttempts)) {
+        assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", { code })).status, 422);
+      }
+      assert.equal(storedAttempts(item.delivery.id)[0].invalidCodeAttempts, previousInvalidAttempts);
+      assert.equal(db.prepare("SELECT invalid_code_attempts AS value FROM deliveries WHERE id = ?")
+        .get(item.delivery.id).value, 0);
+
+      assert.equal((await post(cookies.courier1, item.delivery.id, "fail", {
+        reason: "Veículo avariado",
+      })).status, 200);
+      assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 409);
+      assert.equal((await post(cookies.courier1, item.delivery.id, "report-return")).status, 200);
+      assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 409);
+      const confirmed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`,
+        { cookie: cookies.company1, method: "POST", body: {} });
+      assert.equal(confirmed.status, 200);
+      const firstAttempt = storedAttempts(item.delivery.id)[0];
+      assert.deepEqual({
+        status: firstAttempt.status,
+        invalidCodeAttempts: firstAttempt.invalidCodeAttempts,
+        endNature: firstAttempt.endNature,
+        endReason: firstAttempt.endReason,
+      }, {
+        status: "closed_unsuccessfully",
+        invalidCodeAttempts: previousInvalidAttempts,
+        endNature: "recoverable",
+        endReason: "courier_failure_after_pickup",
+      });
+
+      for (const action of ["accept", "arrive-pickup", "collect"]) {
+        assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
+      }
+      let attempts = storedAttempts(item.delivery.id);
+      assert.deepEqual(attempts.map(({ attemptNumber, status, invalidCodeAttempts }) => ({
+        attemptNumber, status, invalidCodeAttempts,
+      })), [
+        { attemptNumber: 1, status: "closed_unsuccessfully", invalidCodeAttempts: previousInvalidAttempts },
+        { attemptNumber: 2, status: "active", invalidCodeAttempts: 0 },
+      ]);
+      assert.equal((await post(cookies.courier1, item.delivery.id, "arrive-destination")).status, 200);
+
+      const firstInvalid = await post(cookies.courier1, item.delivery.id, "confirm", { code: wrongCodes[0] });
+      assert.equal(firstInvalid.status, 422);
+      assert.equal((await firstInvalid.json()).delivery.invalidCodeAttempts, 1);
+      attempts = storedAttempts(item.delivery.id);
+      assert.equal(attempts[1].invalidCodeAttempts, 1);
+      assert.equal(attempts[1].status, "active");
+
+      if (previousInvalidAttempts < 2) {
+        const completed = await post(cookies.courier1, item.delivery.id, "confirm", {
+          code: item.confirmationCode,
+        });
+        assert.equal(completed.status, 200);
+        assert.equal((await completed.json()).delivery.status, "completed");
+      } else {
+        for (const code of wrongCodes.slice(1, 3)) {
+          assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", { code })).status, 422);
+        }
+        const secondAttempt = storedAttempts(item.delivery.id)[1];
+        assert.deepEqual({ status: secondAttempt.status, invalidCodeAttempts: secondAttempt.invalidCodeAttempts },
+          { status: "returning", invalidCodeAttempts: 3 });
+        assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(item.delivery.id).status,
+          "returning");
+        await post(cookies.courier1, item.delivery.id, "report-return");
+        await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+          cookie: cookies.company1, method: "POST", body: {},
+        });
+      }
     }
-    assert.deepEqual(storedAttempts(item.delivery.id).map(({ attemptNumber, status }) => (
-      { attemptNumber, status }
-    )), [{ attemptNumber: 1, status: "active" }]);
-
-    assert.equal((await post(cookies.courier1, item.delivery.id, "fail", {
-      reason: "Veículo avariado",
-    })).status, 200);
-    const returningAttempt = storedAttempts(item.delivery.id)[0];
-    assert.deepEqual({
-      status: returningAttempt.status,
-      endedAt: returningAttempt.endedAt,
-      endNature: returningAttempt.endNature,
-    }, { status: "returning", endedAt: null, endNature: null });
-    assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 409);
-    assert.equal(storedAttempts(item.delivery.id).length, 1);
-
-    assert.equal((await post(cookies.courier1, item.delivery.id, "report-return")).status, 200);
-    assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 409);
-    assert.equal(storedAttempts(item.delivery.id).length, 1);
-
-    const confirmed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`,
-      { cookie: cookies.company1, method: "POST", body: {} });
-    assert.equal(confirmed.status, 200);
-    const firstAttempt = storedAttempts(item.delivery.id)[0];
-    assert.equal(firstAttempt.status, "closed_unsuccessfully");
-    assert.match(firstAttempt.endedAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
-    assert.equal(firstAttempt.endNature, "recoverable");
-    assert.equal(firstAttempt.endReason, "courier_failure_after_pickup");
-
-    assert.equal((await post(cookies.courier1, item.delivery.id, "accept")).status, 200);
-    assert.equal(storedAttempts(item.delivery.id).length, 1);
-    assert.equal((await post(cookies.courier1, item.delivery.id, "arrive-pickup")).status, 200);
-    assert.equal(storedAttempts(item.delivery.id).length, 1);
-    assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 200);
-
-    const attempts = storedAttempts(item.delivery.id);
-    assert.equal(attempts.length, 2);
-    assert.deepEqual(attempts.map(({ deliveryId, attemptNumber, status }) => (
-      { deliveryId, attemptNumber, status }
-    )), [
-      { deliveryId: item.delivery.id, attemptNumber: 1, status: "closed_unsuccessfully" },
-      { deliveryId: item.delivery.id, attemptNumber: 2, status: "active" },
-    ]);
-    assert.equal(attempts.filter(({ status }) => ["active", "returning"].includes(status)).length, 1);
-
-    await post(cookies.courier1, item.delivery.id, "arrive-destination");
-    await post(cookies.courier1, item.delivery.id, "confirm", { code: item.confirmationCode });
   });
 
   await context.test("executa fluxo normal, rejeita atalhos e conclui somente com código correto", async () => {
@@ -426,6 +499,21 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       { cookie: cookies.company1, method: "POST", body: {} });
     assert.equal(confirmed.status, 200);
     assert.equal((await confirmed.json()).delivery.status, "returned");
+    const failedAttempt = storedAttempts(item.delivery.id)[0];
+    assert.deepEqual({
+      status: failedAttempt.status,
+      invalidCodeAttempts: failedAttempt.invalidCodeAttempts,
+      endReason: failedAttempt.endReason,
+      endNature: failedAttempt.endNature,
+    }, {
+      status: "closed_unsuccessfully",
+      invalidCodeAttempts: 3,
+      endReason: "confirmation_failed",
+      endNature: "terminal",
+    });
+    const failureEvent = db.prepare(`SELECT details_json AS detailsJson FROM delivery_events
+      WHERE delivery_id = ? AND event_type = 'confirmation_failed'`).get(item.delivery.id);
+    assert.deepEqual(JSON.parse(failureEvent.detailsJson), { attempt: 3, remainingAttempts: 0 });
   });
 
   await context.test("falhas antes e depois da coleta seguem redisponibilização definida", async () => {
@@ -455,8 +543,68 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     assert.equal(closedAttempt.endReason, "courier_failure_after_pickup");
   });
 
+  await context.test("falha no evento ao iniciar retorno restaura tentativa e Entrega", async () => {
+    const item = createDelivery();
+    for (const action of ["accept", "arrive-pickup", "collect"]) {
+      assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
+    }
+    db.exec(`CREATE TRIGGER fail_courier_return_event BEFORE INSERT ON delivery_events
+      WHEN NEW.event_type = 'courier_failed_after_pickup'
+      BEGIN SELECT RAISE(ABORT, 'forced return start event failure'); END;`);
+    const failed = await post(cookies.courier1, item.delivery.id, "fail", { reason: "Pane" });
+    db.exec("DROP TRIGGER fail_courier_return_event");
+    assert.equal(failed.status, 500);
+    assert.deepEqual({ ...db.prepare(`SELECT status, return_reason AS returnReason
+      FROM deliveries WHERE id = ?`).get(item.delivery.id) }, {
+      status: "in_transit", returnReason: null,
+    });
+    assert.deepEqual(storedAttempts(item.delivery.id).map(({ status, endedAt }) => ({ status, endedAt })), [
+      { status: "active", endedAt: null },
+    ]);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
+      WHERE delivery_id = ? AND event_type = 'courier_failed_after_pickup'`).get(item.delivery.id).total, 0);
+
+    await post(cookies.courier1, item.delivery.id, "fail", { reason: "Encerramento do teste" });
+    await post(cookies.courier1, item.delivery.id, "report-return");
+    await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    });
+  });
+
+  await context.test("falha no evento final desfaz encerramento recuperável e redisponibilização", async () => {
+    const item = createDelivery();
+    for (const action of ["accept", "arrive-pickup", "collect"]) {
+      await post(cookies.courier1, item.delivery.id, action);
+    }
+    await post(cookies.courier1, item.delivery.id, "fail", { reason: "Pane recuperável" });
+    await post(cookies.courier1, item.delivery.id, "report-return");
+    const before = { ...db.prepare(`SELECT status, courier_id AS courierId,
+      collected_at AS collectedAt, return_reason AS returnReason,
+      return_reported_at AS returnReportedAt FROM deliveries WHERE id = ?`).get(item.delivery.id) };
+    db.exec(`CREATE TRIGGER fail_reavailable_event BEFORE INSERT ON delivery_events
+      WHEN NEW.event_type = 'delivery_reavailable'
+      BEGIN SELECT RAISE(ABORT, 'forced recoverable close event failure'); END;`);
+    const failed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    });
+    db.exec("DROP TRIGGER fail_reavailable_event");
+    assert.equal(failed.status, 500);
+    assert.deepEqual({ ...db.prepare(`SELECT status, courier_id AS courierId,
+      collected_at AS collectedAt, return_reason AS returnReason,
+      return_reported_at AS returnReportedAt FROM deliveries WHERE id = ?`).get(item.delivery.id) }, before);
+    assert.deepEqual(storedAttempts(item.delivery.id).map(({ status, endedAt, endNature }) => (
+      { status, endedAt, endNature }
+    )), [{ status: "returning", endedAt: null, endNature: null }]);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
+      WHERE delivery_id = ? AND event_type = 'delivery_reavailable'`).get(item.delivery.id).total, 0);
+
+    assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    })).status, 200);
+  });
+
   await context.test("ocorrências definidas no destino exigem retorno confirmado pela empresa", async () => {
-    for (const type of ["recipient_absent", "recipient_refused", "address_problem"]) {
+    for (const type of ["recipient_absent", "recipient_refused"]) {
       const item = createDelivery();
       for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
         assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
@@ -483,6 +631,70 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     }
   });
 
+  await context.test("problema genérico de endereço é rejeitado sem efeitos colaterais", async () => {
+    const item = createDelivery();
+    for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+      assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
+    }
+    const deliveryBefore = { ...db.prepare(`SELECT status, return_reason AS returnReason
+      FROM deliveries WHERE id = ?`).get(item.delivery.id) };
+    const attemptBefore = storedAttempts(item.delivery.id);
+    const eventsBefore = db.prepare("SELECT COUNT(*) AS total FROM delivery_events WHERE delivery_id = ?")
+      .get(item.delivery.id).total;
+    const financialBefore = db.prepare("SELECT COUNT(*) AS total FROM financial_entries WHERE delivery_id = ?")
+      .get(item.delivery.id).total;
+
+    assert.equal((await post(cookies.otherCourier, item.delivery.id, "occurrences", {
+      type: "address_problem",
+    })).status, 404);
+    const response = await post(cookies.courier1, item.delivery.id, "occurrences", {
+      type: "address_problem",
+    });
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /classificação de ocorrências da Baseline 0\.2/i);
+    assert.deepEqual({ ...db.prepare(`SELECT status, return_reason AS returnReason
+      FROM deliveries WHERE id = ?`).get(item.delivery.id) }, deliveryBefore);
+    assert.deepEqual(storedAttempts(item.delivery.id), attemptBefore);
+    assert.equal(db.prepare("SELECT COUNT(*) AS total FROM delivery_events WHERE delivery_id = ?")
+      .get(item.delivery.id).total, eventsBefore);
+    assert.equal(db.prepare("SELECT COUNT(*) AS total FROM financial_entries WHERE delivery_id = ?")
+      .get(item.delivery.id).total, financialBefore);
+
+    assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", {
+      code: item.confirmationCode,
+    })).status, 200);
+  });
+
+  await context.test("falha no evento final desfaz encerramento terminal do retorno", async () => {
+    const item = createDelivery();
+    for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+      await post(cookies.courier1, item.delivery.id, action);
+    }
+    await post(cookies.courier1, item.delivery.id, "occurrences", { type: "recipient_absent" });
+    await post(cookies.courier1, item.delivery.id, "report-return");
+    const before = { ...db.prepare(`SELECT status, courier_id AS courierId,
+      returned_at AS returnedAt FROM deliveries WHERE id = ?`).get(item.delivery.id) };
+    db.exec(`CREATE TRIGGER fail_return_confirmed_event BEFORE INSERT ON delivery_events
+      WHEN NEW.event_type = 'return_confirmed'
+      BEGIN SELECT RAISE(ABORT, 'forced terminal close event failure'); END;`);
+    const failed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    });
+    db.exec("DROP TRIGGER fail_return_confirmed_event");
+    assert.equal(failed.status, 500);
+    assert.deepEqual({ ...db.prepare(`SELECT status, courier_id AS courierId,
+      returned_at AS returnedAt FROM deliveries WHERE id = ?`).get(item.delivery.id) }, before);
+    assert.deepEqual(storedAttempts(item.delivery.id).map(({ status, endedAt, endNature }) => (
+      { status, endedAt, endNature }
+    )), [{ status: "returning", endedAt: null, endNature: null }]);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
+      WHERE delivery_id = ? AND event_type = 'return_confirmed'`).get(item.delivery.id).total, 0);
+
+    assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    })).status, 200);
+  });
+
   await context.test("cancelamentos e produto indisponível preservam regras antes e depois da coleta", async () => {
     const before = createDelivery();
     const cancelled = await request(`/api/client/deliveries/${before.delivery.id}/cancel`,
@@ -494,34 +706,28 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     const unavailableDelivery = (await unavailableResponse.json()).delivery;
     assert.equal(unavailableDelivery.status, "cancelled");
     assert.ok(unavailableDelivery.events.some(({ eventType }) => eventType === "product_unavailable"));
-    const withinTolerance = createDelivery();
+    const afterPickup = createDelivery();
     for (const action of ["accept", "arrive-pickup", "collect"]) {
-      await post(cookies.courier1, withinTolerance.delivery.id, action);
+      await post(cookies.courier1, afterPickup.delivery.id, action);
     }
-    db.prepare("UPDATE deliveries SET collected_at = datetime('now', '-2 minutes') WHERE id = ?")
-      .run(withinTolerance.delivery.id);
-    const timely = await request(`/api/client/deliveries/${withinTolerance.delivery.id}/cancel`,
+    db.prepare("UPDATE users SET order_blocked_until = '2099-01-01 00:00:00' WHERE id = ?").run(client1);
+    db.prepare("UPDATE deliveries SET collected_at = datetime('now', '-4 minutes') WHERE id = ?")
+      .run(afterPickup.delivery.id);
+    const cancelledAfterPickup = await request(`/api/client/deliveries/${afterPickup.delivery.id}/cancel`,
       { cookie: cookies.client1, method: "POST", body: {} });
-    assert.equal((await timely.json()).delivery.status, "returning");
-    assert.equal(db.prepare("SELECT order_blocked_until AS value FROM users WHERE id = ?").get(client1).value, null);
-    await post(cookies.courier1, withinTolerance.delivery.id, "report-return");
-    await request(`/api/company/deliveries/${withinTolerance.delivery.id}/confirm-return`,
+    const cancelledAfterPickupDelivery = (await cancelledAfterPickup.json()).delivery;
+    assert.equal(cancelledAfterPickupDelivery.status, "returning");
+    const cancellationEvent = cancelledAfterPickupDelivery.events.find(
+      ({ eventType }) => eventType === "client_cancelled_after_pickup",
+    );
+    assert.deepEqual(cancellationEvent.details, {});
+    await post(cookies.courier1, afterPickup.delivery.id, "report-return");
+    await request(`/api/company/deliveries/${afterPickup.delivery.id}/confirm-return`,
       { cookie: cookies.company1, method: "POST", body: {} });
-    const after = createDelivery();
-    for (const action of ["accept", "arrive-pickup", "collect"]) await post(cookies.courier1, after.delivery.id, action);
-    db.prepare("UPDATE deliveries SET collected_at = datetime('now', '-4 minutes') WHERE id = ?").run(after.delivery.id);
-    const late = await request(`/api/client/deliveries/${after.delivery.id}/cancel`,
-      { cookie: cookies.client1, method: "POST", body: {} });
-    assert.equal((await late.json()).delivery.status, "returning");
-    assert.ok(db.prepare("SELECT order_blocked_until > CURRENT_TIMESTAMP AS blocked FROM users WHERE id = ?")
-      .get(client1).blocked);
-    const blockedOrder = await request("/api/client/orders", { cookie: cookies.client1, method: "POST",
+    const orderDespiteLegacyValue = await request("/api/client/orders", { cookie: cookies.client1, method: "POST",
       body: { companyId: company1, items: [{ productId: product, quantity: 1 }] } });
-    assert.equal(blockedOrder.status, 409);
-    db.prepare("UPDATE users SET order_blocked_until = datetime('now', '-1 second') WHERE id = ?").run(client1);
-    const releasedOrder = await request("/api/client/orders", { cookie: cookies.client1, method: "POST",
-      body: { companyId: company1, items: [{ productId: product, quantity: 1 }] } });
-    assert.equal(releasedOrder.status, 201);
+    const orderDespiteLegacyBody = await orderDespiteLegacyValue.json();
+    assert.equal(orderDespiteLegacyValue.status, 201, orderDespiteLegacyBody.error);
   });
 
   await context.test("índice trata retornos como ativos e somente estados terminais liberam o motoboy", () => {

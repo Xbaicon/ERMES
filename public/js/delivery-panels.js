@@ -77,7 +77,7 @@ function actions(role, delivery, courierCanAccept) {
   if (delivery.status === "awaiting_confirmation") {
     html += '<input data-delivery-code inputmode="numeric" maxlength="6" aria-label="Código de confirmação" placeholder="Código de 6 dígitos" />'
       + '<button class="button button-dark button-small" data-delivery-action="confirm">Validar e finalizar</button>'
-      + '<select data-delivery-occurrence aria-label="Ocorrência"><option value="recipient_absent">Destinatário ausente</option><option value="recipient_refused">Destinatário recusou</option><option value="address_problem">Endereço informado incorreto</option></select>'
+      + '<select data-delivery-occurrence aria-label="Ocorrência"><option value="recipient_absent">Destinatário ausente</option><option value="recipient_refused">Destinatário recusou</option></select>'
       + '<button class="button button-outline button-small" data-delivery-action="occurrences">Registrar ocorrência</button>';
   }
   return html;

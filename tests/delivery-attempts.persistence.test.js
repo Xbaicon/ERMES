@@ -27,6 +27,10 @@ test("TentativaEntrega persiste após fechar e reabrir o banco", async () => {
   assert.throws(() => db.prepare(`INSERT INTO delivery_attempts
     (delivery_id, attempt_number, courier_id, status)
     VALUES (1, 0, 2, 'active')`).run(), /CHECK constraint failed/);
+  assert.throws(() => db.prepare(`UPDATE delivery_attempts SET invalid_code_attempts = 4
+    WHERE id = 1`).run(), /CHECK constraint failed/);
+  assert.throws(() => db.prepare(`UPDATE delivery_attempts SET invalid_code_attempts = 1.5
+    WHERE id = 1`).run(), /CHECK constraint failed/);
   assert.throws(() => db.prepare(`INSERT INTO delivery_attempts
     (delivery_id, attempt_number, courier_id, status)
     VALUES (1, 2, 2, 'unknown')`).run(), /CHECK constraint failed/);
@@ -45,12 +49,14 @@ test("TentativaEntrega persiste após fechar e reabrir o banco", async () => {
   const { db: reopened } = await import(`../src/database.js?attempt-persistence-reopen=${Date.now()}`);
   assert.deepEqual({ ...reopened.prepare(`SELECT delivery_id AS deliveryId,
     attempt_number AS attemptNumber, courier_id AS courierId, status,
+    invalid_code_attempts AS invalidCodeAttempts,
     started_at AS startedAt, ended_at AS endedAt
     FROM delivery_attempts WHERE id = 1`).get() }, {
     deliveryId: 1,
     attemptNumber: 1,
     courierId: 2,
     status: "active",
+    invalidCodeAttempts: 0,
     startedAt: "2026-11-04 10:00:00",
     endedAt: null,
   });
