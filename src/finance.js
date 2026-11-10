@@ -486,9 +486,17 @@ function eventDetails(event) {
   }
 }
 
+function latestAttemptInvalidCodeCount(database, deliveryId) {
+  const attempt = database.prepare(`SELECT invalid_code_attempts AS invalidCodeAttempts
+    FROM delivery_attempts WHERE delivery_id = ? ORDER BY attempt_number DESC LIMIT 1`)
+    .get(deliveryId);
+  return attempt?.invalidCodeAttempts ?? null;
+}
+
 function confirmationHistoryIsCompatible(events, chain, persistedAttempts,
   destination, terminal, courierId, companyId) {
-  if (!Number.isSafeInteger(persistedAttempts) || persistedAttempts < 0 || persistedAttempts >= 3
+  if ((persistedAttempts !== null && (!Number.isSafeInteger(persistedAttempts)
+    || persistedAttempts < 0 || persistedAttempts >= 3))
     || events.some((event) => event.eventType === "confirmation_failed")) return false;
   const allInvalidAttempts = events.filter(
     (event) => event.eventType === "confirmation_code_invalid",
@@ -497,7 +505,8 @@ function confirmationHistoryIsCompatible(events, chain, persistedAttempts,
     (event) => event.eventType === "confirmation_code_invalid",
   );
   if (allInvalidAttempts.length !== chainInvalidAttempts.length
-    || chainInvalidAttempts.length !== persistedAttempts) return false;
+    || chainInvalidAttempts.length >= 3
+    || (persistedAttempts !== null && chainInvalidAttempts.length !== persistedAttempts)) return false;
   return chainInvalidAttempts.every((event, index) => {
     if (event.id <= destination.id || event.id >= terminal.id
       || !courierEvent(event, courierId, companyId)) return false;
@@ -577,7 +586,8 @@ function normalCompletionEvidence(database, outcome, order) {
   const allowedTypes = new Set([...requiredTypes, "confirmation_code_invalid"]);
   if (chain.some((event) => !allowedTypes.has(event.eventType))) return null;
   const destination = required[3];
-  if (!confirmationHistoryIsCompatible(events, chain, outcome.invalidCodeAttempts,
+  if (!confirmationHistoryIsCompatible(events, chain,
+    latestAttemptInvalidCodeCount(database, outcome.id),
     destination, completed, outcome.courierId, order.companyId)) return null;
   if (!chronological([order.createdEventAt, ...chain.map((event) => event.occurredAt)])
     || !sameTimestamp(outcome.acceptedAt, accepted.occurredAt)
@@ -607,12 +617,13 @@ function cancellationEvidence(database, outcome, order) {
   const destinationEvents = chain.filter((event) => event.eventType === "courier_arrived_at_destination");
   if (destinationEvents.length > 1
     || destinationEvents.some((event) => !courierEvent(event, courierId, order.companyId))) return null;
-  if (outcome.invalidCodeAttempts > 0 && destinationEvents.length !== 1) return null;
+  const invalidCodeAttempts = latestAttemptInvalidCodeCount(database, outcome.id);
+  if (invalidCodeAttempts !== null && invalidCodeAttempts > 0 && destinationEvents.length !== 1) return null;
   const destination = destinationEvents[0];
   if (destination && !confirmationHistoryIsCompatible(events, chain,
-    outcome.invalidCodeAttempts, destination, cancellation, courierId, order.companyId)) return null;
-  if (!destination && (!Number.isSafeInteger(outcome.invalidCodeAttempts)
-    || outcome.invalidCodeAttempts !== 0
+    invalidCodeAttempts, destination, cancellation, courierId, order.companyId)) return null;
+  if (!destination && ((invalidCodeAttempts !== null && (!Number.isSafeInteger(invalidCodeAttempts)
+    || invalidCodeAttempts !== 0))
     || events.some((event) => ["confirmation_code_invalid", "confirmation_failed"]
       .includes(event.eventType)))) return null;
   const allowedTypes = new Set([
@@ -674,8 +685,7 @@ export function backfillFinancialEntries(database) {
 
   const completed = database.prepare(`SELECT d.id, d.order_id AS orderId,
     d.courier_id AS courierId, d.accepted_at AS acceptedAt,
-    d.collected_at AS collectedAt, d.completed_at AS completedAt,
-    d.invalid_code_attempts AS invalidCodeAttempts
+    d.collected_at AS collectedAt, d.completed_at AS completedAt
     FROM deliveries d WHERE d.status = 'completed'`).all();
   for (const outcome of completed) {
     const order = eligibleOrders.get(outcome.orderId);
@@ -691,7 +701,7 @@ export function backfillFinancialEntries(database) {
     d.courier_id AS courierId, d.status, d.accepted_at AS acceptedAt,
     d.collected_at AS collectedAt, d.cancelled_at AS cancelledAt,
     d.return_reason AS returnReason, d.return_reported_at AS returnReportedAt,
-    d.returned_at AS returnedAt, d.invalid_code_attempts AS invalidCodeAttempts
+    d.returned_at AS returnedAt
     FROM deliveries d
     WHERE d.status IN ('returning', 'awaiting_return_confirmation', 'returned')
       AND d.return_reason = 'client_cancelled_after_pickup'`).all();

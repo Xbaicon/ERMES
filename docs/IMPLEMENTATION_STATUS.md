@@ -23,11 +23,12 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Numeração e tentativa aberta | IMPLEMENTADO | A numeração usa `MAX(attempt_number) + 1` dentro de `BEGIN IMMEDIATE`; unicidade por Entrega e índice de tentativa aberta protegem concorrência e repetição |
 | Conclusão normal | IMPLEMENTADO | Código válido conclui a tentativa ativa na mesma transação da Entrega, do evento e dos lançamentos financeiros já existentes |
 | Projeção da Entrega | IMPLEMENTADO | Consultas de detalhe incluem `attempts` de modo aditivo; não foi criado endpoint ou interface visual |
-| Retorno recuperável herdado da 0.1 | PARCIAL | A tentativa passa a `returning` e só é encerrada como recuperável após confirmação do retorno; uma coleta posterior recebe o próximo número |
-| Ocorrências, revalidação e classificação 0.2 | NÃO IMPLEMENTADO | Permanecem fora deste incremento; os fluxos 0.1 existentes só foram ligados ao ciclo mínimo da tentativa para não deixar uma tentativa aberta órfã |
+| Retornos da tentativa | PARCIAL | Falha mecânica é recuperável; ausência, recusa, três códigos inválidos e cancelamento são terminais, sempre após confirmação física do retorno. Classificação de responsabilidade continua pendente |
+| Ocorrências, revalidação e classificação 0.2 | NÃO IMPLEMENTADO | Ausência e recusa usam causas já definidas; `address_problem` genérico é bloqueado sem efeitos até existir classificação. Revalidação e responsabilidade permanecem fora deste incremento |
 | Estados completos de Pedido e Entrega da 0.2 | NÃO IMPLEMENTADO | Os valores operacionais atuais, como `completed`, foram preservados por compatibilidade |
-| Contador de códigos inválidos por tentativa | PENDENTE | `invalid_code_attempts` continua temporariamente em `deliveries`; movê-lo agora exigiria antecipar o fluxo de três erros, ocorrências, responsabilidade, retorno e financeiro e criaria risco de duas fontes de verdade |
-| Bancos SQLite existentes | IMPLEMENTADO COM LIMITAÇÃO | A tabela é criada aditivamente e não há backfill heurístico. Entregas históricas em andamento sem tentativa são preservadas, mas precisam de reconciliação antes de uma transição que exija tentativa ativa |
+| Contador de códigos inválidos por tentativa | IMPLEMENTADO | `delivery_attempts.invalid_code_attempts` é a única fonte operacional, inicia em zero e aceita de zero a três. A coluna da Entrega é legado físico não sincronizado |
+| Sanção temporal de cancelamento | REMOVIDA | A 0.2 não aplica tolerância fixa de três minutos nem bloqueio automático de duas horas; `order_blocked_until` é legado físico não autoritativo |
+| Bancos SQLite existentes | IMPLEMENTADO COM LIMITAÇÃO | A tabela/coluna são criadas aditivamente, e contador legado só migra com tentativa única e eventos inequívocos. Não há backfill de tentativa; Entregas em andamento sem tentativa exigem reconciliação |
 
 ## Implementação existente no checkpoint da Baseline 0.1
 

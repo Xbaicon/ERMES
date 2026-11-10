@@ -601,14 +601,9 @@ export function confirmCompanyDraftOrder(companyId, orderId, body) {
 export function createDraftOrder(clientId, body) {
   const input = parseDraftOrder(body);
   return transaction(() => {
-    const client = db.prepare(`SELECT full_name AS fullName,
-                                      order_blocked_until AS orderBlockedUntil,
-                                      order_blocked_until > CURRENT_TIMESTAMP AS isBlocked
-                               FROM users WHERE id = ? AND role = 'client'`).get(clientId);
+    const client = db.prepare(`SELECT id, full_name AS fullName
+      FROM users WHERE id = ? AND role = 'client'`).get(clientId);
     if (!client) throw orderError("Cliente não encontrado.", 404);
-    if (client?.isBlocked) {
-      throw orderError(`Novos pedidos estão bloqueados até ${client.orderBlockedUntil}.`, 409);
-    }
     const company = db.prepare("SELECT id, name FROM companies WHERE id = ? AND status = 'active'")
       .get(input.companyId);
     if (!company) throw orderError("Empresa não encontrada ou indisponível.", 404);

@@ -474,7 +474,7 @@ a conversa selecionada por polling HTTP a cada cinco segundos.
 | POST | `/courier/deliveries/:id/arrive-destination` | Registrar chegada ao destino |
 | POST | `/courier/deliveries/:id/confirm` | Validar código e concluir |
 | POST | `/courier/deliveries/:id/fail` | Registrar falha com motivo |
-| POST | `/courier/deliveries/:id/occurrences` | Registrar ausência, recusa ou endereço incorreto |
+| POST | `/courier/deliveries/:id/occurrences` | Registrar ausência ou recusa; problema genérico de endereço permanece bloqueado |
 | POST | `/courier/deliveries/:id/report-return` | Registrar devolução física à empresa |
 
 ### Operação e autorização de Entregas
@@ -503,6 +503,7 @@ resumidas permanecem inalteradas. Cada item tem a forma:
   "id": 7,
   "attemptNumber": 1,
   "status": "active",
+  "invalidCodeAttempts": 0,
   "startedAt": "2026-11-04 14:30:00",
   "endedAt": null,
   "endReason": null,
@@ -518,17 +519,19 @@ o cliente autorizado o recebe durante os estados já documentados.
 
 `POST .../confirm` recebe somente `{ "code": "123456" }`. Código correto em
 `awaiting_confirmation` conclui a Entrega e a tentativa ativa na mesma
-transação. Cada erro incrementa o contador atual de validações e grava apenas
-número e horário da validação; a resposta usa HTTP `422` com
+transação. Cada erro incrementa `delivery_attempts.invalid_code_attempts` da
+tentativa ativa e grava apenas número e horário da validação; a resposta usa HTTP `422` com
 `{ "error": "Código inválido." }`. No terceiro erro, a Entrega passa
-para `returning`; não há método alternativo de conclusão. O motoboy registra o
-retorno e a empresa confirma o recebimento. Hashes, códigos digitados, sessão e
-dados cadastrais sensíveis não aparecem nas respostas.
+para `returning` e a tentativa deixa de aceitar confirmação; ela somente é
+encerrada como terminal depois que o motoboy registra o retorno e a empresa
+confirma o recebimento. A falha não presume responsabilidade do cliente e não há
+método alternativo de conclusão. Hashes, códigos digitados, sessão e dados
+cadastrais sensíveis não aparecem nas respostas.
 
-Por compatibilidade transitória, `invalidCodeAttempts` ainda é projetado a
-partir de `deliveries`. A mudança de propriedade para `TentativaEntrega` está
-pendente do incremento específico de validação de código; não há contador
-duplicado em `delivery_attempts`.
+`invalidCodeAttempts` no objeto da Entrega é uma projeção derivada da tentativa
+mais recente; cada item de `attempts` expõe seu próprio contador. A coluna
+homônima em `deliveries` permanece fisicamente apenas por compatibilidade com o
+schema legado: não é incrementada nem consultada pelo fluxo operacional.
 
 ### Projeções financeiras
 
@@ -575,9 +578,19 @@ Entrega de outro cliente ou empresa continuam retornando `404`.
 Falha do motoboy antes da coleta redisponibiliza a mesma Entrega; depois da
 coleta exige retorno e, após a dupla verificação, permite redisponibilização.
 Cancelamento do cliente antes da coleta encerra como `cancelled`; depois da
-coleta exige retorno. Cancelamento ocorrido mais de três minutos após a coleta
-bloqueia novos pedidos por duas horas. Ausência, recusa e endereço incorreto
-também exigem retorno. Os corpos de transições sem parâmetros devem ser `{}`.
+coleta exige retorno, sem tolerância fixa ou bloqueio temporal. Ausência e recusa
+iniciam retorno e só encerram a tentativa depois da confirmação física pela
+empresa. O tipo genérico `address_problem` retorna `409` sem efeitos colaterais
+até existir o incremento de ocorrência/classificação da Baseline 0.2. Os corpos
+de transições sem parâmetros devem ser `{}`.
+
+Bancos atualizados a partir da primeira implementação de `TentativaEntrega`
+recebem o contador novo com zero. A migração só transfere o contador legado
+quando existe uma única tentativa e os eventos de validação formam evidência
+inequívoca. Entregas pós-coleta sem tentativa e históricos ambíguos continuam
+exigindo reconciliação explícita; nenhuma tentativa é criada por inferência do
+estado atual.
+
 Não há dependência de GPS, mapa, geocodificação, rota, distância ou tempo.
 
 ## Observação sobre frete

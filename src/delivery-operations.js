@@ -5,6 +5,7 @@ import {
   createDeliveryAttemptInTransaction,
   DELIVERY_ATTEMPT_END_NATURES,
   findOpenDeliveryAttempt,
+  incrementInvalidCodeAttemptsInTransaction,
   listDeliveryAttempts,
   markOpenDeliveryAttemptReturningInTransaction,
 } from "./delivery-attempts.js";
@@ -51,7 +52,11 @@ export function requireEmptyDeliveryBody(body) {
 
 function findDelivery(id) {
   return db.prepare(`SELECT d.id, d.order_id AS orderId, d.courier_id AS courierId, d.status,
-                            d.invalid_code_attempts AS invalidCodeAttempts,
+                            COALESCE((SELECT attempt.invalid_code_attempts
+                              FROM delivery_attempts attempt
+                              WHERE attempt.delivery_id = d.id
+                              ORDER BY attempt.attempt_number DESC LIMIT 1), 0)
+                              AS invalidCodeAttempts,
                             d.accepted_at AS acceptedAt, d.collected_at AS collectedAt,
                             d.completed_at AS completedAt, d.cancelled_at AS cancelledAt,
                             d.return_reason AS returnReason, d.return_reported_at AS returnReportedAt,
@@ -319,7 +324,15 @@ export function confirmDelivery(id, courierId, companyId, body) {
     if (delivery.status !== DELIVERY_STATES.AWAITING_CONFIRMATION) {
       throw deliveryError("A entrega não está aguardando confirmação.");
     }
-    if (delivery.invalidCodeAttempts >= 3) throw deliveryError("O limite de três tentativas foi atingido.");
+    const activeAttempt = findOpenDeliveryAttempt(db, id);
+    if (!activeAttempt || activeAttempt.status !== "active") {
+      throw deliveryError(
+        "A Entrega não possui TentativaEntrega ativa; é necessária reconciliação dos dados legados.",
+      );
+    }
+    if (activeAttempt.invalidCodeAttempts >= 3) {
+      throw deliveryError("O limite de três validações inválidas foi atingido.");
+    }
     if (!delivery.confirmationCodeHash) throw deliveryError("A entrega não possui código de confirmação válido.");
     if (verifyConfirmationCode(body.code, delivery.confirmationCodeHash)) {
       completeDeliveryAttemptInTransaction(db, id);
@@ -329,14 +342,13 @@ export function confirmDelivery(id, courierId, companyId, body) {
       recordNormalCompletionInTransaction(db, delivery);
       return { valid: true, delivery: courierView(requireDelivery(id)) };
     }
-    const attempt = delivery.invalidCodeAttempts + 1;
+    const attempt = incrementInvalidCodeAttemptsInTransaction(db, id);
     if (attempt < 3) {
-      db.prepare("UPDATE deliveries SET invalid_code_attempts = ? WHERE id = ?").run(attempt, id);
       event(id, courierId, DELIVERY_EVENT_TYPES.CONFIRMATION_CODE_INVALID,
         { attempt, remainingAttempts: 3 - attempt });
     } else {
       markOpenDeliveryAttemptReturningInTransaction(db, id);
-      db.prepare(`UPDATE deliveries SET invalid_code_attempts = 3, status = ?, return_reason = ?
+      db.prepare(`UPDATE deliveries SET status = ?, return_reason = ?
                   WHERE id = ?`).run(DELIVERY_STATES.RETURNING, "confirmation_failed", id);
       event(id, courierId, DELIVERY_EVENT_TYPES.CONFIRMATION_FAILED,
         { attempt: 3, remainingAttempts: 0 });
@@ -372,16 +384,23 @@ export function reportCourierFailure(id, courierId, companyId, body) {
 const occurrenceEvents = Object.freeze({
   recipient_absent: DELIVERY_EVENT_TYPES.RECIPIENT_ABSENT,
   recipient_refused: DELIVERY_EVENT_TYPES.RECIPIENT_REFUSED,
-  address_problem: DELIVERY_EVENT_TYPES.ADDRESS_PROBLEM,
 });
 
 export function reportDeliveryOccurrence(id, courierId, companyId, body) {
   requireObject(body, ["type"]);
-  if (!Object.hasOwn(occurrenceEvents, body.type)) throw deliveryError("Tipo de ocorrência inválido.", 400);
+  const addressProblem = body.type === "address_problem";
+  if (!addressProblem && !Object.hasOwn(occurrenceEvents, body.type)) {
+    throw deliveryError("Tipo de ocorrência inválido.", 400);
+  }
   return transaction(() => {
     const delivery = requireCourierDelivery(id, courierId, companyId);
     if (delivery.status !== DELIVERY_STATES.AWAITING_CONFIRMATION) {
       throw deliveryError("A ocorrência só pode ser registrada no destino.");
+    }
+    if (addressProblem) {
+      throw deliveryError(
+        "Problema de endereço depende da classificação de ocorrências da Baseline 0.2.",
+      );
     }
     markOpenDeliveryAttemptReturningInTransaction(db, id);
     db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
@@ -433,14 +452,10 @@ export function cancelClientDelivery(id, clientId, body) {
                   WHERE id = ?`).run(DELIVERY_STATES.CANCELLED, id);
       event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_BEFORE_PICKUP);
     } else if ([DELIVERY_STATES.IN_TRANSIT, DELIVERY_STATES.AWAITING_CONFIRMATION].includes(delivery.status)) {
-      const late = Boolean(db.prepare("SELECT collected_at < datetime('now', '-3 minutes') AS value FROM deliveries WHERE id = ?")
-        .get(id).value);
       markOpenDeliveryAttemptReturningInTransaction(db, id);
       db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
         .run(DELIVERY_STATES.RETURNING, "client_cancelled_after_pickup", id);
-      if (late) db.prepare("UPDATE users SET order_blocked_until = datetime('now', '+2 hours') WHERE id = ?").run(clientId);
-      event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_AFTER_PICKUP,
-        { lateCancellation: late });
+      event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_AFTER_PICKUP);
       recordClientCancellationAfterPickupInTransaction(db, delivery);
     } else {
       throw deliveryError("A entrega não pode ser cancelada pelo cliente no estado atual.");
