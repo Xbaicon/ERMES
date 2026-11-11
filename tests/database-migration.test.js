@@ -74,7 +74,10 @@ test("migra banco existente, cria financeiro e repete sem perder ou duplicar dad
     WHERE type = 'table' AND name = 'order_chat_messages'`).get().name, "order_chat_messages");
   assert.equal(db.prepare(`SELECT name FROM sqlite_master
     WHERE type = 'table' AND name = 'delivery_attempts'`).get().name, "delivery_attempts");
+  assert.equal(db.prepare(`SELECT name FROM sqlite_master
+    WHERE type = 'table' AND name = 'delivery_occurrences'`).get().name, "delivery_occurrences");
   assert.equal(db.prepare("SELECT COUNT(*) AS total FROM delivery_attempts").get().total, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS total FROM delivery_occurrences").get().total, 0);
   assert.equal(db.prepare("SELECT COUNT(*) AS total FROM order_chat_messages").get().total, 0);
   assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM sqlite_master
     WHERE type = 'table' AND name = 'order_chats'`).get().total, 0);
@@ -215,6 +218,7 @@ test("migra banco existente, cria financeiro e repete sem perder ou duplicar dad
   assert.equal(migratedAgain.prepare(`SELECT COUNT(*) AS total FROM sqlite_master
     WHERE type = 'table' AND name = 'delivery_attempts'`).get().total, 1);
   assert.equal(migratedAgain.prepare("SELECT COUNT(*) AS total FROM delivery_attempts").get().total, 0);
+  assert.equal(migratedAgain.prepare("SELECT COUNT(*) AS total FROM delivery_occurrences").get().total, 0);
   const columnsAfterRerun = migratedAgain.prepare("PRAGMA table_info(orders)").all()
     .map(({ name }) => name);
   assert.equal(columnsAfterRerun.filter((name) => name === "payment_paid_at").length, 1);
@@ -282,6 +286,8 @@ test("migra banco existente, cria financeiro e repete sem perder ou duplicar dad
     WHERE order_id = 8`).get().total, 0);
   assert.equal(migratedThirdTime.prepare("SELECT count(*) AS total FROM order_chat_messages")
     .get().total, 1);
+  assert.equal(migratedThirdTime.prepare("SELECT count(*) AS total FROM delivery_occurrences")
+    .get().total, 0);
   migratedThirdTime.close();
 
   migratedAgain.close();

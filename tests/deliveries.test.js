@@ -41,7 +41,7 @@ test("centraliza estados normais e estados terminais reservados", () => {
   }
 });
 
-test("centraliza eventos normais e ocorrências definidas na Baseline 0.1", () => {
+test("centraliza eventos operacionais e a classificação de ocorrência da Baseline 0.2", () => {
   assert.deepEqual(Object.values(DELIVERY_EVENT_TYPES), [
     "delivery_created",
     "delivery_accepted",
@@ -62,6 +62,7 @@ test("centraliza eventos normais e ocorrências definidas na Baseline 0.1", () =
     "return_reported",
     "return_confirmed",
     "delivery_reavailable",
+    "occurrence_classified",
   ]);
   assert.equal(INITIAL_DELIVERY_EVENT_TYPE, DELIVERY_EVENT_TYPES.CREATED);
   assert.equal(Object.isFrozen(DELIVERY_EVENT_TYPES), true);

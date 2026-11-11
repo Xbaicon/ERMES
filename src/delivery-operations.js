@@ -10,6 +10,10 @@ import {
   markOpenDeliveryAttemptReturningInTransaction,
 } from "./delivery-attempts.js";
 import { DELIVERY_EVENT_TYPES, DELIVERY_STATES } from "./deliveries.js";
+import {
+  createDeliveryOccurrenceInTransaction,
+  DELIVERY_OCCURRENCE_TYPES,
+} from "./delivery-occurrences.js";
 import { decryptConfirmationCode, verifyConfirmationCode } from "./security.js";
 import {
   clientFinancialSummary, companyFinancialSummary, courierFinancialSummary,
@@ -350,8 +354,15 @@ export function confirmDelivery(id, courierId, companyId, body) {
       markOpenDeliveryAttemptReturningInTransaction(db, id);
       db.prepare(`UPDATE deliveries SET status = ?, return_reason = ?
                   WHERE id = ?`).run(DELIVERY_STATES.RETURNING, "confirmation_failed", id);
+      const occurrenceId = createDeliveryOccurrenceInTransaction(db, {
+        deliveryId: id,
+        deliveryAttemptId: activeAttempt.id,
+        type: DELIVERY_OCCURRENCE_TYPES.CONFIRMATION_FAILED,
+        reportedByUserId: courierId,
+        evidence: { invalidCodeAttempts: 3 },
+      });
       event(id, courierId, DELIVERY_EVENT_TYPES.CONFIRMATION_FAILED,
-        { attempt: 3, remainingAttempts: 0 });
+        { attempt: 3, remainingAttempts: 0, occurrenceId });
     }
     return { valid: false, delivery: courierView(requireDelivery(id)) };
   });
@@ -366,14 +377,33 @@ export function reportCourierFailure(id, courierId, companyId, body) {
     const delivery = requireCourierDelivery(id, courierId, companyId);
     const details = { reason: body.reason.trim() };
     if ([DELIVERY_STATES.HEADING_TO_PICKUP, DELIVERY_STATES.AWAITING_PICKUP].includes(delivery.status)) {
+      const occurrenceId = createDeliveryOccurrenceInTransaction(db, {
+        deliveryId: id,
+        type: DELIVERY_OCCURRENCE_TYPES.COURIER_FAILURE_BEFORE_PICKUP,
+        description: details.reason,
+        reportedByUserId: courierId,
+        evidence: { deliveryState: delivery.status },
+      });
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, accepted_at = NULL
                   WHERE id = ?`).run(DELIVERY_STATES.AVAILABLE, id);
-      event(id, courierId, DELIVERY_EVENT_TYPES.COURIER_FAILED_BEFORE_PICKUP, details);
+      event(id, courierId, DELIVERY_EVENT_TYPES.COURIER_FAILED_BEFORE_PICKUP,
+        { ...details, occurrenceId });
     } else if ([DELIVERY_STATES.IN_TRANSIT, DELIVERY_STATES.AWAITING_CONFIRMATION].includes(delivery.status)) {
+      const activeAttempt = findOpenDeliveryAttempt(db, id);
+      if (!activeAttempt) throw deliveryError("A Entrega não possui TentativaEntrega ativa.");
+      const occurrenceId = createDeliveryOccurrenceInTransaction(db, {
+        deliveryId: id,
+        deliveryAttemptId: activeAttempt.id,
+        type: DELIVERY_OCCURRENCE_TYPES.COURIER_FAILURE_AFTER_PICKUP,
+        description: details.reason,
+        reportedByUserId: courierId,
+        evidence: { deliveryState: delivery.status },
+      });
       markOpenDeliveryAttemptReturningInTransaction(db, id);
       db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
         .run(DELIVERY_STATES.RETURNING, "courier_failure_after_pickup", id);
-      event(id, courierId, DELIVERY_EVENT_TYPES.COURIER_FAILED_AFTER_PICKUP, details);
+      event(id, courierId, DELIVERY_EVENT_TYPES.COURIER_FAILED_AFTER_PICKUP,
+        { ...details, occurrenceId });
     } else {
       throw deliveryError("Não é possível registrar falha do motoboy no estado atual.");
     }
@@ -384,6 +414,11 @@ export function reportCourierFailure(id, courierId, companyId, body) {
 const occurrenceEvents = Object.freeze({
   recipient_absent: DELIVERY_EVENT_TYPES.RECIPIENT_ABSENT,
   recipient_refused: DELIVERY_EVENT_TYPES.RECIPIENT_REFUSED,
+});
+
+const occurrenceTypes = Object.freeze({
+  recipient_absent: DELIVERY_OCCURRENCE_TYPES.RECIPIENT_ABSENT,
+  recipient_refused: DELIVERY_OCCURRENCE_TYPES.RECIPIENT_REFUSED,
 });
 
 export function reportDeliveryOccurrence(id, courierId, companyId, body) {
@@ -402,10 +437,19 @@ export function reportDeliveryOccurrence(id, courierId, companyId, body) {
         "Problema de endereço depende da classificação de ocorrências da Baseline 0.2.",
       );
     }
+    const activeAttempt = findOpenDeliveryAttempt(db, id);
+    if (!activeAttempt) throw deliveryError("A Entrega não possui TentativaEntrega ativa.");
+    const occurrenceId = createDeliveryOccurrenceInTransaction(db, {
+      deliveryId: id,
+      deliveryAttemptId: activeAttempt.id,
+      type: occurrenceTypes[body.type],
+      reportedByUserId: courierId,
+      evidence: { deliveryState: delivery.status },
+    });
     markOpenDeliveryAttemptReturningInTransaction(db, id);
     db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
       .run(DELIVERY_STATES.RETURNING, body.type, id);
-    event(id, courierId, occurrenceEvents[body.type]);
+    event(id, courierId, occurrenceEvents[body.type], { occurrenceId });
     return courierView(requireDelivery(id));
   });
 }

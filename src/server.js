@@ -9,6 +9,9 @@ import { listCourierFinancialEntries } from "./finance.js";
 import { getOrderChat, listOrderChats, sendOrderChatMessage } from "./order-chat.js";
 import { confirmCompanyDraftOrder, confirmSimulatedPayment, createDraftOrder, getClientConfirmedOrder, getCompanyDraftOrder, getDraftOrder, listClientConfirmedOrders, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
+import {
+  classifyDeliveryOccurrence, listCompanyDeliveryOccurrences, parseDeliveryOccurrenceId,
+} from "./delivery-occurrences.js";
 import { assertPassword, isEmail, isValidCnpj, isValidCpf, normalizeEmail, onlyDigits, requireFields } from "./validation.js";
 import {
   acceptDelivery, arriveAtDestination, arriveAtPickup, cancelClientDelivery,
@@ -381,6 +384,23 @@ async function api(request, response, url) {
   if (request.method === "GET" && pathname === "/api/company/deliveries") {
     const user = requireUser(request, ["company"]);
     return json(response, 200, { deliveries: listCompanyDeliveries(user.companyId) });
+  }
+  if (request.method === "GET" && pathname === "/api/company/delivery-occurrences") {
+    const user = requireUser(request, ["company"]);
+    return json(response, 200, { occurrences: listCompanyDeliveryOccurrences(user.companyId) });
+  }
+  const companyOccurrenceClassificationMatch = pathname.match(
+    /^\/api\/company\/delivery-occurrences\/([^/]+)\/classify$/,
+  );
+  if (request.method === "POST" && companyOccurrenceClassificationMatch) {
+    const user = requireUser(request, ["company"]);
+    const occurrence = classifyDeliveryOccurrence(
+      parseDeliveryOccurrenceId(companyOccurrenceClassificationMatch[1]),
+      user.id,
+      user.companyId,
+      await readJson(request),
+    );
+    return json(response, 200, { occurrence });
   }
   const companyDeliveryMatch = pathname.match(/^\/api\/company\/deliveries\/([^/]+)$/);
   if (request.method === "GET" && companyDeliveryMatch) {

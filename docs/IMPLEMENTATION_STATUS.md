@@ -7,14 +7,14 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Marco | Estado | Observação |
 | --- | --- | --- |
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
-| Baseline 0.2 | Em implementação incremental | A entidade `TentativaEntrega` e a fronteira da coleta têm o primeiro incremento funcional; os demais requisitos da baseline continuam pendentes |
+| Baseline 0.2 | Em implementação incremental | `TentativaEntrega` e a fundação persistente de `OcorrenciaEntrega`/responsabilidade possuem incrementos funcionais; os demais requisitos continuam pendentes |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
-| Incremento atual | `TentativaEntrega` — PARCIAL | A coleta cria a tentativa persistente e a conclusão normal a conclui; o ciclo completo da entidade ainda não está implementado |
+| Incremento atual | `OcorrenciaEntrega` — PARCIAL | Ocorrências conhecidas são persistidas e a empresa pode classificá-las uma única vez; revalidação e consequências da classificação ainda não foram implementadas |
 | Próximo passo técnico | Implementação incremental | Continuar os incrementos funcionais da Baseline 0.2 sobre SQLite, preservando as pendências registradas abaixo |
 | Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
 | Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |
 
-## Primeiro incremento funcional da Baseline 0.2
+## Incrementos funcionais da Baseline 0.2
 
 | Regra | Estado | Observação |
 | --- | --- | --- |
@@ -23,12 +23,13 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Numeração e tentativa aberta | IMPLEMENTADO | A numeração usa `MAX(attempt_number) + 1` dentro de `BEGIN IMMEDIATE`; unicidade por Entrega e índice de tentativa aberta protegem concorrência e repetição |
 | Conclusão normal | IMPLEMENTADO | Código válido conclui a tentativa ativa na mesma transação da Entrega, do evento e dos lançamentos financeiros já existentes |
 | Projeção da Entrega | IMPLEMENTADO | Consultas de detalhe incluem `attempts` de modo aditivo; não foi criado endpoint ou interface visual |
-| Retornos da tentativa | PARCIAL | Falha mecânica é recuperável; ausência, recusa, três códigos inválidos e cancelamento são terminais, sempre após confirmação física do retorno. Classificação de responsabilidade continua pendente |
-| Ocorrências, revalidação e classificação 0.2 | NÃO IMPLEMENTADO | Ausência e recusa usam causas já definidas; `address_problem` genérico é bloqueado sem efeitos até existir classificação. Revalidação e responsabilidade permanecem fora deste incremento |
+| Retornos da tentativa | PARCIAL | Falha mecânica é recuperável; ausência, recusa, três códigos inválidos e cancelamento são terminais, sempre após confirmação física do retorno. A classificação registrada ainda não altera esse comportamento |
+| Ocorrências e classificação 0.2 | PARCIAL | `delivery_occurrences` preserva falhas do motoboy antes/depois da coleta, ausência, recusa e três códigos inválidos. A empresa consulta e classifica uma única vez como `CLIENTE`, `EMPRESA`, `MOTOBOY`, `SISTEMA` ou `INDEFINIDO`, sem efeitos automáticos |
+| Revalidação e endereço problemático | NÃO IMPLEMENTADO | `address_problem` genérico continua bloqueado sem efeitos: faltam o fluxo tipado, evidências e a revalidação exigidos antes de decidir responsabilidade ou consequência |
 | Estados completos de Pedido e Entrega da 0.2 | NÃO IMPLEMENTADO | Os valores operacionais atuais, como `completed`, foram preservados por compatibilidade |
 | Contador de códigos inválidos por tentativa | IMPLEMENTADO | `delivery_attempts.invalid_code_attempts` é a única fonte operacional, inicia em zero e aceita de zero a três. A coluna da Entrega é legado físico não sincronizado |
 | Sanção temporal de cancelamento | REMOVIDA | A 0.2 não aplica tolerância fixa de três minutos nem bloqueio automático de duas horas; `order_blocked_until` é legado físico não autoritativo |
-| Bancos SQLite existentes | IMPLEMENTADO COM LIMITAÇÃO | A tabela/coluna são criadas aditivamente, e contador legado só migra com tentativa única e eventos inequívocos. Não há backfill de tentativa; Entregas em andamento sem tentativa exigem reconciliação |
+| Bancos SQLite existentes | IMPLEMENTADO COM LIMITAÇÃO | As tabelas/colunas são criadas aditivamente. Não há backfill de tentativas nem ocorrências; o contador legado só migra com tentativa única e eventos inequívocos, e Entregas em andamento sem tentativa exigem reconciliação |
 
 ## Implementação existente no checkpoint da Baseline 0.1
 

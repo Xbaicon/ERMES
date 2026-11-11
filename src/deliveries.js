@@ -31,6 +31,7 @@ export const DELIVERY_EVENT_TYPES = Object.freeze({
   RETURN_REPORTED: "return_reported",
   RETURN_CONFIRMED: "return_confirmed",
   REAVAILABLE: "delivery_reavailable",
+  OCCURRENCE_CLASSIFIED: "occurrence_classified",
 });
 
 export const INITIAL_DELIVERY_STATE = DELIVERY_STATES.AVAILABLE;
