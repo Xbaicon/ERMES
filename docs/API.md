@@ -1,8 +1,8 @@
 # API inicial
 
 > **Estado documental:** este contrato parte do checkpoint `baseline-0.1` e
-> inclui o primeiro incremento funcional da Baseline 0.2: a projeção aditiva de
-> `TentativaEntrega` nos detalhes de Entrega. As rotas existentes permanecem.
+> inclui os incrementos funcionais da Baseline 0.2 para `TentativaEntrega` e a
+> fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade.
 
 Base local: `http://localhost:3000/api`
 
@@ -35,6 +35,8 @@ O e-mail de acesso é normalizado e único em `users.email`, independentemente d
 | GET/POST | `/company/orders/:orderId/chat` | Consultar o histórico ou enviar mensagem no chat do Pedido |
 | GET | `/company/deliveries` | Listar Entregas da própria empresa |
 | GET | `/company/deliveries/:deliveryId` | Consultar Entrega e histórico da própria empresa |
+| GET | `/company/delivery-occurrences` | Listar ocorrências das Entregas da própria empresa |
+| POST | `/company/delivery-occurrences/:occurrenceId/classify` | Classificar definitivamente a responsabilidade de uma ocorrência |
 | POST | `/company/deliveries/:deliveryId/product-unavailable` | Cancelar antes da coleta por produto indisponível |
 | POST | `/company/deliveries/:deliveryId/confirm-return` | Confirmar recebimento físico do retorno |
 | POST | `/freight/quote` | Exercitar tecnicamente a fórmula com entradas de teste |
@@ -533,6 +535,47 @@ mais recente; cada item de `attempts` expõe seu próprio contador. A coluna
 homônima em `deliveries` permanece fisicamente apenas por compatibilidade com o
 schema legado: não é incrementada nem consultada pelo fluxo operacional.
 
+### Ocorrências e classificação de responsabilidade
+
+Falha do motoboy antes da coleta, falha após a coleta, destinatário ausente,
+recusa do destinatário e a terceira validação inválida criam uma
+`OcorrenciaEntrega` na mesma transação da transição e do evento operacional já
+existente. Antes da coleta, a ocorrência não possui tentativa. Depois da coleta,
+ela referencia a `TentativaEntrega` aberta. Repetir ou falhar a operação não
+deixa ocorrência, estado ou evento parcial.
+
+`GET /company/delivery-occurrences` exige papel `company`, deriva a empresa da
+sessão e retorna somente ocorrências de suas Entregas, em ordem cronológica
+estável. Cada item contém `id`, `deliveryId`, `deliveryAttemptId`, `type`,
+`description`, `reportedAt`, relator reduzido a nome/papel, estado da
+classificação, `responsibility`, `classifiedAt`, classificador reduzido a
+nome/papel e `analysisResult`. Evidências internas, IDs dos usuários, dados de
+sessão e informações sensíveis não são expostos.
+
+`POST /company/delivery-occurrences/:occurrenceId/classify` aceita somente:
+
+```json
+{
+  "responsibility": "MOTOBOY",
+  "analysisResult": "Resultado opcional da análise"
+}
+```
+
+`responsibility` é obrigatório e deve ser exatamente `CLIENTE`, `EMPRESA`,
+`MOTOBOY`, `SISTEMA` ou `INDEFINIDO`. `NULL` significa que ainda não houve
+classificação; `INDEFINIDO` é uma decisão registrada e final. `analysisResult`
+é opcional, textual e limitado a 2000 caracteres. A primeira classificação
+grava classificador, horário e `occurrence_classified` atomicamente. Uma segunda
+classificação retorna `409`. Ocorrência inexistente ou de outra empresa retorna
+`404`; cliente e motoboy recebem `403`.
+
+A classificação não altera o estado da Entrega, o ciclo da tentativa nem o
+financeiro. Este incremento não cria interface visual, revalidação nem
+consequências automáticas. O tipo genérico `address_problem` continua retornando
+`409` sem mutação até que o fluxo tipado de evidências e revalidação seja
+implementado. A autorização usa somente o papel técnico atual `company`;
+`RESPONSAVEL` e `ATENDENTE` ainda não foram implementados.
+
 ### Projeções financeiras
 
 O detalhe da Entrega inclui uma projeção `financial` própria do papel. O cliente
@@ -581,8 +624,8 @@ Cancelamento do cliente antes da coleta encerra como `cancelled`; depois da
 coleta exige retorno, sem tolerância fixa ou bloqueio temporal. Ausência e recusa
 iniciam retorno e só encerram a tentativa depois da confirmação física pela
 empresa. O tipo genérico `address_problem` retorna `409` sem efeitos colaterais
-até existir o incremento de ocorrência/classificação da Baseline 0.2. Os corpos
-de transições sem parâmetros devem ser `{}`.
+até que o fluxo tipado de evidências, revalidação e classificação de sua causa
+seja implementado. Os corpos de transições sem parâmetros devem ser `{}`.
 
 Bancos atualizados a partir da primeira implementação de `TentativaEntrega`
 recebem o contador novo com zero. A migração só transfere o contador legado
