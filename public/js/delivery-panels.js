@@ -4,6 +4,7 @@ const labels = Object.freeze({
   awaiting_confirmation: "Aguardando confirmação", returning: "Em retorno",
   awaiting_return_confirmation: "Aguardando confirmação do retorno",
   completed: "Finalizada", cancelled: "Cancelada", returned: "Retornada",
+  awaiting_revalidation: "Aguardando revalidação pela empresa",
 });
 
 function address(value = {}) {
@@ -122,6 +123,7 @@ export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage,
       ${selected.confirmationCode ? `<p class="confirmation-code"><strong>Código de confirmação:</strong> <code>${escapeHtml(selected.confirmationCode)}</code></p>` : ""}
       ${financialDetails(role, selected.financial, money, escapeHtml)}
       <div class="delivery-actions">${actions(role, selected, courierCanAccept)}</div>
+      ${selected.status === "awaiting_revalidation" ? '<p class="form-copy">Retorno recebido. A empresa precisa verificar a viabilidade e autorizar a liberação.</p>' : ""}
       <h4>Histórico</h4>
       <ol class="delivery-events">${events.map((item) => `<li><strong>${escapeHtml(item.eventType)}</strong><small>${escapeHtml(item.occurredAt)}</small></li>`).join("")}</ol>`;
   };

@@ -1,3 +1,4 @@
+import { officialOrderStatus } from "./official-statuses.js";
 import { db, transaction } from "./database.js";
 import { MAX_ORDER_WEIGHT_KG } from "./freight.js";
 import { createDeliveryForEligibleOrderInTransaction } from "./delivery-creation.js";
@@ -5,6 +6,15 @@ import { normalizeAddress } from "./address.js";
 import { orderRefundSummary, recordPaymentInTransaction } from "./finance.js";
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+
+function projectedOfficialOrderStatus(order) {
+  const delivery = db.prepare(`SELECT d.status,
+    (SELECT event_type FROM delivery_events WHERE delivery_id = d.id
+      AND event_type IN ('client_cancelled_before_pickup', 'client_cancelled_after_pickup')
+      ORDER BY id DESC LIMIT 1) AS cancellationEvent
+    FROM deliveries d WHERE order_id = ?`).get(order.id);
+  return officialOrderStatus(order.status, delivery?.status, delivery?.cancellationEvent);
+}
 
 function orderError(message, statusCode = 400) {
   return Object.assign(new Error(message), { statusCode });
@@ -224,6 +234,7 @@ function mapDraftOrder(order, items) {
   return {
     id: order.id,
     status: order.status,
+    officialStatus: projectedOfficialOrderStatus(order),
     company: { id: order.companyId, name: order.companyName },
     items: items.map(({ productId, name, quantity, unitPriceCents, unitWeightKg }) => ({
       productId, name, quantity, unitPriceCents: Number(unitPriceCents), unitWeightKg,
@@ -248,6 +259,7 @@ export function listDraftOrders(clientId) {
     return {
       id: order.id,
       status: order.status,
+      officialStatus: projectedOfficialOrderStatus(order),
       company: { id: order.companyId, name: order.companyName },
       itemCount: items.length,
       ...totals,
@@ -278,6 +290,7 @@ function mapCompanyDraftOrder(order, items) {
   return {
     id: order.id,
     status: order.status,
+    officialStatus: projectedOfficialOrderStatus(order),
     version: order.version,
     items: items.map(({ productId, name, quantity, unitPriceCents, unitWeightKg }) => ({
       productId, name, quantity, unitPriceCents: Number(unitPriceCents), unitWeightKg,
@@ -298,6 +311,7 @@ export function listCompanyDraftOrders(companyId) {
     return {
       id: order.id,
       status: order.status,
+      officialStatus: projectedOfficialOrderStatus(order),
       version: order.version,
       itemCount: items.length,
       ...totals,
@@ -406,6 +420,7 @@ function mapConfirmedCompanyOrder(order, confirmation) {
   return {
     id: order.id,
     status: order.status,
+    officialStatus: projectedOfficialOrderStatus(order),
     version: order.version,
     confirmedAt: order.confirmedAt,
     items: confirmation.items.map(({ productId, name, quantity, unitPriceCents, unitWeightKg }) => ({
@@ -474,6 +489,7 @@ function mapClientConfirmedOrder(order, snapshot, summary = false) {
   const common = {
     id: order.id,
     status: order.status,
+    officialStatus: projectedOfficialOrderStatus(order),
     company: { id: order.companyId, name: order.companyName },
     paymentStatus: order.paymentStatus,
     refundStatus: refund.refundStatus,
@@ -658,6 +674,7 @@ export function createDraftOrder(clientId, body) {
     return {
       id: orderId,
       status: "draft",
+      officialStatus: "EM_MONTAGEM",
       company: { id: company.id, name: company.name },
       items: products.map(({ productId, name, quantity, unitPriceCents, unitWeightKg }) => ({
         productId, name, quantity, unitPriceCents: Number(unitPriceCents), unitWeightKg,

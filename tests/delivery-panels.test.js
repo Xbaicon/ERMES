@@ -298,3 +298,11 @@ test("cliente distingue frete desconhecido de zero e ausência de reembolso", as
     globalThis.document = originalDocument;
   }
 });
+
+test('painéis representam espera de revalidação sem ações incompatíveis', async () => {
+  for (const role of ['company', 'courier', 'client']) {
+    const html = await renderedDelivery(role, { ...delivery, status: 'awaiting_revalidation' });
+    assert.match(html, /Aguardando revalidação pela empresa/);
+    assert.doesNotMatch(html, /data-delivery-action=/);
+  }
+});

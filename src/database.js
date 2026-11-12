@@ -6,6 +6,7 @@ import {
   encryptConfirmationCode, hashConfirmationCode, hashPassword, newConfirmationCode,
 } from "./security.js";
 import { backfillFinancialEntries, isCanonicalTimestamp } from "./finance.js";
+import { evolveRevalidationSchema } from "./revalidation-schema.js";
 import { migrateLegacyInvalidCodeAttempts } from "./delivery-attempts.js";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -16,9 +17,25 @@ export const db = new DatabaseSync(databasePath);
 db.function("is_canonical_timestamp", { deterministic: true }, (value) => (
   isCanonicalTimestamp(value) ? 1 : 0
 ));
-db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
+db.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
+// A conversão inicial para WAL pode retornar BUSY ao disputar a promoção de lock,
+// mesmo com busy_timeout. Aguarda o escritor pelo lock nativo e verifica o modo
+// antes de tentar novamente; não repete nenhuma operação de domínio.
+const walDeadline = Date.now() + 5000;
+while (true) {
+  try {
+    db.exec("PRAGMA journal_mode = WAL");
+    break;
+  } catch (error) {
+    if (error.code !== "ERR_SQLITE_ERROR" || (error.errcode & 0xff) !== 5
+      || Date.now() >= walDeadline) throw error;
+    transaction(() => {});
+    if (db.prepare("PRAGMA journal_mode").get().journal_mode === "wal") break;
+  }
+}
 
-db.exec(`
+// Serializa o bootstrap, inclusive a substituição de triggers de versões anteriores.
+transaction(() => db.exec(`
   CREATE TABLE IF NOT EXISTS companies (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -184,82 +201,6 @@ db.exec(`
     details_json TEXT NOT NULL DEFAULT '{}',
     occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
-
-  CREATE TABLE IF NOT EXISTS delivery_occurrences (
-    id INTEGER PRIMARY KEY,
-    delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
-    delivery_attempt_id INTEGER REFERENCES delivery_attempts(id),
-    type TEXT NOT NULL CHECK(type IN (
-      'courier_failure_before_pickup',
-      'courier_failure_after_pickup',
-      'recipient_absent',
-      'recipient_refused',
-      'confirmation_failed',
-      'address_problem'
-    )),
-    description TEXT CHECK(
-      description IS NULL OR length(trim(description)) BETWEEN 1 AND 500
-    ),
-    reported_by_user_id INTEGER NOT NULL REFERENCES users(id),
-    reported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    evidence_json TEXT NOT NULL DEFAULT '{}',
-    responsibility TEXT CHECK(
-      responsibility IS NULL OR responsibility IN ('CLIENTE', 'EMPRESA', 'MOTOBOY', 'SISTEMA', 'INDEFINIDO')
-    ),
-    classified_by_user_id INTEGER REFERENCES users(id),
-    classified_at TEXT,
-    analysis_result TEXT CHECK(
-      analysis_result IS NULL OR length(trim(analysis_result)) BETWEEN 1 AND 2000
-    ),
-    CHECK(
-      (responsibility IS NULL AND classified_by_user_id IS NULL
-        AND classified_at IS NULL AND analysis_result IS NULL)
-      OR (responsibility IS NOT NULL AND classified_by_user_id IS NOT NULL
-        AND classified_at IS NOT NULL)
-    )
-  );
-
-  CREATE INDEX IF NOT EXISTS delivery_occurrences_delivery
-    ON delivery_occurrences(delivery_id, reported_at, id);
-
-  CREATE INDEX IF NOT EXISTS delivery_occurrences_attempt
-    ON delivery_occurrences(delivery_attempt_id, id);
-
-  CREATE TRIGGER IF NOT EXISTS delivery_occurrences_attempt_insert
-    BEFORE INSERT ON delivery_occurrences
-    WHEN NEW.delivery_attempt_id IS NOT NULL AND NOT EXISTS (
-      SELECT 1 FROM delivery_attempts attempt
-      WHERE attempt.id = NEW.delivery_attempt_id AND attempt.delivery_id = NEW.delivery_id
-    )
-    BEGIN SELECT RAISE(ABORT, 'delivery occurrence attempt does not belong to delivery'); END;
-
-  CREATE TRIGGER IF NOT EXISTS delivery_occurrences_attempt_update
-    BEFORE UPDATE ON delivery_occurrences
-    WHEN NEW.delivery_attempt_id IS NOT NULL AND NOT EXISTS (
-      SELECT 1 FROM delivery_attempts attempt
-      WHERE attempt.id = NEW.delivery_attempt_id AND attempt.delivery_id = NEW.delivery_id
-    )
-    BEGIN SELECT RAISE(ABORT, 'delivery occurrence attempt does not belong to delivery'); END;
-
-  CREATE TRIGGER IF NOT EXISTS delivery_occurrences_report_immutable
-    BEFORE UPDATE ON delivery_occurrences
-    WHEN NEW.delivery_id IS NOT OLD.delivery_id
-      OR NEW.delivery_attempt_id IS NOT OLD.delivery_attempt_id
-      OR NEW.type IS NOT OLD.type
-      OR NEW.description IS NOT OLD.description
-      OR NEW.reported_by_user_id IS NOT OLD.reported_by_user_id
-      OR NEW.reported_at IS NOT OLD.reported_at
-      OR NEW.evidence_json IS NOT OLD.evidence_json
-    BEGIN SELECT RAISE(ABORT, 'delivery occurrence report is immutable'); END;
-
-  CREATE TRIGGER IF NOT EXISTS delivery_occurrences_classification_final
-    BEFORE UPDATE ON delivery_occurrences
-    WHEN OLD.responsibility IS NOT NULL
-    BEGIN SELECT RAISE(ABORT, 'delivery occurrence classification is final'); END;
-
-  CREATE TRIGGER IF NOT EXISTS delivery_occurrences_delete_forbidden
-    BEFORE DELETE ON delivery_occurrences
-    BEGIN SELECT RAISE(ABORT, 'delivery occurrence cannot be deleted'); END;
 
   CREATE TABLE IF NOT EXISTS order_chat_messages (
     id INTEGER PRIMARY KEY,
@@ -518,7 +459,9 @@ db.exec(`
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
-`);
+`));
+
+evolveRevalidationSchema(db);
 
 const orderColumns = new Set(db.prepare("PRAGMA table_info(orders)").all().map(({ name }) => name));
 if (!orderColumns.has("version")) {

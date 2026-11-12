@@ -32,6 +32,7 @@ test("centraliza estados normais e estados terminais reservados", () => {
     "completed",
     "cancelled",
     "returned",
+    "awaiting_revalidation",
   ]);
   assert.equal(INITIAL_DELIVERY_STATE, DELIVERY_STATES.AVAILABLE);
   assert.equal(Object.isFrozen(DELIVERY_STATES), true);
@@ -63,6 +64,9 @@ test("centraliza eventos operacionais e a classificação de ocorrência da Base
     "return_confirmed",
     "delivery_reavailable",
     "occurrence_classified",
+    "temporary_external_obstruction",
+    "delivery_awaiting_revalidation",
+    "delivery_revalidated",
   ]);
   assert.equal(INITIAL_DELIVERY_EVENT_TYPE, DELIVERY_EVENT_TYPES.CREATED);
   assert.equal(Object.isFrozen(DELIVERY_EVENT_TYPES), true);

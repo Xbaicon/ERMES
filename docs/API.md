@@ -2,7 +2,7 @@
 
 > **Estado documental:** este contrato parte do checkpoint `baseline-0.1` e
 > inclui os incrementos funcionais da Baseline 0.2 para `TentativaEntrega` e a
-> fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade.
+> fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade, além de impedimento externo e revalidação incremental.
 
 Base local: `http://localhost:3000/api`
 
@@ -358,11 +358,14 @@ subtotal, peso, destino e destinatário preservados, `paymentStatus`, `paymentPa
 retorna `404` sem revelar sua existência. Pedido próprio que não esteja
 `confirmed` retorna `409`.
 
-`GET /client/deliveries/:deliveryId` inclui `confirmationCode` enquanto a
-Entrega ainda pode chegar à etapa de confirmação. Isso permite ao cliente
-reconsultar o código após recarregar ou reabrir o painel. O campo deixa de ser
-retornado após conclusão, cancelamento ou encaminhamento definitivo ao retorno.
-Listagens, empresa e motoboy nunca recebem o código nem seus dados internos.
+`GET /client/deliveries/:deliveryId` inclui `confirmationCode` somente nos estados
+`available`, `heading_to_pickup`, `awaiting_pickup`, `in_transit` e
+`awaiting_confirmation`, permitindo reconsultá-lo após reabrir o painel. Nos
+demais estados o campo é omitido, inclusive durante retorno recuperável e
+`awaiting_revalidation` (`AGUARDANDO_REVALIDACAO`). O código pertence à mesma
+Entrega e permanece preservado no banco entre tentativas; ocultá-lo na resposta
+não o remove nem o substitui. Listagens, empresa e motoboy nunca recebem o código
+nem seus dados internos.
 
 `POST /client/orders/:orderId/pay` confirma o passo de pagamento simulado do
 protótipo acadêmico. O corpo deve ser um objeto vazio (`{}`); valores de itens,
@@ -387,6 +390,22 @@ e uma representação cifrada para que somente a consulta autenticada do cliente
 possa recuperar o mesmo código durante a operação. Requisições simultâneas
 produzem uma única Entrega e um único evento. Repetições preservam
 identificadores, timestamps, estado e código, retornando `created: false`.
+
+A resposta de `POST /api/client/orders/:orderId/pay` inclui `status` e
+`officialStatus` no objeto `delivery`, mas não inclui `orderOfficialStatus`.
+Os dois casos abaixo retornam `200`:
+
+| Contexto | `delivery.status` | `delivery.officialStatus` | `created` | `confirmationCode` |
+| --- | --- | --- | --- | --- |
+| Primeiro pagamento válido | `available` | `DISPONIVEL` | `true` | Código de seis dígitos |
+| Repetição idempotente com a mesma Entrega aguardando revalidação | `awaiting_revalidation` | `AGUARDANDO_REVALIDACAO` | `false` | `null` |
+
+Na repetição durante revalidação, a Entrega existente e seu estado são
+preservados: não há novo pagamento, Entrega, tentativa ou lançamento financeiro,
+nem liberação automática. O código continua armazenado na mesma Entrega, mas
+fica oculto nessa resposta. Nas repetições, o pagamento só retorna o código nos
+mesmos cinco estados permitidos para sua consulta pelo cliente; nos demais,
+retorna `confirmationCode: null`, enquanto o GET omite o campo.
 
 O significado inicial de `paid` é exclusivamente a confirmação simulada do
 passo acadêmico: não há Pix, cartão, gateway, banco, cobrança real, webhook ou
@@ -653,3 +672,41 @@ são requisitos bloqueadores da Baseline 0.1; consulte
 `BASELINE_0.1_SCOPE_CORRECTION.md`.
 
 O objeto `quote` devolve `weightKg`, `distanceKm` e `estimatedMinutes`; a taxa de peso aplicada em `weightCents`; as tarifas `perKmCents` e `perMinuteCents`; as parcelas com frações de centavo em `distanceUnroundedCents` e `timeUnroundedCents`; e o valor final, arredondado uma única vez, em `totalCents`. Os antigos campos `distanceCents` e `timeCents`, que arredondavam cada parcela, foram substituídos para deixar explícito que essas parcelas ainda não são valores monetários finais. O objeto `split` usa `totalCents`.
+
+## Incremento de impedimento externo e revalidação (0.2)
+
+Os campos `status` existentes foram preservados. Pedidos e Entregas incluem `officialStatus` derivado. As projeções operacionais de Entrega incluem também `orderOfficialStatus`; o objeto `delivery` da resposta de pagamento segue o contrato específico acima e não inclui esse campo. O novo estado persistido é `awaiting_revalidation`, projetado como `AGUARDANDO_REVALIDACAO`. Não há coluna duplicada nem migração global de estados. `returned` sem semântica inequívoca permanece sem tradução oficial (`null`); cancelamento oficial de Pedido exige evento explícito do cliente. Conclusão normal projeta `CONCLUIDO/FINALIZADA`. Isso não declara implementados estados ou financeiro completos da 0.2.
+
+### Registrar impedimento no destino
+
+`POST /api/courier/deliveries/:id/external-obstruction` exige sessão `courier`, atribuição à Entrega e estado `awaiting_confirmation` com tentativa ativa coerente. Corpo estrito:
+
+```json
+{ "description": "Rua temporariamente interditada, sem alternativa segura disponível." }
+```
+
+Descrição textual não vazia, até 500 caracteres. Não aceita evidência arbitrária, responsabilidade, IDs de tentativa ou declarações automáticas de contato/rota. A ação é o registro explícito do motoboy após avaliar a viabilidade; não faz verificação geográfica. Retorna `200` com `{ "delivery": ... }`; cria ocorrência `temporary_external_obstruction` não classificada e inicia retorno na mesma transação do evento. Repetição retorna `409` sem mutação. `address_problem` genérico continua bloqueado.
+
+### Receber e consultar
+
+O motoboy usa o endpoint existente `report-return`; a empresa usa `confirm-return` com `{}`. Para impedimento externo, somente após esta confirmação física a tentativa termina como `closed_unsuccessfully/recoverable` e a Entrega entra em `awaiting_revalidation`, sem motoboy nem tentativa aberta. Pedido e código são preservados. Não aparecem opções de aceite no catálogo.
+
+`GET /api/company/deliveries/:id` inclui `revalidations` ordenadas por ID: `id`, `deliveryAttemptId`, `occurrenceId`, `type`, `description`, `receivedAt`, `receiverName`, `verifiedAt`, `verifierName`, `verificationResult`. Os três campos de verificação são `null` enquanto pendentes. O detalhe já permite consultar a ocorrência e a verificação do ciclo; a classificação continua disponível no endpoint existente. Não expõe código, credencial, sessão ou evidências internas.
+
+### Autorizar nova disponibilização
+
+`POST /api/company/deliveries/:id/revalidate` exige usuário técnico `company` ativo da empresa proprietária. Corpo estrito:
+
+```json
+{
+  "revalidationId": 1,
+  "release": true,
+  "verificationResult": "A empresa verificou que o acesso está viável novamente."
+}
+```
+
+`revalidationId` é inteiro positivo seguro; `release` deve ser literalmente `true`; resultado textual não vazio, até 2000 caracteres. Não há liberação sem verificação explícita, nem endpoint genérico de status. Exige ciclo correspondente à mesma Entrega/tentativa/ocorrência recuperável, retorno físico confirmado, nenhuma tentativa aberta e Pedido aberto. Retorna `200` com `{ "delivery": ... }`, registra usuário/horário/resultado e `delivery_revalidated`, e muda para `available`. Tudo é atômico; repetição retorna `409`. ID de ciclo de outra Entrega retorna `404` sem mutação.
+
+As novas rotas usam `400` para corpo/ID inválido, `401` sem sessão, `403` para papel incorreto, `404` para recurso alheio e `409` para transição/dados legados incompatíveis. Cliente e motoboy não liberam a Entrega. Mensagem de chat não altera estado. Duas liberações concorrentes geram uma única transição; aceite que disputa cedo demais é rejeitado.
+
+A revalidação não altera classificação, financeiro ou código e não cria tentativa. Nova coleta cria a próxima tentativa com contador zero. Painéis mostram o novo estado e bloqueiam ações incompatíveis; os comandos novos estão disponíveis somente via API neste incremento. Cancelamento posterior ao impedimento, erro do ERMES, estados terminais completos e consequências financeiras novas permanecem fora deste incremento.

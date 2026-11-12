@@ -5,7 +5,7 @@
 O checkpoint `baseline-0.1` permanece congelado. O desenvolvimento da Baseline
 0.2 avança incrementalmente sobre SQLite após a conclusão da auditoria técnica
 0.1 → 0.2. Este documento inclui os incrementos de `TentativaEntrega` e da
-fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade.
+fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade e o fluxo de impedimento externo com revalidação pela empresa.
 Isso não declara implementado o ciclo completo da 0.2 nem altera a baseline
 normativa. MySQL permanece uma etapa técnica posterior e não é gate para as
 funcionalidades da 0.2.
@@ -43,7 +43,7 @@ Não há dependências npm externas nesta etapa.
 - A criação da tentativa valida, por consultas portáveis, número inteiro positivo gerado internamente, papel `courier`, empresa da Entrega e atribuição atual. A aplicação não oferece alteração genérica de identidade, número, motoboy ou início da tentativa.
 - Os detalhes de Entrega projetam o histórico `attempts` de forma aditiva. Listagens, rotas e interface visual permanecem inalteradas.
 - `src/finance.js` concentra as regras e o livro-razão financeiro. `financial_entries` registra lançamentos append-only de pagamento, reembolso e distribuição por componente (`products` ou `freight`), parte relacionada, motivo, Pedido, Entrega, horário e chave idempotente única. Triggers rejeitam UPDATE, DELETE, over-refund, valores fora do inteiro seguro, relações divergentes e combinações incompatíveis de tipo, componente e beneficiário. Colisões de chave comparam o conteúdo financeiro relevante e exigem reconciliação quando divergentes. As transições operacionais chamam essas regras dentro da mesma transação SQLite; falha financeira desfaz também estado e evento.
-- O pagamento acadêmico simulado atualiza `orders` e garante a Entrega dentro da mesma transação. O código de seis dígitos usa hash `scrypt` para validação e AES-256-GCM para recuperação exclusiva pelo cliente durante a operação. A chave pode vir de `ERMES_CONFIRMATION_CODE_KEY` ou de arquivo local com permissão restrita ao lado do banco; banco e chave precisam ser preservados juntos em backup. Repetições retornam a mesma Entrega e o mesmo código sem novo evento ou timestamp.
+- O pagamento acadêmico simulado atualiza `orders` e garante a Entrega dentro da mesma transação. O código de seis dígitos pertence à Entrega, permanece preservado no banco e é reutilizado entre tentativas da mesma Entrega. Usa hash `scrypt` para validação e AES-256-GCM para recuperação exclusiva pelo cliente nos estados permitidos pela API. A chave pode vir de `ERMES_CONFIRMATION_CODE_KEY` ou de arquivo local com permissão restrita ao lado do banco; banco e chave precisam ser preservados juntos em backup. Repetições do pagamento preservam a mesma Entrega sem novo evento ou timestamp, mas a exposição do código depende do estado: durante retorno recuperável e `awaiting_revalidation`, o pagamento retorna `confirmationCode: null` e a consulta de detalhe do cliente omite o campo. Quando o estado permite sua exposição, o cliente recupera o mesmo código preservado, conforme o contrato em `API.md`.
 - `Pedido` e `Entrega` são entidades distintas.
 - Produto, preço e peso são preservados em `order_items` para impedir alterações retroativas.
 - Endereço possui snapshot histórico no pedido. O campo reservado para rota não torna geocodificação, provedor de rotas ou snapshot externo uma dependência da Baseline 0.1; consulte `BASELINE_0.1_SCOPE_CORRECTION.md`.
@@ -97,7 +97,7 @@ aplicação para MySQL agora.
 
 ## Próxima etapa técnica
 
-1. Evoluir em incremento separado a revalidação, as ocorrências tipadas de endereço, os estados de Pedido/Entrega e as consequências financeiras da 0.2. O tipo genérico `address_problem` permanece bloqueado até essa modelagem.
+1. Evoluir em incremento separado os demais cenários de endereço/erro do ERMES, os estados terminais completos de Pedido/Entrega e as consequências financeiras da 0.2. A revalidação de impedimento externo já está descrita abaixo. O tipo genérico `address_problem` permanece bloqueado até essa modelagem.
 2. Definir, se necessária, estratégia auditável de reconciliação de Entregas legadas pós-coleta sem `TentativaEntrega`, sem backfill heurístico.
 3. Após regressão funcional completa da 0.2, migrar SQLite → MySQL como etapa técnica isolada em ambiente apropriado, com plano próprio para integridade, transações e concorrência; repetir regressão automatizada e smoke completo.
 
@@ -105,3 +105,30 @@ Geocodificação, provedor real de rotas, mapas e rastreamento geográfico são
 itens futuros e não bloqueiam a Baseline 0.2. A classificação vigente está em
 `ERMES_Baseline_0.2.md`; a correção de escopo da 0.1 permanece como registro
 histórico e referência para comportamentos herdados.
+
+## Estados oficiais e revalidação incremental
+
+`src/official-statuses.js` centraliza os nomes oficiais e projeta os valores legados, sem armazenar uma segunda fonte de verdade. Pedidos continuam `draft|confirmed`; Entregas adicionam apenas `awaiting_revalidation`. A projeção `officialStatus` de Pedido consulta a Entrega e, para cancelamento, exige o evento explícito do cliente. `returned` não é convertido globalmente em `NAO_REALIZADA`; quando falta semântica comprovada a projeção é `null`. `AGUARDANDO_CONFIRMACAO` de Pedido, `RECUSADO`, `ENCERRADO` e cenários terminais completos não receberam operações novas.
+
+O impedimento específico `temporary_external_obstruction` é registrado no destino pelo motoboy atribuído, com descrição e metadados internos do estado. Não declara contato ou alternativa segura como realizados automaticamente. Ocorrência, retorno da tentativa, estado da Entrega e evento são uma transação. Não altera financeiro nem responsabilidade.
+
+Após o motoboy informar devolução e a empresa confirmar o recebimento físico, a mesma transação encerra a tentativa como recuperável, remove a atribuição, persiste `awaiting_revalidation` e cria `delivery_revalidations`. Esta tabela preserva o ciclo exato Entrega/Tentativa/Ocorrência, recebedor, horário e verificação posterior. Triggers rejeitam ciclo cruzado, ocorrência de tipo incompatível, participante com papel/empresa incorretos, alteração do recebimento, segunda verificação e DELETE. Não há tentativa aberta na espera.
+
+A operação de revalidação exige `revalidationId`, `release: true` e resultado textual da verificação. Confirma a propriedade e o retorno, grava verificador/horário/resultado, muda para `available` e registra evento atomicamente. Não reclassifica a ocorrência, não cria tentativa nem altera o código. Somente a nova coleta cria o próximo número de tentativa, com contador zero. Chat não é um comando operacional.
+
+`BEGIN IMMEDIATE`, atualização condicionada e índice de ciclo pendente único serializam liberações e aceite. `PRAGMA busy_timeout = 5000` permite aguardar brevemente o escritor de outra conexão, preservando a exclusão mútua do SQLite. Os testes disputam operações em conexões independentes.
+
+### Evolução SQLite
+
+Múltiplas conexões podem inicializar o mesmo banco SQLite. O bootstrap serializa
+o bloco inicial de schema em `BEGIN IMMEDIATE`, incluindo a substituição atômica
+de `financial_entry_payment_state_insert`. Assim, uma versão antiga do trigger é
+substituída, em vez de ser mantida com `IF NOT EXISTS`, e não há corrida entre
+`DROP TRIGGER` e `CREATE TRIGGER` de inicializações concorrentes. A contenção na
+ativação de WAL tem tratamento específico e limitado ao bootstrap; isso não
+representa retry de operações de domínio. Essa proteção não altera regras
+financeiras.
+
+`src/revalidation-schema.js` amplia o CHECK de tipos de ocorrência via reconstrução transacional: cria tabela temporária, copia dados mantendo IDs, remove a anterior, renomeia e recria os índices/triggers preservados. FKs ficam ligadas; `foreign_key_check` é obrigatório antes do commit. O teste usa `tests/fixtures/revalidation-legacy.sql`, snapshot relevante do schema real da PR #22, e induz falha após cópia/DROP/RENAME, prova rollback integral e repete a evolução no mesmo banco. A reconstrução só é feita para o CHECK anterior conhecido; não há backfill de ocorrências, tentativas ou revalidações.
+
+O painel mostra a espera sem oferecer aceite/cancelamento incompatível. A revalidação e o registro específico têm API, sem formulário completo. O erro corrigível do ERMES ainda exige endereço originalmente informado e apresentado, evidências de divergência/correção e disponibilidade do cliente; esses dados não são inventados. `address_problem` segue bloqueado. Cancelamento posterior e financeiro desse cenário ficam para incremento próprio; nenhum legado é convertido para simular essas regras.

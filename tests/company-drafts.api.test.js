@@ -97,7 +97,7 @@ test("API de consulta de pedidos draft pela empresa", async (context) => {
     const { drafts } = await response.json();
     assert.deepEqual(drafts.map(({ id }) => id), [ownDraft.id]);
     assert.deepEqual(Object.keys(drafts[0]).sort(), [
-      "id", "itemCount", "itemsTotalCents", "status", "version", "weightKg",
+      "id", "itemCount", "itemsTotalCents", "officialStatus", "status", "version", "weightKg",
     ]);
     assert.equal(drafts[0].version, 1);
     assert.equal(drafts[0].itemsTotalCents, 3980);
@@ -117,7 +117,7 @@ test("API de consulta de pedidos draft pela empresa", async (context) => {
     assert.equal(response.status, 200);
     const { order } = await response.json();
     assert.deepEqual(Object.keys(order).sort(), [
-      "destinationSnapshot", "id", "items", "itemsTotalCents", "recipientSnapshot",
+      "destinationSnapshot", "id", "items", "itemsTotalCents", "officialStatus", "recipientSnapshot",
       "status", "version", "weightKg",
     ]);
     assert.equal(order.id, ownDraft.id);
