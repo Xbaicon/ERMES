@@ -19,8 +19,15 @@ test("projeta estados oficiais da Entrega sem inferir causa de retorno", () => {
     assert.equal(officialDeliveryStatus(state), expected, state);
   }
   assert.equal(officialDeliveryStatus("returned", "client_cancelled_after_pickup"), "CANCELADA");
+  assert.equal(officialDeliveryStatus("returned", "recipient_absent"), "NAO_REALIZADA");
+  assert.equal(officialDeliveryStatus("returned", "recipient_refused"), "NAO_REALIZADA");
   assert.equal(officialDeliveryStatus("returned"), null);
-  assert.equal(officialDeliveryStatus("returned", "recipient_absent"), null);
+  for (const unrelated of [
+    "return_confirmed", "confirmation_failed", "temporary_external_obstruction",
+    "courier_failed_after_pickup",
+  ]) {
+    assert.equal(officialDeliveryStatus("returned", unrelated), null, unrelated);
+  }
 });
 
 test("projeta estados oficiais do Pedido somente com evidência suficiente", () => {
@@ -29,6 +36,13 @@ test("projeta estados oficiais do Pedido somente com evidência suficiente", () 
   assert.equal(officialOrderStatus("confirmed", "completed"), "CONCLUIDO");
   assert.equal(officialOrderStatus("confirmed", "cancelled", "client_cancelled_before_pickup"), "CANCELADO");
   assert.equal(officialOrderStatus("confirmed", "returned", "client_cancelled_after_pickup"), "CANCELADO");
+  assert.equal(officialOrderStatus("confirmed", "returned", "recipient_absent"), "ENCERRADO");
+  assert.equal(officialOrderStatus("confirmed", "returned", "recipient_refused"), "ENCERRADO");
   assert.equal(officialOrderStatus("confirmed", "returned"), null);
-  assert.equal(officialOrderStatus("confirmed", "returned", "recipient_absent"), null);
+  for (const unrelated of [
+    "return_confirmed", "confirmation_failed", "temporary_external_obstruction",
+    "courier_failed_after_pickup",
+  ]) {
+    assert.equal(officialOrderStatus("confirmed", "returned", unrelated), null, unrelated);
+  }
 });

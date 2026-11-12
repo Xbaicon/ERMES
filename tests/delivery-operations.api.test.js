@@ -72,7 +72,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     courier1: await login("motoboy1@ermes.local"), courier2: await login("motoboy2@ermes.local"),
     offline: await login("offline@ermes.local"), otherCourier: await login("outro@ermes.local"),
   };
-  function createDelivery(companyId = company1, clientId = client1) {
+  function createDelivery(companyId = company1, clientId = client1, withStoredItem = false) {
     const recipient = JSON.stringify({ type: "self",
       name: db.prepare("SELECT full_name AS fullName FROM users WHERE id = ?").get(clientId).fullName });
     const orderId = Number(db.prepare(`INSERT INTO orders
@@ -80,6 +80,11 @@ test("acompanhamento operacional completo de entregas", async (context) => {
        payment_status, payment_paid_at, confirmed_at)
       VALUES (?, ?, 'confirmed', ?, ?, 1000, 'paid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
       .run(clientId, companyId, destination, recipient).lastInsertRowid);
+    if (withStoredItem) {
+      db.prepare(`INSERT INTO order_items
+        (order_id, product_id, quantity, unit_price_cents, unit_weight_kg)
+        VALUES (?, ?, 1, 1000, 1)`).run(orderId, product);
+    }
     return transaction(() => {
       const result = createDeliveryForEligibleOrderInTransaction(orderId);
       recordPaymentInTransaction(db, {
@@ -653,25 +658,39 @@ test("acompanhamento operacional completo de entregas", async (context) => {
 
   await context.test("ocorrências definidas no destino exigem retorno confirmado pela empresa", async () => {
     for (const type of ["recipient_absent", "recipient_refused"]) {
-      const item = createDelivery();
+      const item = createDelivery(company1, client1, true);
+      const financialBefore = db.prepare(`SELECT COUNT(*) AS total FROM financial_entries
+        WHERE delivery_id = ?`).get(item.delivery.id).total;
       for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
         assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
       }
       const occurrence = await post(cookies.courier1, item.delivery.id, "occurrences", { type });
       assert.equal(occurrence.status, 200);
-      assert.equal((await occurrence.json()).delivery.status, "returning");
+      const returningDelivery = (await occurrence.json()).delivery;
+      assert.equal(returningDelivery.status, "returning");
+      assert.equal(returningDelivery.officialStatus, "RETORNO_AO_ESTABELECIMENTO");
+      assert.equal(returningDelivery.orderOfficialStatus, "CONFIRMADO");
       assert.equal((await post(cookies.courier1, item.delivery.id, "occurrences", { type })).status, 409);
       assert.equal(storedOccurrences(item.delivery.id).length, 1);
       const returningAttempt = storedAttempts(item.delivery.id)[0];
       assert.equal(returningAttempt.status, "returning");
       assert.equal(returningAttempt.endedAt, null);
       assert.equal(returningAttempt.endNature, null);
-      await post(cookies.courier1, item.delivery.id, "report-return");
+      const reported = await post(cookies.courier1, item.delivery.id, "report-return");
+      assert.equal(reported.status, 200);
+      const reportedDelivery = (await reported.json()).delivery;
+      assert.equal(reportedDelivery.status, "awaiting_return_confirmation");
+      assert.equal(reportedDelivery.officialStatus, "RETORNO_AO_ESTABELECIMENTO");
+      assert.equal(reportedDelivery.orderOfficialStatus, "CONFIRMADO");
       const confirmed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`,
         { cookie: cookies.company1, method: "POST", body: {} });
+      assert.equal(confirmed.status, 200);
       const delivery = (await confirmed.json()).delivery;
       assert.equal(delivery.status, "returned");
-      assert.equal(delivery.officialStatus, null);
+      assert.equal(delivery.officialStatus, "NAO_REALIZADA");
+      assert.equal(delivery.orderOfficialStatus, "ENCERRADO");
+      assert.equal(delivery.courier, null);
+      assert.match(delivery.returnedAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
       assert.ok(delivery.events.some(({ eventType }) => eventType === type));
       assert.ok(delivery.events.some(({ eventType }) => eventType === "return_confirmed"));
       const closedAttempt = storedAttempts(item.delivery.id)[0];
@@ -683,7 +702,106 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       assert.equal(storedOccurrence.type, type);
       assert.equal(storedOccurrence.deliveryAttemptId, closedAttempt.id);
       assert.equal(storedOccurrence.responsibility, null);
+
+      const clientDetail = await (await request(`/api/client/deliveries/${item.delivery.id}`, {
+        cookie: cookies.client1,
+      })).json();
+      const companyDetail = await (await request(`/api/company/deliveries/${item.delivery.id}`, {
+        cookie: cookies.company1,
+      })).json();
+      for (const projected of [clientDetail.delivery, companyDetail.delivery]) {
+        assert.equal(projected.officialStatus, "NAO_REALIZADA");
+        assert.equal(projected.orderOfficialStatus, "ENCERRADO");
+      }
+      assert.equal(Object.hasOwn(clientDetail.delivery, "confirmationCode"), false);
+      const clientList = await (await request("/api/client/deliveries", {
+        cookie: cookies.client1,
+      })).json();
+      const companyList = await (await request("/api/company/deliveries", {
+        cookie: cookies.company1,
+      })).json();
+      assert.equal(clientList.deliveries.find(({ id }) => id === item.delivery.id).officialStatus,
+        "NAO_REALIZADA");
+      assert.equal(companyList.deliveries.find(({ id }) => id === item.delivery.id).officialStatus,
+        "NAO_REALIZADA");
+      const orderDetail = await request(`/api/client/orders/confirmed/${item.delivery.orderId}`, {
+        cookie: cookies.client1,
+      });
+      assert.equal(orderDetail.status, 200);
+      assert.equal((await orderDetail.json()).order.officialStatus, "ENCERRADO");
+
+      const repeatedPayment = await request(`/api/client/orders/${item.delivery.orderId}/pay`, {
+        cookie: cookies.client1, method: "POST", body: {},
+      });
+      assert.equal(repeatedPayment.status, 200);
+      const repeatedPaymentBody = await repeatedPayment.json();
+      assert.equal(repeatedPaymentBody.created, false);
+      assert.equal(repeatedPaymentBody.delivery.id, item.delivery.id);
+      assert.equal(repeatedPaymentBody.delivery.officialStatus, "NAO_REALIZADA");
+      assert.equal(repeatedPaymentBody.confirmationCode, null);
+
+      assert.equal((await post(cookies.courier1, item.delivery.id, "accept")).status, 409);
+      assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 404);
+      assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", {
+        code: item.confirmationCode,
+      })).status, 404);
+      assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/revalidate`, {
+        cookie: cookies.company1, method: "POST", body: {
+          revalidationId: Number.MAX_SAFE_INTEGER,
+          release: true,
+          verificationResult: "Não deve reabrir uma entrega terminal.",
+        },
+      })).status, 404);
+      assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+        cookie: cookies.company1, method: "POST", body: {},
+      })).status, 409);
+
+      assert.equal(storedAttempts(item.delivery.id).length, 1);
+      assert.equal(storedOccurrences(item.delivery.id).length, 1);
+      assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_revalidations
+        WHERE delivery_id = ?`).get(item.delivery.id).total, 0);
+      assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
+        WHERE delivery_id = ? AND event_type = 'return_confirmed'`)
+        .get(item.delivery.id).total, 1);
+      assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM financial_entries
+        WHERE delivery_id = ?`).get(item.delivery.id).total, financialBefore);
+      const currentCourier = await (await request("/api/courier/deliveries/current", {
+        cookie: cookies.courier1,
+      })).json();
+      assert.equal(currentCourier.delivery, null);
     }
+  });
+
+  await context.test("histórico terminal ambíguo não produz projeção nem reescreve dados", async () => {
+    const item = createDelivery(company1, client1, true);
+    db.prepare(`UPDATE deliveries SET status = 'returned', returned_at = CURRENT_TIMESTAMP
+      WHERE id = ?`).run(item.delivery.id);
+    const insertEvidence = db.prepare(`INSERT INTO delivery_events
+      (delivery_id, actor_user_id, event_type) VALUES (?, ?, ?)`);
+    insertEvidence.run(item.delivery.id, courier1, "recipient_absent");
+    insertEvidence.run(item.delivery.id, courier1, "recipient_refused");
+    const eventsBefore = db.prepare(`SELECT id, event_type AS eventType FROM delivery_events
+      WHERE delivery_id = ? ORDER BY id`).all(item.delivery.id).map((row) => ({ ...row }));
+
+    const detail = await request(`/api/client/deliveries/${item.delivery.id}`, {
+      cookie: cookies.client1,
+    });
+    assert.equal(detail.status, 200);
+    const delivery = (await detail.json()).delivery;
+    assert.equal(delivery.status, "returned");
+    assert.equal(delivery.officialStatus, null);
+    assert.equal(delivery.orderOfficialStatus, null);
+    const orderDetail = await request(`/api/client/orders/confirmed/${item.delivery.orderId}`, {
+      cookie: cookies.client1,
+    });
+    assert.equal(orderDetail.status, 200);
+    assert.equal((await orderDetail.json()).order.officialStatus, null);
+    const repeatedCreation = transaction(() =>
+      createDeliveryForEligibleOrderInTransaction(item.delivery.orderId));
+    assert.equal(repeatedCreation.delivery.officialStatus, null);
+    assert.equal(repeatedCreation.confirmationCode, null);
+    assert.deepEqual(db.prepare(`SELECT id, event_type AS eventType FROM delivery_events
+      WHERE delivery_id = ? ORDER BY id`).all(item.delivery.id).map((row) => ({ ...row })), eventsBefore);
   });
 
   await context.test("empresa consulta e classifica ocorrências uma única vez com projeção segura", async () => {
@@ -964,33 +1082,39 @@ test("acompanhamento operacional completo de entregas", async (context) => {
   });
 
   await context.test("falha no evento final desfaz encerramento terminal do retorno", async () => {
-    const item = createDelivery();
-    for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
-      await post(cookies.courier1, item.delivery.id, action);
-    }
-    await post(cookies.courier1, item.delivery.id, "occurrences", { type: "recipient_absent" });
-    await post(cookies.courier1, item.delivery.id, "report-return");
-    const before = { ...db.prepare(`SELECT status, courier_id AS courierId,
-      returned_at AS returnedAt FROM deliveries WHERE id = ?`).get(item.delivery.id) };
-    db.exec(`CREATE TRIGGER fail_return_confirmed_event BEFORE INSERT ON delivery_events
-      WHEN NEW.event_type = 'return_confirmed'
-      BEGIN SELECT RAISE(ABORT, 'forced terminal close event failure'); END;`);
-    const failed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
-      cookie: cookies.company1, method: "POST", body: {},
-    });
-    db.exec("DROP TRIGGER fail_return_confirmed_event");
-    assert.equal(failed.status, 500);
-    assert.deepEqual({ ...db.prepare(`SELECT status, courier_id AS courierId,
-      returned_at AS returnedAt FROM deliveries WHERE id = ?`).get(item.delivery.id) }, before);
-    assert.deepEqual(storedAttempts(item.delivery.id).map(({ status, endedAt, endNature }) => (
-      { status, endedAt, endNature }
-    )), [{ status: "returning", endedAt: null, endNature: null }]);
-    assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
-      WHERE delivery_id = ? AND event_type = 'return_confirmed'`).get(item.delivery.id).total, 0);
+    for (const type of ["recipient_absent", "recipient_refused"]) {
+      const item = createDelivery();
+      for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+        await post(cookies.courier1, item.delivery.id, action);
+      }
+      await post(cookies.courier1, item.delivery.id, "occurrences", { type });
+      await post(cookies.courier1, item.delivery.id, "report-return");
+      const before = { ...db.prepare(`SELECT status, courier_id AS courierId,
+        returned_at AS returnedAt FROM deliveries WHERE id = ?`).get(item.delivery.id) };
+      db.exec(`CREATE TRIGGER fail_return_confirmed_event BEFORE INSERT ON delivery_events
+        WHEN NEW.event_type = 'return_confirmed'
+        BEGIN SELECT RAISE(ABORT, 'forced terminal close event failure'); END;`);
+      const failed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+        cookie: cookies.company1, method: "POST", body: {},
+      });
+      db.exec("DROP TRIGGER fail_return_confirmed_event");
+      assert.equal(failed.status, 500);
+      assert.deepEqual({ ...db.prepare(`SELECT status, courier_id AS courierId,
+        returned_at AS returnedAt FROM deliveries WHERE id = ?`).get(item.delivery.id) }, before);
+      assert.deepEqual(storedAttempts(item.delivery.id).map(({ status, endedAt, endNature }) => (
+        { status, endedAt, endNature }
+      )), [{ status: "returning", endedAt: null, endNature: null }]);
+      assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
+        WHERE delivery_id = ? AND event_type = 'return_confirmed'`).get(item.delivery.id).total, 0);
 
-    assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
-      cookie: cookies.company1, method: "POST", body: {},
-    })).status, 200);
+      const successful = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+        cookie: cookies.company1, method: "POST", body: {},
+      });
+      assert.equal(successful.status, 200);
+      const projected = (await successful.json()).delivery;
+      assert.equal(projected.officialStatus, "NAO_REALIZADA");
+      assert.equal(projected.orderOfficialStatus, "ENCERRADO");
+    }
   });
 
   await context.test("cancelamentos e produto indisponível preservam regras antes e depois da coleta", async () => {

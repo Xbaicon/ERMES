@@ -5,7 +5,9 @@
 O checkpoint `baseline-0.1` permanece congelado. O desenvolvimento da Baseline
 0.2 avança incrementalmente sobre SQLite após a conclusão da auditoria técnica
 0.1 → 0.2. Este documento inclui os incrementos de `TentativaEntrega` e da
-fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade e o fluxo de impedimento externo com revalidação pela empresa.
+fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade,
+o fluxo de impedimento externo com revalidação pela empresa e o fechamento
+operacional terminal por ausência ou recusa do destinatário.
 Isso não declara implementado o ciclo completo da 0.2 nem altera a baseline
 normativa. MySQL permanece uma etapa técnica posterior e não é gate para as
 funcionalidades da 0.2.
@@ -39,7 +41,7 @@ Não há dependências npm externas nesta etapa.
 - A confirmação da coleta executa em um único `BEGIN IMMEDIATE`: valida a Entrega atribuída em `awaiting_pickup`, verifica a ausência de tentativa aberta, calcula `MAX(attempt_number) + 1`, insere a tentativa, muda a Entrega para `in_transit`, grava `collected_at` e registra `order_collected`. Qualquer falha desfaz todos esses efeitos.
 - `UNIQUE(delivery_id, attempt_number)` protege a sequência. O índice parcial único `one_open_attempt_per_delivery`, para `active` e `returning`, protege no banco a regra de uma tentativa aberta por Entrega; a aplicação também verifica a regra dentro da transação. Uma futura mudança de banco deverá reproduzir essa invariante com mecanismo equivalente.
 - Código válido muda a tentativa ativa para `completed` e grava `ended_at` na mesma transação que conclui a Entrega, registra o evento e executa o financeiro existente. O código de confirmação, seu hash e sua representação cifrada continuam exclusivamente em `deliveries`.
-- Os fluxos de retorno mudam a tentativa aberta para `returning` e a encerram somente na confirmação física do retorno: `recoverable` para falha do motoboy após coleta e `terminal` para ausência, recusa, terceira validação inválida e cancelamento pós-coleta. A terceira validação inválida cria ocorrência, mas não presume responsabilidade. `address_problem` genérico continua rejeitado antes de qualquer mutação até existir o fluxo tipado de evidências e revalidação que permita classificar sua causa.
+- Os fluxos de retorno mudam a tentativa aberta para `returning` e a encerram somente na confirmação física do retorno: `recoverable` para falha do motoboy após coleta e `terminal` para ausência, recusa, terceira validação inválida e cancelamento pós-coleta. Ausência e recusa, quando acompanhadas do estado final legado `returned`, projetam `NAO_REALIZADA/ENCERRADO`; não geram nova tentativa nem revalidação e não presumem responsabilidade. A terceira validação inválida cria ocorrência, mas suas consequências oficiais continuam fora deste incremento. `address_problem` genérico continua rejeitado antes de qualquer mutação até existir o fluxo tipado de evidências e revalidação que permita classificar sua causa.
 - A criação da tentativa valida, por consultas portáveis, número inteiro positivo gerado internamente, papel `courier`, empresa da Entrega e atribuição atual. A aplicação não oferece alteração genérica de identidade, número, motoboy ou início da tentativa.
 - Os detalhes de Entrega projetam o histórico `attempts` de forma aditiva. Listagens, rotas e interface visual permanecem inalteradas.
 - `src/finance.js` concentra as regras e o livro-razão financeiro. `financial_entries` registra lançamentos append-only de pagamento, reembolso e distribuição por componente (`products` ou `freight`), parte relacionada, motivo, Pedido, Entrega, horário e chave idempotente única. Triggers rejeitam UPDATE, DELETE, over-refund, valores fora do inteiro seguro, relações divergentes e combinações incompatíveis de tipo, componente e beneficiário. Colisões de chave comparam o conteúdo financeiro relevante e exigem reconciliação quando divergentes. As transições operacionais chamam essas regras dentro da mesma transação SQLite; falha financeira desfaz também estado e evento.
@@ -108,7 +110,17 @@ histórico e referência para comportamentos herdados.
 
 ## Estados oficiais e revalidação incremental
 
-`src/official-statuses.js` centraliza os nomes oficiais e projeta os valores legados, sem armazenar uma segunda fonte de verdade. Pedidos continuam `draft|confirmed`; Entregas adicionam apenas `awaiting_revalidation`. A projeção `officialStatus` de Pedido consulta a Entrega e, para cancelamento, exige o evento explícito do cliente. `returned` não é convertido globalmente em `NAO_REALIZADA`; quando falta semântica comprovada a projeção é `null`. `AGUARDANDO_CONFIRMACAO` de Pedido, `RECUSADO`, `ENCERRADO` e cenários terminais completos não receberam operações novas.
+`src/official-statuses.js` centraliza os nomes oficiais e projeta os valores legados, sem armazenar uma segunda fonte de verdade. Pedidos continuam `draft|confirmed`; Entregas adicionam apenas `awaiting_revalidation`. A projeção `officialStatus` de Pedido consulta a Entrega e exige evidência histórica explícita para os resultados terminais. `returned + client_cancelled_after_pickup` permanece `CANCELADA/CANCELADO`; `returned + recipient_absent|recipient_refused` passa a `NAO_REALIZADA/ENCERRADO`. `returned` não é convertido globalmente: quando falta causa comprovada a projeção é `null`. `AGUARDANDO_CONFIRMACAO` de Pedido, `RECUSADO` e os demais cenários terminais ainda não receberam operações novas.
+
+No fluxo de ausência/recusa, a ocorrência e a mudança para retorno continuam na
+transação original. A confirmação empresarial de recebimento fecha a tentativa
+como `closed_unsuccessfully/terminal`, mantém o motivo específico, limpa o
+motoboy, grava `returned_at`, persiste `returned` e `return_confirmed` na mesma
+transação. As consultas de Entrega, de Pedido e a criação idempotente resolvem a
+mesma causa a partir do evento histórico, sem usar `return_reason` como atalho.
+Falha no evento final reverte tentativa, Entrega, atribuição e timestamp. O
+livro-razão não participa desse novo fechamento: reembolsos e distribuição
+70/25/5 de ausência/recusa permanecem para incremento financeiro separado.
 
 O impedimento específico `temporary_external_obstruction` é registrado no destino pelo motoboy atribuído, com descrição e metadados internos do estado. Não declara contato ou alternativa segura como realizados automaticamente. Ocorrência, retorno da tentativa, estado da Entrega e evento são uma transação. Não altera financeiro nem responsabilidade.
 

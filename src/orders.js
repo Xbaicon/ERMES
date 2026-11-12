@@ -9,11 +9,12 @@ const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
 function projectedOfficialOrderStatus(order) {
   const delivery = db.prepare(`SELECT d.status,
-    (SELECT event_type FROM delivery_events WHERE delivery_id = d.id
-      AND event_type IN ('client_cancelled_before_pickup', 'client_cancelled_after_pickup')
-      ORDER BY id DESC LIMIT 1) AS cancellationEvent
+    (SELECT CASE WHEN COUNT(DISTINCT event_type) = 1 THEN MIN(event_type) END
+       FROM delivery_events WHERE delivery_id = d.id
+        AND event_type IN ('client_cancelled_before_pickup', 'client_cancelled_after_pickup',
+                           'recipient_absent', 'recipient_refused')) AS terminalEvent
     FROM deliveries d WHERE order_id = ?`).get(order.id);
-  return officialOrderStatus(order.status, delivery?.status, delivery?.cancellationEvent);
+  return officialOrderStatus(order.status, delivery?.status, delivery?.terminalEvent);
 }
 
 function orderError(message, statusCode = 400) {
