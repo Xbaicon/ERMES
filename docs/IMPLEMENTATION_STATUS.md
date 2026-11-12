@@ -9,7 +9,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
 | Baseline 0.2 | Em implementação incremental | `TentativaEntrega`, `OcorrenciaEntrega`/responsabilidade e impedimento externo com revalidação possuem incrementos funcionais; demais cenários e financeiro completo continuam pendentes |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
-| Incremento atual | Impedimento externo e revalidação — IMPLEMENTADO | Após retorno confirmado, a empresa verifica a viabilidade e libera a mesma Entrega; estados oficiais são projeções incrementais e o financeiro 0.2 permanece pendente |
+| Incremento atual | Impedimento externo e revalidação — PARCIAL | Registro, retorno físico, espera em `AGUARDANDO_REVALIDACAO`, verificação e liberação pela empresa e nova tentativa na próxima coleta estão implementados; cancelamento do cliente durante/depois do ciclo e financeiro específico permanecem pendentes |
 | Próximo passo técnico | Implementação incremental | Continuar os incrementos funcionais da Baseline 0.2 sobre SQLite, preservando as pendências registradas abaixo |
 | Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
 | Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |

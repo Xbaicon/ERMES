@@ -119,7 +119,7 @@ function publicDelivery(row, {
 } = {}) {
   const delivery = {
     id: row.id, orderId: row.orderId, status: row.status,
-    officialStatus: officialDeliveryStatus(row.status),
+    officialStatus: officialDeliveryStatus(row.status, row.cancellationEvent),
     orderOfficialStatus: officialOrderStatus(row.orderStatus, row.status, row.cancellationEvent),
     company: { id: row.companyId, name: row.companyName },
     invalidCodeAttempts: row.invalidCodeAttempts,

@@ -671,6 +671,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
         { cookie: cookies.company1, method: "POST", body: {} });
       const delivery = (await confirmed.json()).delivery;
       assert.equal(delivery.status, "returned");
+      assert.equal(delivery.officialStatus, null);
       assert.ok(delivery.events.some(({ eventType }) => eventType === type));
       assert.ok(delivery.events.some(({ eventType }) => eventType === "return_confirmed"));
       const closedAttempt = storedAttempts(item.delivery.id)[0];
@@ -1019,8 +1020,28 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     );
     assert.deepEqual(cancellationEvent.details, {});
     await post(cookies.courier1, afterPickup.delivery.id, "report-return");
-    await request(`/api/company/deliveries/${afterPickup.delivery.id}/confirm-return`,
+    const confirmedReturn = await request(`/api/company/deliveries/${afterPickup.delivery.id}/confirm-return`,
       { cookie: cookies.company1, method: "POST", body: {} });
+    assert.equal(confirmedReturn.status, 200);
+    const returnedDelivery = (await confirmedReturn.json()).delivery;
+    assert.equal(returnedDelivery.status, "returned");
+    assert.equal(returnedDelivery.officialStatus, "CANCELADA");
+    assert.equal(returnedDelivery.orderOfficialStatus, "CANCELADO");
+    const detail = await request(`/api/client/deliveries/${afterPickup.delivery.id}`,
+      { cookie: cookies.client1 });
+    assert.equal(detail.status, 200);
+    const detailDelivery = (await detail.json()).delivery;
+    assert.equal(detailDelivery.status, "returned");
+    assert.equal(detailDelivery.officialStatus, "CANCELADA");
+    assert.equal(detailDelivery.orderOfficialStatus, "CANCELADO");
+    const repeated = transaction(() => createDeliveryForEligibleOrderInTransaction(afterPickup.delivery.orderId));
+    assert.equal(repeated.created, false);
+    assert.equal(repeated.delivery.id, afterPickup.delivery.id);
+    assert.equal(repeated.delivery.status, "returned");
+    assert.equal(repeated.delivery.officialStatus, "CANCELADA");
+    assert.equal(repeated.confirmationCode, null);
+    assert.equal((await request(`/api/client/orders/${afterPickup.delivery.orderId}/pay`,
+      { cookie: cookies.client1, method: "POST", body: {} })).status, 409);
     const orderDespiteLegacyValue = await request("/api/client/orders", { cookie: cookies.client1, method: "POST",
       body: { companyId: company1, items: [{ productId: product, quantity: 1 }] } });
     const orderDespiteLegacyBody = await orderDespiteLegacyValue.json();
