@@ -10,6 +10,7 @@ import {
   markOpenDeliveryAttemptReturningInTransaction,
 } from "./delivery-attempts.js";
 import { DELIVERY_EVENT_TYPES, DELIVERY_STATES } from "./deliveries.js";
+import { officialDeliveryStatus, officialOrderStatus } from "./official-statuses.js";
 import {
   createDeliveryOccurrenceInTransaction,
   DELIVERY_OCCURRENCE_TYPES,
@@ -56,6 +57,9 @@ export function requireEmptyDeliveryBody(body) {
 
 function findDelivery(id) {
   return db.prepare(`SELECT d.id, d.order_id AS orderId, d.courier_id AS courierId, d.status,
+                            (SELECT event_type FROM delivery_events WHERE delivery_id = d.id
+                              AND event_type IN ('client_cancelled_before_pickup', 'client_cancelled_after_pickup')
+                              ORDER BY id DESC LIMIT 1) AS cancellationEvent,
                             COALESCE((SELECT attempt.invalid_code_attempts
                               FROM delivery_attempts attempt
                               WHERE attempt.delivery_id = d.id
@@ -70,7 +74,7 @@ function findDelivery(id) {
                             o.client_id AS clientId, o.company_id AS companyId,
                             o.items_total_cents AS itemsTotalCents,
                             o.freight_total_cents AS freightTotalCents,
-                            o.payment_status AS paymentStatus,
+                            o.status AS orderStatus, o.payment_status AS paymentStatus,
                             o.payment_paid_at AS paymentPaidAt,
                             o.destination_snapshot_json AS destinationSnapshotJson,
                             o.recipient_snapshot_json AS recipientSnapshotJson,
@@ -115,6 +119,8 @@ function publicDelivery(row, {
 } = {}) {
   const delivery = {
     id: row.id, orderId: row.orderId, status: row.status,
+    officialStatus: officialDeliveryStatus(row.status),
+    orderOfficialStatus: officialOrderStatus(row.orderStatus, row.status, row.cancellationEvent),
     company: { id: row.companyId, name: row.companyName },
     invalidCodeAttempts: row.invalidCodeAttempts,
     acceptedAt: row.acceptedAt, collectedAt: row.collectedAt, completedAt: row.completedAt,
@@ -180,6 +186,16 @@ const companyView = (row) => ({
     includeDestination: true, includePickupAddress: true, includeRecipient: true,
   }),
   financial: companyFinancialSummary(db, row),
+  revalidations: db.prepare(`SELECT r.id, r.delivery_attempt_id AS deliveryAttemptId,
+    r.occurrence_id AS occurrenceId, oc.type, oc.description,
+    r.received_at AS receivedAt, receiver.full_name AS receiverName,
+    r.verified_at AS verifiedAt, verifier.full_name AS verifierName,
+    r.verification_result AS verificationResult
+    FROM delivery_revalidations r
+    JOIN delivery_occurrences oc ON oc.id = r.occurrence_id
+    JOIN users receiver ON receiver.id = r.received_by_user_id
+    LEFT JOIN users verifier ON verifier.id = r.verified_by_user_id
+    WHERE r.delivery_id = ? ORDER BY r.id`).all(row.id),
 });
 
 function event(deliveryId, actorUserId, eventType, details = {}) {
@@ -460,6 +476,85 @@ export function reportReturn(id, courierId, companyId, body) {
     "return_reported_at");
 }
 
+export function reportExternalObstruction(id, courierId, companyId, body) {
+  requireObject(body, ["description"]);
+  if (typeof body.description !== "string" || !body.description.trim()
+    || body.description.trim().length > 500) {
+    throw deliveryError("Descreva o impedimento externo em até 500 caracteres.", 400);
+  }
+  return transaction(() => {
+    const delivery = requireCourierDelivery(id, courierId, companyId);
+    if (delivery.status !== DELIVERY_STATES.AWAITING_CONFIRMATION) {
+      throw deliveryError("O impedimento externo só pode ser registrado no destino.");
+    }
+    const attempt = findOpenDeliveryAttempt(db, id);
+    if (!attempt || attempt.status !== "active" || attempt.courierId !== courierId) {
+      throw deliveryError("A tentativa ativa exige reconciliação dos dados legados.");
+    }
+    const occurrenceId = createDeliveryOccurrenceInTransaction(db, {
+      deliveryId: id, deliveryAttemptId: attempt.id,
+      type: DELIVERY_OCCURRENCE_TYPES.EXTERNAL_OBSTRUCTION,
+      description: body.description, reportedByUserId: courierId,
+      evidence: { deliveryState: delivery.status },
+    });
+    markOpenDeliveryAttemptReturningInTransaction(db, id);
+    db.prepare("UPDATE deliveries SET status = ?, return_reason = ?, return_reported_at = NULL, returned_at = NULL WHERE id = ?")
+      .run(DELIVERY_STATES.RETURNING, DELIVERY_OCCURRENCE_TYPES.EXTERNAL_OBSTRUCTION, id);
+    event(id, courierId, DELIVERY_EVENT_TYPES.EXTERNAL_OBSTRUCTION, { occurrenceId });
+    return courierView(requireDelivery(id));
+  });
+}
+
+function requireCompanyParticipant(userId, companyId) {
+  if (!db.prepare("SELECT id FROM users WHERE id = ? AND role = 'company' AND company_id = ? AND status = 'active'")
+    .get(userId, companyId)) throw deliveryError("Usuário da empresa não autorizado.", 403);
+}
+
+export function revalidateDelivery(id, companyUserId, companyId, body) {
+  requireObject(body, ["revalidationId", "release", "verificationResult"]);
+  if (!Number.isSafeInteger(body.revalidationId) || body.revalidationId <= 0 || body.release !== true
+    || typeof body.verificationResult !== "string" || !body.verificationResult.trim()
+    || body.verificationResult.trim().length > 2000) {
+    throw deliveryError("Informe revalidationId, release: true e o resultado da verificação em até 2000 caracteres.", 400);
+  }
+  return transaction(() => {
+    const delivery = requireDelivery(id);
+    if (delivery.companyId !== companyId) throw deliveryError("Entrega não encontrada.", 404);
+    requireCompanyParticipant(companyUserId, companyId);
+    const cycle = db.prepare(`SELECT r.*,
+      (SELECT latest.id FROM delivery_attempts latest WHERE latest.delivery_id = r.delivery_id
+        ORDER BY latest.attempt_number DESC LIMIT 1) AS latestAttemptId
+      FROM delivery_revalidations r
+      JOIN delivery_attempts a ON a.id = r.delivery_attempt_id AND a.delivery_id = r.delivery_id
+      JOIN delivery_occurrences oc ON oc.id = r.occurrence_id AND oc.delivery_id = r.delivery_id
+        AND oc.delivery_attempt_id = a.id AND oc.type = 'temporary_external_obstruction'
+      WHERE r.id = ? AND r.delivery_id = ? AND a.status = 'closed_unsuccessfully'
+        AND a.end_nature = 'recoverable' AND a.end_reason = 'temporary_external_obstruction'`)
+      .get(body.revalidationId, id);
+    if (!cycle) throw deliveryError("Ciclo de revalidação não encontrado.", 404);
+    if (delivery.status !== DELIVERY_STATES.AWAITING_REVALIDATION || cycle.verified_at !== null
+      || cycle.latestAttemptId !== cycle.delivery_attempt_id
+      || !delivery.returnedAt || !delivery.returnReportedAt || delivery.courierId !== null
+      || delivery.returnReason !== DELIVERY_OCCURRENCE_TYPES.EXTERNAL_OBSTRUCTION
+      || findOpenDeliveryAttempt(db, id) || delivery.orderStatus !== "confirmed") {
+      throw deliveryError("A entrega não está apta à revalidação; verifique o retorno e os dados legados.");
+    }
+    const verification = db.prepare(`UPDATE delivery_revalidations SET verified_by_user_id = ?,
+      verified_at = CURRENT_TIMESTAMP, verification_result = ? WHERE id = ? AND verified_at IS NULL`)
+      .run(companyUserId, body.verificationResult.trim(), cycle.id);
+    if (Number(verification.changes) !== 1) throw deliveryError("A revalidação já foi realizada.");
+    const update = db.prepare(`UPDATE deliveries SET status = ?, accepted_at = NULL, collected_at = NULL,
+      return_reason = NULL, return_reported_at = NULL, returned_at = NULL
+      WHERE id = ? AND status = ? AND courier_id IS NULL`)
+      .run(DELIVERY_STATES.AVAILABLE, id, DELIVERY_STATES.AWAITING_REVALIDATION);
+    if (Number(update.changes) !== 1) throw deliveryError("A entrega foi alterada.");
+    event(id, companyUserId, DELIVERY_EVENT_TYPES.REVALIDATED, {
+      revalidationId: cycle.id, occurrenceId: cycle.occurrence_id,
+    });
+    return companyView(requireDelivery(id));
+  });
+}
+
 export function confirmReturn(id, companyUserId, companyId, body) {
   requireEmptyDeliveryBody(body);
   return transaction(() => {
@@ -468,7 +563,27 @@ export function confirmReturn(id, companyUserId, companyId, body) {
     if (delivery.status !== DELIVERY_STATES.AWAITING_RETURN_CONFIRMATION) {
       throw deliveryError("A entrega não está aguardando confirmação de retorno.");
     }
-    if (delivery.returnReason === "courier_failure_after_pickup") {
+    if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.EXTERNAL_OBSTRUCTION) {
+      requireCompanyParticipant(companyUserId, companyId);
+      const attempt = findOpenDeliveryAttempt(db, id);
+      const occurrences = attempt ? db.prepare(`SELECT id FROM delivery_occurrences
+        WHERE delivery_id = ? AND delivery_attempt_id = ? AND type = ?`)
+        .all(id, attempt.id, DELIVERY_OCCURRENCE_TYPES.EXTERNAL_OBSTRUCTION) : [];
+      if (!attempt || attempt.status !== "returning" || attempt.courierId !== delivery.courierId
+        || !delivery.returnReportedAt || occurrences.length !== 1 || delivery.orderStatus !== "confirmed") {
+        throw deliveryError("O retorno exige reconciliação de tentativa, ocorrência e recebimento físico.");
+      }
+      closeDeliveryAttemptWithoutSuccessInTransaction(db, id, delivery.returnReason,
+        DELIVERY_ATTEMPT_END_NATURES.RECOVERABLE);
+      db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, returned_at = CURRENT_TIMESTAMP
+        WHERE id = ?`).run(DELIVERY_STATES.AWAITING_REVALIDATION, id);
+      const cycle = db.prepare(`INSERT INTO delivery_revalidations
+        (delivery_id, delivery_attempt_id, occurrence_id, received_by_user_id) VALUES (?, ?, ?, ?)`)
+        .run(id, attempt.id, occurrences[0].id, companyUserId);
+      event(id, companyUserId, DELIVERY_EVENT_TYPES.AWAITING_REVALIDATION, {
+        revalidationId: Number(cycle.lastInsertRowid), occurrenceId: occurrences[0].id,
+      });
+    } else if (delivery.returnReason === "courier_failure_after_pickup") {
       closeDeliveryAttemptWithoutSuccessInTransaction(db, id, delivery.returnReason,
         DELIVERY_ATTEMPT_END_NATURES.RECOVERABLE);
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, accepted_at = NULL,

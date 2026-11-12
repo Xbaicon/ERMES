@@ -7,9 +7,9 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Marco | Estado | Observação |
 | --- | --- | --- |
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
-| Baseline 0.2 | Em implementação incremental | `TentativaEntrega` e a fundação persistente de `OcorrenciaEntrega`/responsabilidade possuem incrementos funcionais; os demais requisitos continuam pendentes |
+| Baseline 0.2 | Em implementação incremental | `TentativaEntrega`, `OcorrenciaEntrega`/responsabilidade e impedimento externo com revalidação possuem incrementos funcionais; demais cenários e financeiro completo continuam pendentes |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
-| Incremento atual | `OcorrenciaEntrega` — PARCIAL | Ocorrências conhecidas são persistidas e a empresa pode classificá-las uma única vez; revalidação e consequências da classificação ainda não foram implementadas |
+| Incremento atual | Impedimento externo e revalidação — IMPLEMENTADO | Após retorno confirmado, a empresa verifica a viabilidade e libera a mesma Entrega; estados oficiais são projeções incrementais e o financeiro 0.2 permanece pendente |
 | Próximo passo técnico | Implementação incremental | Continuar os incrementos funcionais da Baseline 0.2 sobre SQLite, preservando as pendências registradas abaixo |
 | Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
 | Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |
@@ -23,13 +23,15 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Numeração e tentativa aberta | IMPLEMENTADO | A numeração usa `MAX(attempt_number) + 1` dentro de `BEGIN IMMEDIATE`; unicidade por Entrega e índice de tentativa aberta protegem concorrência e repetição |
 | Conclusão normal | IMPLEMENTADO | Código válido conclui a tentativa ativa na mesma transação da Entrega, do evento e dos lançamentos financeiros já existentes |
 | Projeção da Entrega | IMPLEMENTADO | Consultas de detalhe incluem `attempts` de modo aditivo; não foi criado endpoint ou interface visual |
-| Retornos da tentativa | PARCIAL | Falha mecânica é recuperável; ausência, recusa, três códigos inválidos e cancelamento são terminais, sempre após confirmação física do retorno. A classificação registrada ainda não altera esse comportamento |
+| Retornos da tentativa | PARCIAL | Falha mecânica é recuperável; ausência, recusa, três códigos inválidos e cancelamento são terminais, sempre após confirmação física do retorno. A classificação registrada ainda não altera esse comportamento; impedimento externo usa retorno recuperável e revalidação explícita |
 | Ocorrências e classificação 0.2 | PARCIAL | `delivery_occurrences` preserva falhas do motoboy antes/depois da coleta, ausência, recusa e três códigos inválidos. A empresa consulta e classifica uma única vez como `CLIENTE`, `EMPRESA`, `MOTOBOY`, `SISTEMA` ou `INDEFINIDO`, sem efeitos automáticos |
-| Revalidação e endereço problemático | NÃO IMPLEMENTADO | `address_problem` genérico continua bloqueado sem efeitos: faltam o fluxo tipado, evidências e a revalidação exigidos antes de decidir responsabilidade ou consequência |
-| Estados completos de Pedido e Entrega da 0.2 | NÃO IMPLEMENTADO | Os valores operacionais atuais, como `completed`, foram preservados por compatibilidade |
+| Revalidação por impedimento externo | IMPLEMENTADO | Ocorrência `temporary_external_obstruction`, retorno físico, tentativa encerrada recuperável, `awaiting_revalidation` persistido e liberação explícita/auditada pela empresa; nova tentativa somente na nova coleta |
+| Endereço incorreto e erro do ERMES | NÃO IMPLEMENTADO | `address_problem` continua bloqueado; faltam evidências específicas, comparação de endereço original/apresentado, correção e confirmação da disponibilidade do cliente |
+| Produto indisponível e ajuste excepcional do Pedido na 0.2 | PENDENTE | Falta o fluxo de produto/serviço indisponível com proposta de ajuste excepcional, concordância explícita do cliente, acerto da diferença de preço e efeitos financeiros correspondentes quando aplicáveis. O cancelamento legado, o reembolso já existente e o financeiro implementado da 0.1 não representam a conclusão desse fluxo da 0.2 |
+| Estados completos de Pedido e Entrega da 0.2 | PARCIAL | `officialStatus` é projeção derivada, sem coluna duplicada. `awaiting_revalidation` é novo estado operacional. `returned` ambíguo não é convertido; regras terminais e financeiro completo continuam pendentes |
 | Contador de códigos inválidos por tentativa | IMPLEMENTADO | `delivery_attempts.invalid_code_attempts` é a única fonte operacional, inicia em zero e aceita de zero a três. A coluna da Entrega é legado físico não sincronizado |
 | Sanção temporal de cancelamento | REMOVIDA | A 0.2 não aplica tolerância fixa de três minutos nem bloqueio automático de duas horas; `order_blocked_until` é legado físico não autoritativo |
-| Bancos SQLite existentes | IMPLEMENTADO COM LIMITAÇÃO | As tabelas/colunas são criadas aditivamente. Não há backfill de tentativas nem ocorrências; o contador legado só migra com tentativa única e eventos inequívocos, e Entregas em andamento sem tentativa exigem reconciliação |
+| Bancos SQLite existentes | IMPLEMENTADO COM LIMITAÇÃO | A evolução preserva os dados e reconstrói somente o CHECK de tipos de ocorrência quando necessário. Não há backfill de tentativas nem ocorrências; o contador legado só migra com tentativa única e eventos inequívocos, e Entregas em andamento sem tentativa exigem reconciliação |
 
 ## Implementação existente no checkpoint da Baseline 0.1
 
@@ -96,3 +98,12 @@ endereço incorreto confirmado pelo cliente e falha após três códigos; també
 foi inferido reembolso para cancelamento antes da coleta. Erro comprovável do
 sistema continua sem valores exatos. A interface de tentativa de contato também
 permanece pendente.
+
+## Incremento de estados e revalidação
+
+- `orders.status` permanece `draft|confirmed`; `deliveries.status` mantém os valores legados e adiciona `awaiting_revalidation`. Não houve migração global ou inferência de causa para terminais históricos.
+- Projeções oficiais: `draft -> EM_MONTAGEM`, `confirmed -> CONFIRMADO`, conclusão comprovada pela Entrega `completed -> CONCLUIDO/FINALIZADA`. Cancelamento de Pedido exige evento explícito do cliente; cancelamentos legados sem essa evidência e `returned` sem causa suficiente expõem `null`, sem inventar `ENCERRADO/NAO_REALIZADA`. Os demais nomes oficiais são reservados para incrementos posteriores.
+- `delivery_revalidations` preserva ocorrência, tentativa encerrada, recebedor/horário e verificador/horário/resultado. O banco protege o mesmo ciclo operacional e o papel `company` da empresa proprietária.
+- A empresa consulta o ciclo no detalhe da Entrega. Registro do impedimento e liberação estão disponíveis pela API, sem interface completa neste incremento; os painéis mostram o estado e não oferecem ações incompatíveis.
+- Chat permanece aberto, mas nenhuma mensagem autoriza liberação. Falta de tentativa, ocorrência inequívoca ou retorno comprovado exige reconciliação explícita, sem backfill.
+- Financeiro, cancelamento posterior ao impedimento, erro corrigível/persistente do ERMES, endereço incorreto e perfis RESPONSAVEL/ATENDENTE permanecem para incrementos próprios. Não há cobrança, reembolso ou remuneração nova neste fluxo.

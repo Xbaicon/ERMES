@@ -8,6 +8,7 @@ export const DELIVERY_OCCURRENCE_TYPES = Object.freeze({
   RECIPIENT_REFUSED: "recipient_refused",
   CONFIRMATION_FAILED: "confirmation_failed",
   ADDRESS_PROBLEM: "address_problem",
+  EXTERNAL_OBSTRUCTION: "temporary_external_obstruction",
 });
 
 export const DELIVERY_OCCURRENCE_RESPONSIBILITIES = Object.freeze([

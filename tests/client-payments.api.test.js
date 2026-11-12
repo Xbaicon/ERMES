@@ -187,6 +187,7 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
     const paid = payment.order;
     assert.match(payment.confirmationCode, /^\d{6}$/);
     assert.equal(payment.delivery.status, "available");
+    assert.equal(payment.delivery.officialStatus, "DISPONIVEL");
     assert.equal(paid.status, "confirmed");
     assert.equal(paid.paymentStatus, "paid");
     assert.match(paid.paymentPaidAt, /^\d{4}-\d{2}-\d{2} /);
@@ -337,5 +338,66 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
       .run(confirmed.id), /invalid payment status/);
     assert.equal(storedOrder(confirmed.id).paymentStatus, "pending");
     assert.equal(storedOrder(confirmed.id).paymentPaidAt, null);
+  });
+
+  await context.test("pagamento repetido durante revalidação projeta o estado sem criar pagamento ou Entrega", async () => {
+    const draft = await createDraft(firstClient.cookie, company.id, product.id);
+    const confirmed = await confirmDraft(companyCookie, draft);
+    const first = await pay(firstClient.cookie, confirmed.id);
+    assert.equal(first.status, 200);
+    const payment = await first.json();
+    const deliveryId = payment.delivery.id;
+    assert.equal(payment.created, true);
+    assert.equal(payment.delivery.status, "available");
+    assert.equal(payment.delivery.officialStatus, "DISPONIVEL");
+
+    const online = await request("/api/courier/availability", {
+      cookie: courierCookie, method: "PATCH", body: { isOnline: true },
+    });
+    assert.equal(online.status, 200);
+    for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+      assert.equal((await request(`/api/courier/deliveries/${deliveryId}/${action}`, {
+        cookie: courierCookie, method: "POST", body: {},
+      })).status, 200);
+    }
+    assert.equal((await request(`/api/courier/deliveries/${deliveryId}/external-obstruction`, {
+      cookie: courierCookie, method: "POST", body: { description: "Acesso temporariamente interditado." },
+    })).status, 200);
+    assert.equal((await request(`/api/courier/deliveries/${deliveryId}/report-return`, {
+      cookie: courierCookie, method: "POST", body: {},
+    })).status, 200);
+    const returned = await request(`/api/company/deliveries/${deliveryId}/confirm-return`, {
+      cookie: companyCookie, method: "POST", body: {},
+    });
+    assert.equal(returned.status, 200);
+    assert.equal((await returned.json()).delivery.status, "awaiting_revalidation");
+
+    const snapshot = () => ({
+      order: db.prepare("SELECT * FROM orders WHERE id = ?").get(confirmed.id),
+      deliveries: db.prepare("SELECT * FROM deliveries ORDER BY id").all(),
+      entries: db.prepare("SELECT * FROM financial_entries ORDER BY id").all(),
+      attempts: db.prepare("SELECT * FROM delivery_attempts WHERE delivery_id = ? ORDER BY id").all(deliveryId),
+      occurrences: db.prepare("SELECT * FROM delivery_occurrences WHERE delivery_id = ? ORDER BY id").all(deliveryId),
+      events: db.prepare("SELECT * FROM delivery_events WHERE delivery_id = ? ORDER BY id").all(deliveryId),
+      revalidations: db.prepare("SELECT * FROM delivery_revalidations WHERE delivery_id = ? ORDER BY id").all(deliveryId),
+    });
+    const before = snapshot();
+    for (let repetition = 0; repetition < 2; repetition += 1) {
+      const response = await pay(firstClient.cookie, confirmed.id);
+      assert.equal(response.status, 200);
+      const repeated = await response.json();
+      assert.equal(repeated.created, false);
+      assert.equal(repeated.delivery.id, deliveryId);
+      assert.equal(repeated.delivery.status, "awaiting_revalidation");
+      assert.equal(repeated.delivery.officialStatus, "AGUARDANDO_REVALIDACAO");
+      assert.equal(repeated.order.paymentPaidAt, payment.order.paymentPaidAt);
+      assert.equal(repeated.confirmationCode, null);
+      assert.deepEqual(snapshot(), before);
+      const detail = await request(`/api/client/deliveries/${deliveryId}`, { cookie: firstClient.cookie });
+      assert.equal(detail.status, 200);
+      const delivery = (await detail.json()).delivery;
+      assert.equal(delivery.status, repeated.delivery.status);
+      assert.equal(delivery.officialStatus, repeated.delivery.officialStatus);
+    }
   });
 });

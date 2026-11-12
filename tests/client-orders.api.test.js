@@ -136,7 +136,7 @@ test("criação de pedidos draft do cliente", async (context) => {
     const { order } = await response.json();
     const { id, items, ...summary } = order;
     assert.deepEqual(summary, {
-      status: "draft", company: { id: companyId, name: "Empresa Demonstrativa" },
+      status: "draft", officialStatus: "EM_MONTAGEM", company: { id: companyId, name: "Empresa Demonstrativa" },
       itemsTotalCents: 3980, weightKg: 1, destinationSnapshot: address,
       recipientSnapshot: { type: "self", name: "primeiro.pedido@ermes.local" },
     });

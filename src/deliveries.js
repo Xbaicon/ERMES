@@ -9,6 +9,7 @@ export const DELIVERY_STATES = Object.freeze({
   COMPLETED: "completed",
   CANCELLED: "cancelled",
   RETURNED: "returned",
+  AWAITING_REVALIDATION: "awaiting_revalidation",
 });
 
 export const DELIVERY_EVENT_TYPES = Object.freeze({
@@ -32,6 +33,9 @@ export const DELIVERY_EVENT_TYPES = Object.freeze({
   RETURN_CONFIRMED: "return_confirmed",
   REAVAILABLE: "delivery_reavailable",
   OCCURRENCE_CLASSIFIED: "occurrence_classified",
+  EXTERNAL_OBSTRUCTION: "temporary_external_obstruction",
+  AWAITING_REVALIDATION: "delivery_awaiting_revalidation",
+  REVALIDATED: "delivery_revalidated",
 });
 
 export const INITIAL_DELIVERY_STATE = DELIVERY_STATES.AVAILABLE;

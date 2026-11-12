@@ -1,5 +1,6 @@
 import { db, transaction } from "./database.js";
 import { INITIAL_DELIVERY_EVENT_TYPE, INITIAL_DELIVERY_STATE } from "./deliveries.js";
+import { officialDeliveryStatus } from "./official-statuses.js";
 import {
   decryptConfirmationCode, encryptConfirmationCode, hashConfirmationCode, newConfirmationCode,
 } from "./security.js";
@@ -67,7 +68,7 @@ function findDeliveryByOrderId(orderId) {
 }
 
 function publicDelivery({ confirmationCodeHash, confirmationCodeCiphertext, ...delivery }) {
-  return delivery;
+  return { ...delivery, officialStatus: officialDeliveryStatus(delivery.status) };
 }
 
 const codeUsableStates = new Set([

@@ -68,11 +68,14 @@ test("criação persistente e idempotente da entrega", async (context) => {
       orderId,
       courierId: null,
       status: "available",
+      officialStatus: "DISPONIVEL",
       createdAt: delivery.createdAt,
     });
     assert.match(delivery.createdAt, /^\d{4}-\d{2}-\d{2} /);
+    const { officialStatus, ...persistedProjection } = delivery;
+    assert.equal(officialStatus, "DISPONIVEL");
     assert.deepEqual({ ...storedDelivery(orderId) }, {
-      ...delivery,
+      ...persistedProjection,
       confirmationCodeHash: storedDelivery(orderId).confirmationCodeHash,
       confirmationCodeCiphertext: storedDelivery(orderId).confirmationCodeCiphertext,
       invalidCodeAttempts: 0,
@@ -230,6 +233,7 @@ test("criação persistente e idempotente da entrega", async (context) => {
         orderId,
         courierId: null,
         status: "available",
+        officialStatus: "DISPONIVEL",
         createdAt: delivery.createdAt,
       });
     }
