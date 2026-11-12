@@ -675,7 +675,7 @@ O objeto `quote` devolve `weightKg`, `distanceKm` e `estimatedMinutes`; a taxa d
 
 ## Incremento de impedimento externo e revalidação (0.2)
 
-Os campos `status` existentes foram preservados. Pedidos e Entregas incluem `officialStatus` derivado. As projeções operacionais de Entrega incluem também `orderOfficialStatus`; o objeto `delivery` da resposta de pagamento segue o contrato específico acima e não inclui esse campo. O novo estado persistido é `awaiting_revalidation`, projetado como `AGUARDANDO_REVALIDACAO`. Não há coluna duplicada nem migração global de estados. `returned` sem semântica inequívoca permanece sem tradução oficial (`null`); cancelamento oficial de Pedido exige evento explícito do cliente. Conclusão normal projeta `CONCLUIDO/FINALIZADA`. Isso não declara implementados estados ou financeiro completos da 0.2.
+Os campos `status` existentes foram preservados. Pedidos e Entregas incluem `officialStatus` derivado. As projeções operacionais de Entrega incluem também `orderOfficialStatus`; o objeto `delivery` da resposta de pagamento segue o contrato específico acima e não inclui esse campo. O novo estado persistido é `awaiting_revalidation`, projetado como `AGUARDANDO_REVALIDACAO`. Não há coluna duplicada nem migração global de estados. `returned` sem semântica inequívoca permanece sem tradução oficial (`null`); o evento explícito `client_cancelled_after_pickup` projeta Pedido `CANCELADO` e Entrega `CANCELADA` após retorno confirmado. Conclusão normal projeta `CONCLUIDO/FINALIZADA`. Isso não declara implementados estados ou financeiro completos da 0.2.
 
 ### Registrar impedimento no destino
 

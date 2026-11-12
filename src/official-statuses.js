@@ -15,8 +15,9 @@ const deliveryStatuses = Object.freeze({
   awaiting_return_confirmation: "RETORNO_AO_ESTABELECIMENTO",
   awaiting_revalidation: "AGUARDANDO_REVALIDACAO", completed: "FINALIZADA", cancelled: "CANCELADA",
 });
-export function officialDeliveryStatus(status) {
+export function officialDeliveryStatus(status, cancellationEvent = null) {
   // returned não prova causa/semântica terminal suficiente para migração global.
+  if (status === "returned" && cancellationEvent === "client_cancelled_after_pickup") return "CANCELADA";
   return Object.hasOwn(deliveryStatuses, status) ? deliveryStatuses[status] : null;
 }
 export function officialOrderStatus(status, deliveryStatus = null, cancellationEvent = null) {
