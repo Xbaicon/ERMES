@@ -2,7 +2,9 @@
 
 > **Estado documental:** este contrato parte do checkpoint `baseline-0.1` e
 > inclui os incrementos funcionais da Baseline 0.2 para `TentativaEntrega` e a
-> fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade, além de impedimento externo e revalidação incremental.
+> fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade,
+> impedimento externo/revalidação e fechamento operacional terminal por ausência
+> ou recusa do destinatário.
 
 Base local: `http://localhost:3000/api`
 
@@ -627,10 +629,12 @@ semanticamente iguais; colisão divergente aborta para reconciliação. Timestam
 IDs internos não alteram essa equivalência. UPDATE e DELETE são rejeitados.
 
 Quando `freight_total_cents` é `NULL`, nenhum valor de frete é criado: os efeitos
-sobre o frete ficam indicados em `financial.pending`. Destinatário ausente,
-recusa, endereço incorreto atribuído ao cliente e três códigos inválidos não
-recebem distribuição interna, porque a Baseline 0.1 ainda não a definiu. O mesmo
-vale para o reembolso de cancelamento antes da coleta, que não é inferido pela API.
+sobre o frete ficam indicados em `financial.pending`. O fechamento operacional
+por destinatário ausente ou recusa ainda não aplica os reembolsos e a divisão
+70/25/5 definidos pela Baseline 0.2; esses efeitos pertencem a incremento
+financeiro próprio. Endereço incorreto e três códigos inválidos também não
+recebem distribuição nova nesta etapa. O reembolso de cancelamento antes da
+coleta continua sem ser inferido pela API.
 Se o frete estiver preservado, mas faltar o lançamento de pagamento correspondente,
 a conclusão aborta com reconciliação financeira e não mantém estado, evento ou
 distribuição parciais; esse caso não é apresentado como frete indisponível.
@@ -675,7 +679,7 @@ O objeto `quote` devolve `weightKg`, `distanceKm` e `estimatedMinutes`; a taxa d
 
 ## Incremento de impedimento externo e revalidação (0.2)
 
-Os campos `status` existentes foram preservados. Pedidos e Entregas incluem `officialStatus` derivado. As projeções operacionais de Entrega incluem também `orderOfficialStatus`; o objeto `delivery` da resposta de pagamento segue o contrato específico acima e não inclui esse campo. O novo estado persistido é `awaiting_revalidation`, projetado como `AGUARDANDO_REVALIDACAO`. Não há coluna duplicada nem migração global de estados. `returned` sem semântica inequívoca permanece sem tradução oficial (`null`); o evento explícito `client_cancelled_after_pickup` projeta Pedido `CANCELADO` e Entrega `CANCELADA` após retorno confirmado. Conclusão normal projeta `CONCLUIDO/FINALIZADA`. Isso não declara implementados estados ou financeiro completos da 0.2.
+Os campos `status` existentes foram preservados. Pedidos e Entregas incluem `officialStatus` derivado. As projeções operacionais de Entrega incluem também `orderOfficialStatus`; o objeto `delivery` da resposta de pagamento segue o contrato específico acima e não inclui esse campo. O novo estado persistido é `awaiting_revalidation`, projetado como `AGUARDANDO_REVALIDACAO`. Não há coluna duplicada nem migração global de estados. `returned` sem semântica inequívoca permanece sem tradução oficial (`null`); o evento explícito `client_cancelled_after_pickup` projeta Pedido `CANCELADO` e Entrega `CANCELADA` após retorno confirmado. Os eventos `recipient_absent` e `recipient_refused` projetam, somente quando o estado persistido já é `returned`, Pedido `ENCERRADO` e Entrega `NAO_REALIZADA`. Conclusão normal projeta `CONCLUIDO/FINALIZADA`. Isso não declara implementados estados ou financeiro completos da 0.2.
 
 ### Registrar impedimento no destino
 
@@ -710,3 +714,32 @@ O motoboy usa o endpoint existente `report-return`; a empresa usa `confirm-retur
 As novas rotas usam `400` para corpo/ID inválido, `401` sem sessão, `403` para papel incorreto, `404` para recurso alheio e `409` para transição/dados legados incompatíveis. Cliente e motoboy não liberam a Entrega. Mensagem de chat não altera estado. Duas liberações concorrentes geram uma única transição; aceite que disputa cedo demais é rejeitado.
 
 A revalidação não altera classificação, financeiro ou código e não cria tentativa. Nova coleta cria a próxima tentativa com contador zero. Painéis mostram o novo estado e bloqueiam ações incompatíveis; os comandos novos estão disponíveis somente via API neste incremento. Cancelamento posterior ao impedimento, erro do ERMES, estados terminais completos e consequências financeiras novas permanecem fora deste incremento.
+
+## Fechamento terminal por ausência ou recusa (0.2)
+
+`recipient_absent` e `recipient_refused` continuam sendo registrados pelo
+motoboy no destino pelo endpoint de ocorrências existente. O registro inicia o
+retorno, mas ainda projeta `RETORNO_AO_ESTABELECIMENTO/CONFIRMADO`: a causa ser
+terminal não encerra a operação antes da devolução física.
+
+Depois de `report-return`, `POST /api/company/deliveries/:id/confirm-return`
+fecha a tentativa como `closed_unsuccessfully`, com `endNature: "terminal"` e
+`endReason` igual ao tipo da ocorrência, remove a atribuição do motoboy, grava
+`returned_at`, mantém o estado legado `returned` e registra `return_confirmed`.
+Nesse ponto, e somente com o evento inequívoco de ausência ou recusa no
+histórico, as projeções passam a `delivery.officialStatus = "NAO_REALIZADA"` e
+`delivery.orderOfficialStatus = "ENCERRADO"`. Detalhes e listagens de cliente e
+empresa, respostas operacionais e o pagamento idempotente usam a mesma resolução
+centralizada. `returned` sem uma das causas reconhecidas continua `null`.
+
+A ocorrência permanece com `responsibility: null` até classificação explícita
+pela empresa; o fechamento não depende dessa classificação. A Entrega terminal
+não pode ser aceita, coletada, confirmada por código ou revalidada, não cria
+outra tentativa nem ciclo de revalidação e mantém o chat somente para leitura
+pelo comportamento já associado a `returned`. Repetições são rejeitadas sem
+duplicar ocorrência, evento ou encerramento. Nenhum reembolso ou distribuição
+financeira nova é criado por este incremento.
+
+`confirmation_failed`, endereço incorreto/erro do ERMES, produto indisponível no
+modelo 0.2 e os efeitos financeiros de ausência/recusa permanecem pendentes para
+incrementos próprios.

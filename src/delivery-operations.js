@@ -57,9 +57,11 @@ export function requireEmptyDeliveryBody(body) {
 
 function findDelivery(id) {
   return db.prepare(`SELECT d.id, d.order_id AS orderId, d.courier_id AS courierId, d.status,
-                            (SELECT event_type FROM delivery_events WHERE delivery_id = d.id
-                              AND event_type IN ('client_cancelled_before_pickup', 'client_cancelled_after_pickup')
-                              ORDER BY id DESC LIMIT 1) AS cancellationEvent,
+                            (SELECT CASE WHEN COUNT(DISTINCT event_type) = 1
+                                      THEN MIN(event_type) END
+                               FROM delivery_events WHERE delivery_id = d.id
+                                AND event_type IN ('client_cancelled_before_pickup', 'client_cancelled_after_pickup',
+                                                   'recipient_absent', 'recipient_refused')) AS terminalEvent,
                             COALESCE((SELECT attempt.invalid_code_attempts
                               FROM delivery_attempts attempt
                               WHERE attempt.delivery_id = d.id
@@ -119,8 +121,8 @@ function publicDelivery(row, {
 } = {}) {
   const delivery = {
     id: row.id, orderId: row.orderId, status: row.status,
-    officialStatus: officialDeliveryStatus(row.status, row.cancellationEvent),
-    orderOfficialStatus: officialOrderStatus(row.orderStatus, row.status, row.cancellationEvent),
+    officialStatus: officialDeliveryStatus(row.status, row.terminalEvent),
+    orderOfficialStatus: officialOrderStatus(row.orderStatus, row.status, row.terminalEvent),
     company: { id: row.companyId, name: row.companyName },
     invalidCodeAttempts: row.invalidCodeAttempts,
     acceptedAt: row.acceptedAt, collectedAt: row.collectedAt, completedAt: row.completedAt,

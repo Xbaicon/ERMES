@@ -60,9 +60,11 @@ function requireValidRecipientSnapshot(value) {
 
 function findDeliveryByOrderId(orderId) {
   const delivery = db.prepare(`SELECT id, order_id AS orderId, courier_id AS courierId, status,
-                                      (SELECT event_type FROM delivery_events WHERE delivery_id = deliveries.id
-                                        AND event_type = 'client_cancelled_after_pickup'
-                                        ORDER BY id DESC LIMIT 1) AS cancellationEvent,
+                                      (SELECT CASE WHEN COUNT(DISTINCT event_type) = 1
+                                                THEN MIN(event_type) END
+                                         FROM delivery_events WHERE delivery_id = deliveries.id
+                                          AND event_type IN ('client_cancelled_after_pickup',
+                                                             'recipient_absent', 'recipient_refused')) AS terminalEvent,
                                       confirmation_code_hash AS confirmationCodeHash,
                                       confirmation_code_ciphertext AS confirmationCodeCiphertext,
                                       created_at AS createdAt
@@ -70,8 +72,8 @@ function findDeliveryByOrderId(orderId) {
   return delivery ? { ...delivery } : null;
 }
 
-function publicDelivery({ confirmationCodeHash, confirmationCodeCiphertext, cancellationEvent, ...delivery }) {
-  return { ...delivery, officialStatus: officialDeliveryStatus(delivery.status, cancellationEvent) };
+function publicDelivery({ confirmationCodeHash, confirmationCodeCiphertext, terminalEvent, ...delivery }) {
+  return { ...delivery, officialStatus: officialDeliveryStatus(delivery.status, terminalEvent) };
 }
 
 const codeUsableStates = new Set([
