@@ -10,7 +10,9 @@ import {
   markOpenDeliveryAttemptReturningInTransaction,
 } from "./delivery-attempts.js";
 import { DELIVERY_EVENT_TYPES, DELIVERY_STATES } from "./deliveries.js";
-import { officialDeliveryStatus, officialOrderStatus } from "./official-statuses.js";
+import {
+  officialDeliveryStatus, officialOrderStatus, terminalDeliveryEvent, hasConfirmationFailureEvidence,
+} from "./official-statuses.js";
 import {
   createDeliveryOccurrenceInTransaction,
   DELIVERY_OCCURRENCE_TYPES,
@@ -56,12 +58,7 @@ export function requireEmptyDeliveryBody(body) {
 }
 
 function findDelivery(id) {
-  return db.prepare(`SELECT d.id, d.order_id AS orderId, d.courier_id AS courierId, d.status,
-                            (SELECT CASE WHEN COUNT(DISTINCT event_type) = 1
-                                      THEN MIN(event_type) END
-                               FROM delivery_events WHERE delivery_id = d.id
-                                AND event_type IN ('client_cancelled_before_pickup', 'client_cancelled_after_pickup',
-                                                   'recipient_absent', 'recipient_refused')) AS terminalEvent,
+  const delivery = db.prepare(`SELECT d.id, d.order_id AS orderId, d.courier_id AS courierId, d.status,
                             COALESCE((SELECT attempt.invalid_code_attempts
                               FROM delivery_attempts attempt
                               WHERE attempt.delivery_id = d.id
@@ -93,6 +90,7 @@ function findDelivery(id) {
                      LEFT JOIN users courier ON courier.id = d.courier_id
                      LEFT JOIN couriers profile ON profile.user_id = d.courier_id
                      WHERE d.id = ?`).get(id) || null;
+  return delivery ? { ...delivery, terminalEvent: terminalDeliveryEvent(db, id) } : null;
 }
 
 function parseJson(value) {
@@ -565,6 +563,12 @@ export function confirmReturn(id, companyUserId, companyId, body) {
     if (delivery.status !== DELIVERY_STATES.AWAITING_RETURN_CONFIRMATION) {
       throw deliveryError("A entrega não está aguardando confirmação de retorno.");
     }
+    if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.CONFIRMATION_FAILED) {
+      requireCompanyParticipant(companyUserId, companyId);
+      if (!hasConfirmationFailureEvidence(db, id)) {
+        throw deliveryError("O retorno exige reconciliação de tentativa, contador, ocorrência e histórico.");
+      }
+    }
     if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.EXTERNAL_OBSTRUCTION) {
       requireCompanyParticipant(companyUserId, companyId);
       const attempt = findOpenDeliveryAttempt(db, id);
@@ -598,6 +602,10 @@ export function confirmReturn(id, companyUserId, companyId, body) {
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, returned_at = CURRENT_TIMESTAMP
                   WHERE id = ?`).run(DELIVERY_STATES.RETURNED, id);
       event(id, companyUserId, DELIVERY_EVENT_TYPES.RETURN_CONFIRMED, { reason: delivery.returnReason });
+      if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.CONFIRMATION_FAILED
+        && !hasConfirmationFailureEvidence(db, id, true)) {
+        throw deliveryError("O fechamento exige reconciliação da evidência terminal.");
+      }
     }
     return companyView(requireDelivery(id));
   });

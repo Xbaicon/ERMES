@@ -98,6 +98,12 @@ test("acompanhamento operacional completo de entregas", async (context) => {
   }
   const post = (cookie, id, action, body = {}) => request(`/api/courier/deliveries/${id}/${action}`,
     { cookie, method: "POST", body });
+  async function failConfirmation(item) {
+    const wrong = item.confirmationCode === "111111" ? "222222" : "111111";
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", { code: wrong })).status, 422);
+    }
+  }
   const storedAttempts = (deliveryId) => db.prepare(`SELECT id, delivery_id AS deliveryId,
     attempt_number AS attemptNumber, courier_id AS courierId, status,
     invalid_code_attempts AS invalidCodeAttempts,
@@ -410,6 +416,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 409);
       assert.equal((await post(cookies.courier1, item.delivery.id, "report-return")).status, 200);
       assert.equal((await post(cookies.courier1, item.delivery.id, "collect")).status, 409);
+      assert.equal((await post(cookies.courier1, item.delivery.id, "report-return")).status, 409);
       const confirmed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`,
         { cookie: cookies.company1, method: "POST", body: {} });
       assert.equal(confirmed.status, 200);
@@ -515,8 +522,12 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     }
     const wrongCodes = ["111111", "222222", "333333", "444444"]
       .filter((code) => code !== item.confirmationCode).slice(0, 3);
-    for (const code of wrongCodes) {
+    for (const [index, code] of wrongCodes.entries()) {
       assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", { code })).status, 422);
+      const attempt = storedAttempts(item.delivery.id)[0];
+      assert.equal(attempt.invalidCodeAttempts, index + 1);
+      assert.equal(attempt.status, index === 2 ? "returning" : "active");
+      assert.equal(attempt.endedAt, null);
     }
     assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(item.delivery.id).status, "returning");
     const returningAttempt = storedAttempts(item.delivery.id)[0];
@@ -657,20 +668,23 @@ test("acompanhamento operacional completo de entregas", async (context) => {
   });
 
   await context.test("ocorrências definidas no destino exigem retorno confirmado pela empresa", async () => {
-    for (const type of ["recipient_absent", "recipient_refused"]) {
+    for (const type of ["recipient_absent", "recipient_refused", "confirmation_failed"]) {
       const item = createDelivery(company1, client1, true);
-      const financialBefore = db.prepare(`SELECT COUNT(*) AS total FROM financial_entries
-        WHERE delivery_id = ?`).get(item.delivery.id).total;
+      const financialBefore = db.prepare("SELECT * FROM financial_entries ORDER BY id").all();
       for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
         assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
       }
-      const occurrence = await post(cookies.courier1, item.delivery.id, "occurrences", { type });
-      assert.equal(occurrence.status, 200);
-      const returningDelivery = (await occurrence.json()).delivery;
+      if (type === "confirmation_failed") await failConfirmation(item);
+      else assert.equal((await post(cookies.courier1, item.delivery.id, "occurrences", { type })).status, 200);
+      const returningDelivery = (await (await request(`/api/company/deliveries/${item.delivery.id}`, {
+        cookie: cookies.company1,
+      })).json()).delivery;
       assert.equal(returningDelivery.status, "returning");
       assert.equal(returningDelivery.officialStatus, "RETORNO_AO_ESTABELECIMENTO");
       assert.equal(returningDelivery.orderOfficialStatus, "CONFIRMADO");
-      assert.equal((await post(cookies.courier1, item.delivery.id, "occurrences", { type })).status, 409);
+      assert.equal((await post(cookies.courier1, item.delivery.id,
+        type === "confirmation_failed" ? "confirm" : "occurrences",
+        type === "confirmation_failed" ? { code: item.confirmationCode } : { type })).status, 409);
       assert.equal(storedOccurrences(item.delivery.id).length, 1);
       const returningAttempt = storedAttempts(item.delivery.id)[0];
       assert.equal(returningAttempt.status, "returning");
@@ -682,6 +696,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       assert.equal(reportedDelivery.status, "awaiting_return_confirmation");
       assert.equal(reportedDelivery.officialStatus, "RETORNO_AO_ESTABELECIMENTO");
       assert.equal(reportedDelivery.orderOfficialStatus, "CONFIRMADO");
+      assert.equal((await post(cookies.courier1, item.delivery.id, "report-return")).status, 409);
       const confirmed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`,
         { cookie: cookies.company1, method: "POST", body: {} });
       assert.equal(confirmed.status, 200);
@@ -763,13 +778,208 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
         WHERE delivery_id = ? AND event_type = 'return_confirmed'`)
         .get(item.delivery.id).total, 1);
-      assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM financial_entries
-        WHERE delivery_id = ?`).get(item.delivery.id).total, financialBefore);
+      assert.deepEqual(db.prepare("SELECT * FROM financial_entries ORDER BY id").all(), financialBefore);
       const currentCourier = await (await request("/api/courier/deliveries/current", {
         cookie: cookies.courier1,
       })).json();
       assert.equal(currentCourier.delivery, null);
     }
+  });
+
+  await context.test("falha de código terminal mantém classificação separada e ledger intacto", async () => {
+    for (const responsibility of ["CLIENTE", "MOTOBOY", "SISTEMA", "INDEFINIDO"]) {
+      const item = createDelivery(company1, client1, true);
+      for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+        assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
+      }
+      const ledger = db.prepare("SELECT * FROM financial_entries ORDER BY id").all();
+      const code = { ...db.prepare(`SELECT confirmation_code_hash, confirmation_code_ciphertext
+        FROM deliveries WHERE id = ?`).get(item.delivery.id) };
+      await failConfirmation(item);
+      const [occurrence] = storedOccurrences(item.delivery.id);
+      assert.equal(occurrence.responsibility, null);
+      assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+        cookie: cookies.company1, method: "POST", body: {},
+      })).status, 409);
+      await post(cookies.courier1, item.delivery.id, "report-return");
+      assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+        cookie: cookies.company1, method: "POST", body: {},
+      })).status, 200);
+      assert.equal(storedOccurrences(item.delivery.id)[0].responsibility, null);
+      const attempt = storedAttempts(item.delivery.id);
+      const delivery = { ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(item.delivery.id) };
+      const classify = (value) => request(`/api/company/delivery-occurrences/${occurrence.id}/classify`, {
+        cookie: cookies.company1, method: "POST", body: { responsibility: value },
+      });
+      assert.equal((await classify(responsibility)).status, 200);
+      assert.equal(storedOccurrences(item.delivery.id)[0].responsibility, responsibility);
+      assert.equal((await classify("INDEFINIDO")).status, 409);
+      assert.deepEqual(storedAttempts(item.delivery.id), attempt);
+      assert.deepEqual({ ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(item.delivery.id) }, delivery);
+      assert.deepEqual({ ...db.prepare(`SELECT confirmation_code_hash, confirmation_code_ciphertext
+        FROM deliveries WHERE id = ?`).get(item.delivery.id) }, code);
+      const detail = (await (await request(`/api/company/deliveries/${item.delivery.id}`, {
+        cookie: cookies.company1,
+      })).json()).delivery;
+      assert.equal(detail.officialStatus, "NAO_REALIZADA");
+      assert.equal(detail.orderOfficialStatus, "ENCERRADO");
+      assert.notEqual(detail.orderOfficialStatus, "RECUSADO");
+      assert.deepEqual(db.prepare("SELECT * FROM financial_entries ORDER BY id").all(), ledger);
+    }
+  });
+
+  await context.test("projeções legadas de falha de código exigem evidência coerente", async () => {
+    const mutations = [
+      "UPDATE delivery_attempts SET invalid_code_attempts = 2 WHERE delivery_id = ?",
+      "UPDATE delivery_occurrences SET delivery_attempt_id = NULL WHERE delivery_id = ?",
+      "DELETE FROM delivery_occurrences WHERE delivery_id = ?",
+      "DELETE FROM delivery_attempts WHERE delivery_id = ?",
+      "UPDATE deliveries SET return_reported_at = NULL WHERE id = ?",
+      "UPDATE delivery_events SET details_json = '{}' WHERE delivery_id = ? AND event_type = 'confirmation_failed'",
+      "DELETE FROM delivery_events WHERE delivery_id = ? AND event_type = 'confirmation_code_invalid'",
+      "INSERT INTO delivery_events (delivery_id, event_type) VALUES (?, 'recipient_absent')",
+    ];
+    for (const mutation of mutations) {
+      const item = createDelivery(company1, client1, true);
+      for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+        assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
+      }
+      await failConfirmation(item);
+      await post(cookies.courier1, item.delivery.id, "report-return");
+      const ledger = db.prepare("SELECT * FROM financial_entries ORDER BY id").all();
+      assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+        cookie: cookies.company1, method: "POST", body: {},
+      })).status, 200);
+      db.exec("SAVEPOINT ambiguous_legacy_confirmation");
+      try {
+        // Simula banco legado inconsistente apenas dentro do savepoint; restaura
+        // dados e triggers no finally, sem alterar as proteções do fluxo normal.
+        db.exec(`DROP TRIGGER delivery_occurrences_report_immutable;
+          DROP TRIGGER delivery_occurrences_delete_forbidden;`);
+        if (mutation.startsWith("DELETE FROM delivery_attempts")) {
+          db.prepare("DELETE FROM delivery_occurrences WHERE delivery_id = ?").run(item.delivery.id);
+        }
+        db.prepare(mutation).run(item.delivery.id);
+        const detail = (await (await request(`/api/client/deliveries/${item.delivery.id}`, {
+          cookie: cookies.client1,
+        })).json()).delivery;
+        assert.equal(detail.officialStatus, null, mutation);
+        assert.equal(detail.orderOfficialStatus, null, mutation);
+        const order = (await (await request(`/api/client/orders/confirmed/${item.delivery.orderId}`, {
+          cookie: cookies.client1,
+        })).json()).order;
+        assert.equal(order.officialStatus, null, mutation);
+        assert.equal(createDeliveryForEligibleOrderInTransaction(item.delivery.orderId)
+          .delivery.officialStatus, null, mutation);
+      } finally {
+        db.exec("ROLLBACK TO ambiguous_legacy_confirmation; RELEASE ambiguous_legacy_confirmation");
+      }
+      assert.deepEqual(db.prepare("SELECT * FROM financial_entries ORDER BY id").all(), ledger);
+    }
+  });
+
+  await context.test("evidências inválidas rejeitam confirm-return sem qualquer mutação", async (cases) => {
+    const { hasConfirmationFailureEvidence } = await import("../src/official-statuses.js");
+    const snapshots = () => Object.fromEntries([
+      "orders", "deliveries", "delivery_attempts", "delivery_occurrences", "delivery_events",
+      "delivery_revalidations", "financial_entries",
+    ].map((table) => [table, db.prepare(`SELECT * FROM ${table} ORDER BY id`).all()]));
+    // Corrupções legadas são montadas fora da requisição. As proteções do banco
+    // são restauradas antes de executar a operação real sob teste.
+    const editLegacyFixture = (work) => transaction(() => {
+      const triggers = db.prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger'
+        AND name IN ('delivery_occurrences_report_immutable',
+          'delivery_occurrences_delete_forbidden', 'delivery_occurrences_attempt_update')`).all();
+      for (const trigger of triggers) db.exec(`DROP TRIGGER ${trigger.name}`);
+      work();
+      for (const trigger of triggers) db.exec(trigger.sql);
+    });
+    const mutations = [
+      ["contador menor que três", (id) => db.prepare("UPDATE delivery_attempts SET invalid_code_attempts=2 WHERE delivery_id=?").run(id)],
+      ["ocorrência ausente", (id) => db.prepare("DELETE FROM delivery_occurrences WHERE delivery_id=?").run(id)],
+      ["tentativa ausente", (id) => {
+        db.prepare("UPDATE delivery_occurrences SET delivery_attempt_id=NULL WHERE delivery_id=?").run(id);
+        db.prepare("DELETE FROM delivery_attempts WHERE delivery_id=?").run(id);
+      }],
+      ["ocorrência ligada a outra tentativa", (id) => {
+        const result = db.prepare(`INSERT INTO delivery_attempts
+          (delivery_id,attempt_number,courier_id,status,ended_at,end_reason,end_nature)
+          VALUES (?,2,?,'closed_unsuccessfully',CURRENT_TIMESTAMP,'courier_failure_after_pickup','recoverable')`).run(id,courier1);
+        db.prepare("UPDATE delivery_occurrences SET delivery_attempt_id=? WHERE delivery_id=?").run(result.lastInsertRowid,id);
+      }],
+      ["ocorrência ligada a outra Entrega", (id, otherId) => db.prepare("UPDATE delivery_occurrences SET delivery_id=? WHERE delivery_id=?").run(otherId,id)],
+      ["tentativa incompatível", (id) => db.prepare("UPDATE delivery_attempts SET status='active' WHERE delivery_id=?").run(id)],
+      ["retorno reportado no futuro", (id) => db.prepare("UPDATE delivery_events SET occurred_at=datetime('now','+1 day') WHERE delivery_id=? AND event_type='return_reported'").run(id)],
+      ["retorno anterior à falha", (id) => db.prepare("UPDATE delivery_events SET occurred_at='2000-01-01 00:00:00' WHERE delivery_id=? AND event_type='return_reported'").run(id)],
+      ["chegada posterior às validações", (id) => db.prepare("UPDATE delivery_events SET occurred_at=datetime('now','+1 day') WHERE delivery_id=? AND event_type='courier_arrived_at_destination'").run(id)],
+      ["primeiro erro posterior ao segundo", (id) => db.prepare("UPDATE delivery_events SET occurred_at=datetime('now','+1 day') WHERE delivery_id=? AND event_type='confirmation_code_invalid' AND id=(SELECT MIN(id) FROM delivery_events WHERE delivery_id=? AND event_type='confirmation_code_invalid')").run(id,id)],
+      ["falha anterior aos erros", (id) => db.prepare("UPDATE delivery_events SET occurred_at='2000-01-01 00:00:00' WHERE delivery_id=? AND event_type='confirmation_failed'").run(id)],
+      ["timestamp impossível", (id) => db.prepare("UPDATE delivery_events SET occurred_at='2026-02-30 10:00:00' WHERE delivery_id=? AND event_type='return_reported'").run(id)],
+      ["histórico contraditório", (id) => db.prepare("INSERT INTO delivery_events(delivery_id,event_type) VALUES (?,'recipient_absent')").run(id)],
+      ["evento de falha incompatível", (id) => db.prepare("UPDATE delivery_events SET details_json='{}' WHERE delivery_id=? AND event_type='confirmation_failed'").run(id)],
+      ["retorno por outro motoboy", (id) => db.prepare("UPDATE delivery_events SET actor_user_id=? WHERE delivery_id=? AND event_type='return_reported'").run(courier2,id)],
+      ["Pedido inelegível", (id) => db.prepare("UPDATE orders SET status='draft' WHERE id=(SELECT order_id FROM deliveries WHERE id=?)").run(id)],
+    ];
+    for (const [name, mutate] of mutations) await cases.test(name, async () => {
+      const item = createDelivery(company1, client1, true);
+      const other = createDelivery();
+      for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+        assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
+      }
+      await failConfirmation(item);
+      assert.equal((await post(cookies.courier1, item.delivery.id, "report-return")).status, 200);
+      const original = snapshots();
+      try {
+        editLegacyFixture(() => mutate(item.delivery.id, other.delivery.id));
+        const before = snapshots();
+        assert.equal(hasConfirmationFailureEvidence(db,item.delivery.id), false);
+        const response = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+          cookie: cookies.company1, method: "POST", body: {},
+        });
+        assert.equal(response.status, 409);
+        assert.deepEqual(snapshots(), before);
+        const stored = db.prepare("SELECT status,returned_at FROM deliveries WHERE id=?").get(item.delivery.id);
+        assert.equal(stored.status,"awaiting_return_confirmation");
+        assert.equal(stored.returned_at,null);
+        if (name === "retorno reportado no futuro") {
+          const [attempt] = storedAttempts(item.delivery.id);
+          assert.equal(attempt.status,"returning");
+          assert.equal(attempt.endedAt,null);
+          assert.equal(attempt.endNature,null);
+          assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
+            WHERE delivery_id=? AND event_type='return_confirmed'`).get(item.delivery.id).total,0);
+        }
+        const detail = (await (await request(`/api/company/deliveries/${item.delivery.id}`, {
+          cookie: cookies.company1,
+        })).json()).delivery;
+        assert.equal(detail.officialStatus,"RETORNO_AO_ESTABELECIMENTO");
+        if (name !== "Pedido inelegível") assert.equal(detail.orderOfficialStatus,"CONFIRMADO");
+      } finally {
+        editLegacyFixture(() => {
+          const ids = [item.delivery.id,other.delivery.id];
+          for (const table of ["delivery_occurrences","delivery_events","delivery_attempts"]) {
+            db.prepare(`DELETE FROM ${table} WHERE delivery_id IN (?,?)`).run(...ids);
+          }
+          for (const table of ["delivery_attempts","delivery_occurrences","delivery_events"]) {
+            for (const row of original[table].filter(row=>ids.includes(row.delivery_id))) {
+              const columns=Object.keys(row);
+              db.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(()=>'?').join(',')})`).run(...Object.values(row));
+            }
+          }
+          db.prepare("UPDATE orders SET status='confirmed' WHERE id=?").run(item.delivery.orderId);
+        });
+      }
+      assert.equal(hasConfirmationFailureEvidence(db,item.delivery.id), true);
+      const closed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+        cookie: cookies.company1, method: "POST", body: {},
+      });
+      assert.equal(closed.status,200);
+      const delivery=(await closed.json()).delivery;
+      assert.equal(delivery.officialStatus,"NAO_REALIZADA");
+      assert.equal(delivery.orderOfficialStatus,"ENCERRADO");
+      assert.equal(hasConfirmationFailureEvidence(db,item.delivery.id,true), true);
+      assert.deepEqual(db.prepare("SELECT * FROM financial_entries ORDER BY id").all(),original.financial_entries);
+    });
   });
 
   await context.test("histórico terminal ambíguo não produz projeção nem reescreve dados", async () => {
@@ -1082,12 +1292,13 @@ test("acompanhamento operacional completo de entregas", async (context) => {
   });
 
   await context.test("falha no evento final desfaz encerramento terminal do retorno", async () => {
-    for (const type of ["recipient_absent", "recipient_refused"]) {
+    for (const type of ["recipient_absent", "recipient_refused", "confirmation_failed"]) {
       const item = createDelivery();
       for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
         await post(cookies.courier1, item.delivery.id, action);
       }
-      await post(cookies.courier1, item.delivery.id, "occurrences", { type });
+      if (type === "confirmation_failed") await failConfirmation(item);
+      else await post(cookies.courier1, item.delivery.id, "occurrences", { type });
       await post(cookies.courier1, item.delivery.id, "report-return");
       const before = { ...db.prepare(`SELECT status, courier_id AS courierId,
         returned_at AS returnedAt FROM deliveries WHERE id = ?`).get(item.delivery.id) };

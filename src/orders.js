@@ -1,4 +1,4 @@
-import { officialOrderStatus } from "./official-statuses.js";
+import { officialOrderStatus, terminalDeliveryEvent } from "./official-statuses.js";
 import { db, transaction } from "./database.js";
 import { MAX_ORDER_WEIGHT_KG } from "./freight.js";
 import { createDeliveryForEligibleOrderInTransaction } from "./delivery-creation.js";
@@ -8,13 +8,9 @@ import { orderRefundSummary, recordPaymentInTransaction } from "./finance.js";
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
 function projectedOfficialOrderStatus(order) {
-  const delivery = db.prepare(`SELECT d.status,
-    (SELECT CASE WHEN COUNT(DISTINCT event_type) = 1 THEN MIN(event_type) END
-       FROM delivery_events WHERE delivery_id = d.id
-        AND event_type IN ('client_cancelled_before_pickup', 'client_cancelled_after_pickup',
-                           'recipient_absent', 'recipient_refused')) AS terminalEvent
-    FROM deliveries d WHERE order_id = ?`).get(order.id);
-  return officialOrderStatus(order.status, delivery?.status, delivery?.terminalEvent);
+  const delivery = db.prepare("SELECT id, status FROM deliveries WHERE order_id = ?").get(order.id);
+  return officialOrderStatus(order.status, delivery?.status,
+    delivery ? terminalDeliveryEvent(db, delivery.id) : null);
 }
 
 function orderError(message, statusCode = 400) {

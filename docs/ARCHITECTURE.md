@@ -7,7 +7,7 @@ O checkpoint `baseline-0.1` permanece congelado. O desenvolvimento da Baseline
 0.1 → 0.2. Este documento inclui os incrementos de `TentativaEntrega` e da
 fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade,
 o fluxo de impedimento externo com revalidação pela empresa e o fechamento
-operacional terminal por ausência ou recusa do destinatário.
+operacional terminal por ausência, recusa do destinatário e três códigos inválidos.
 Isso não declara implementado o ciclo completo da 0.2 nem altera a baseline
 normativa. MySQL permanece uma etapa técnica posterior e não é gate para as
 funcionalidades da 0.2.
@@ -41,7 +41,7 @@ Não há dependências npm externas nesta etapa.
 - A confirmação da coleta executa em um único `BEGIN IMMEDIATE`: valida a Entrega atribuída em `awaiting_pickup`, verifica a ausência de tentativa aberta, calcula `MAX(attempt_number) + 1`, insere a tentativa, muda a Entrega para `in_transit`, grava `collected_at` e registra `order_collected`. Qualquer falha desfaz todos esses efeitos.
 - `UNIQUE(delivery_id, attempt_number)` protege a sequência. O índice parcial único `one_open_attempt_per_delivery`, para `active` e `returning`, protege no banco a regra de uma tentativa aberta por Entrega; a aplicação também verifica a regra dentro da transação. Uma futura mudança de banco deverá reproduzir essa invariante com mecanismo equivalente.
 - Código válido muda a tentativa ativa para `completed` e grava `ended_at` na mesma transação que conclui a Entrega, registra o evento e executa o financeiro existente. O código de confirmação, seu hash e sua representação cifrada continuam exclusivamente em `deliveries`.
-- Os fluxos de retorno mudam a tentativa aberta para `returning` e a encerram somente na confirmação física do retorno: `recoverable` para falha do motoboy após coleta e `terminal` para ausência, recusa, terceira validação inválida e cancelamento pós-coleta. Ausência e recusa, quando acompanhadas do estado final legado `returned`, projetam `NAO_REALIZADA/ENCERRADO`; não geram nova tentativa nem revalidação e não presumem responsabilidade. A terceira validação inválida cria ocorrência, mas suas consequências oficiais continuam fora deste incremento. `address_problem` genérico continua rejeitado antes de qualquer mutação até existir o fluxo tipado de evidências e revalidação que permita classificar sua causa.
+- Os fluxos de retorno mudam a tentativa aberta para `returning` e a encerram somente na confirmação física do retorno: `recoverable` para falha do motoboy após coleta e `terminal` para ausência, recusa, terceira validação inválida e cancelamento pós-coleta. Ausência e recusa, quando acompanhadas do estado final legado `returned`, projetam `NAO_REALIZADA/ENCERRADO`; não geram nova tentativa nem revalidação e não presumem responsabilidade. A terceira validação inválida cria ocorrência sem responsabilidade presumida; após retorno confirmado e evidência coerente, projeta `NAO_REALIZADA/ENCERRADO`, sem financeiro novo. `address_problem` genérico continua rejeitado antes de qualquer mutação até existir o fluxo tipado de evidências e revalidação que permita classificar sua causa.
 - A criação da tentativa valida, por consultas portáveis, número inteiro positivo gerado internamente, papel `courier`, empresa da Entrega e atribuição atual. A aplicação não oferece alteração genérica de identidade, número, motoboy ou início da tentativa.
 - Os detalhes de Entrega projetam o histórico `attempts` de forma aditiva. Listagens, rotas e interface visual permanecem inalteradas.
 - `src/finance.js` concentra as regras e o livro-razão financeiro. `financial_entries` registra lançamentos append-only de pagamento, reembolso e distribuição por componente (`products` ou `freight`), parte relacionada, motivo, Pedido, Entrega, horário e chave idempotente única. Triggers rejeitam UPDATE, DELETE, over-refund, valores fora do inteiro seguro, relações divergentes e combinações incompatíveis de tipo, componente e beneficiário. Colisões de chave comparam o conteúdo financeiro relevante e exigem reconciliação quando divergentes. As transições operacionais chamam essas regras dentro da mesma transação SQLite; falha financeira desfaz também estado e evento.
@@ -110,7 +110,7 @@ histórico e referência para comportamentos herdados.
 
 ## Estados oficiais e revalidação incremental
 
-`src/official-statuses.js` centraliza os nomes oficiais e projeta os valores legados, sem armazenar uma segunda fonte de verdade. Pedidos continuam `draft|confirmed`; Entregas adicionam apenas `awaiting_revalidation`. A projeção `officialStatus` de Pedido consulta a Entrega e exige evidência histórica explícita para os resultados terminais. `returned + client_cancelled_after_pickup` permanece `CANCELADA/CANCELADO`; `returned + recipient_absent|recipient_refused` passa a `NAO_REALIZADA/ENCERRADO`. `returned` não é convertido globalmente: quando falta causa comprovada a projeção é `null`. `AGUARDANDO_CONFIRMACAO` de Pedido, `RECUSADO` e os demais cenários terminais ainda não receberam operações novas.
+`src/official-statuses.js` centraliza os nomes oficiais e projeta os valores legados, sem armazenar uma segunda fonte de verdade. Pedidos continuam `draft|confirmed`; Entregas adicionam apenas `awaiting_revalidation`. A projeção `officialStatus` de Pedido consulta a Entrega e exige evidência histórica explícita para os resultados terminais. `returned + client_cancelled_after_pickup` permanece `CANCELADA/CANCELADO`; `returned + recipient_absent|recipient_refused` e `confirmation_failed` com evidência coerente passam a `NAO_REALIZADA/ENCERRADO`. `returned` não é convertido globalmente: quando falta causa comprovada a projeção é `null`. `AGUARDANDO_CONFIRMACAO` de Pedido, `RECUSADO` e os demais cenários terminais ainda não receberam operações novas.
 
 No fluxo de ausência/recusa, a ocorrência e a mudança para retorno continuam na
 transação original. A confirmação empresarial de recebimento fecha a tentativa
@@ -144,3 +144,25 @@ financeiras.
 `src/revalidation-schema.js` amplia o CHECK de tipos de ocorrência via reconstrução transacional: cria tabela temporária, copia dados mantendo IDs, remove a anterior, renomeia e recria os índices/triggers preservados. FKs ficam ligadas; `foreign_key_check` é obrigatório antes do commit. O teste usa `tests/fixtures/revalidation-legacy.sql`, snapshot relevante do schema real da PR #22, e induz falha após cópia/DROP/RENAME, prova rollback integral e repete a evolução no mesmo banco. A reconstrução só é feita para o CHECK anterior conhecido; não há backfill de ocorrências, tentativas ou revalidações.
 
 O painel mostra a espera sem oferecer aceite/cancelamento incompatível. A revalidação e o registro específico têm API, sem formulário completo. O erro corrigível do ERMES ainda exige endereço originalmente informado e apresentado, evidências de divergência/correção e disponibilidade do cliente; esses dados não são inventados. `address_problem` segue bloqueado. Cancelamento posterior e financeiro desse cenário ficam para incremento próprio; nenhum legado é convertido para simular essas regras.
+
+
+### Fechamento de `confirmation_failed`
+
+`terminalDeliveryEvent` em `src/official-statuses.js` resolve a evidência para
+operações, consultas de Pedido e criação/pagamento idempotente. A projeção pura
+reconhece `confirmation_failed` somente em `returned`. Para a evidência persistida,
+`hasConfirmationFailureEvidence` exige tentativa mais recente com contador três,
+ocorrência única vinculada à tentativa/motoboy, sequência das três validações e
+retorno reportado. O fechamento valida essa evidência dentro da transação; a
+projeção pós-fechamento exige também tentativa encerrada terminalmente e evento
+empresarial de recebimento coerente. Histórico contraditório ou incompleto não
+produz projeção terminal nem backfill.
+
+O terceiro erro inicia retorno e bloqueia conclusão, mas a custódia permanece
+aberta até confirmação física pela empresa. O fechamento atômico já existente
+encerra a tentativa, limpa atribuição, grava `returned_at`, `returned` e
+`return_confirmed`; falha no evento restaura integralmente o estado anterior.
+Não cria tentativa nova, revalidação nem código novo. A classificação é separada
+e não é requisito para terminalidade; `responsibility` permanece `NULL` até
+classificação explícita. O ledger não é alterado, e os efeitos financeiros desse
+cenário permanecem para incremento próprio.
