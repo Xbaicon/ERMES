@@ -1,5 +1,6 @@
 import { db, transaction } from "./database.js";
 import { DELIVERY_EVENT_TYPES } from "./deliveries.js";
+import { hasConfirmationFailureEvidence } from "./official-statuses.js";
 
 export const DELIVERY_OCCURRENCE_TYPES = Object.freeze({
   COURIER_FAILURE_BEFORE_PICKUP: "courier_failure_before_pickup",
@@ -147,6 +148,15 @@ export function classifyDeliveryOccurrence(occurrenceId, classifierUserId, compa
       WHERE occurrence.id = ? AND orders.company_id = ?`).get(occurrenceId, companyId);
     if (!occurrence) throw occurrenceError("Ocorrência não encontrada.", 404);
     if (occurrence.responsibility !== null) throw occurrenceError("A ocorrência já foi classificada.");
+
+    if (occurrence.type === DELIVERY_OCCURRENCE_TYPES.CONFIRMATION_FAILED) {
+      if (classification.responsibility === "EMPRESA") {
+        throw occurrenceError("A responsabilidade EMPRESA não é válida para falha após três códigos inválidos.", 400);
+      }
+      if (!hasConfirmationFailureEvidence(db, occurrence.deliveryId, true)) {
+        throw occurrenceError("A ocorrência só pode ser classificada após retorno físico confirmado e evidência coerente; reconcilie o ciclo.");
+      }
+    }
 
     const update = db.prepare(`UPDATE delivery_occurrences
       SET responsibility = ?, classified_by_user_id = ?, classified_at = CURRENT_TIMESTAMP,

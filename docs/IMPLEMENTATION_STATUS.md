@@ -117,6 +117,6 @@ permanece pendente.
 - Contadores 1 e 2 mantêm a operação; o terceiro erro mantém contador 3, cria uma única ocorrência `confirmation_failed` com responsabilidade `NULL` e inicia retorno obrigatório.
 - Durante retorno e espera de recebimento: `RETORNO_AO_ESTABELECIMENTO/CONFIRMADO`, tentativa `returning`, sem encerramento definitivo.
 - Após confirmação empresarial: tentativa `closed_unsuccessfully/terminal/confirmation_failed`, Entrega legada `returned`, projeções `NAO_REALIZADA/ENCERRADO`, sem nova tentativa, aceite, coleta, confirmação ou revalidação.
-- Classificação explícita continua disponível e separada; não altera estados, contador, código nem financeiro. Não há presunção de culpa do cliente.
+- Classificação explícita de `confirmation_failed` exige retorno físico confirmado e evidência terminal coerente; antes disso ou com histórico inconsistente retorna `409`. Aceita somente `CLIENTE`, `MOTOBOY`, `SISTEMA` e `INDEFINIDO`; `EMPRESA` retorna `400` nesse cenário e permanece disponível globalmente para outras ocorrências. Não altera estados, contador, código nem financeiro. Não há presunção de culpa do cliente.
 - Operações, Pedido e pagamento idempotente compartilham validação de evidência. Dados legados ambíguos não recebem inferência; inconsistências no fechamento exigem reconciliação. Não há migração nem backfill.
 - Repetições não duplicam ocorrência/eventos. Falha induzida no evento final faz rollback integral. O ledger completo é preservado; consequências financeiras de três códigos inválidos continuam pendentes para incremento separado.
