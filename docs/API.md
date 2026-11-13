@@ -4,7 +4,7 @@
 > inclui os incrementos funcionais da Baseline 0.2 para `TentativaEntrega` e a
 > fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade,
 > impedimento externo/revalidação e fechamento operacional terminal por ausência
-> ou recusa do destinatário.
+> ou recusa do destinatário e três validações inválidas do código.
 
 Base local: `http://localhost:3000/api`
 
@@ -740,6 +740,41 @@ pelo comportamento já associado a `returned`. Repetições são rejeitadas sem
 duplicar ocorrência, evento ou encerramento. Nenhum reembolso ou distribuição
 financeira nova é criado por este incremento.
 
-`confirmation_failed`, endereço incorreto/erro do ERMES, produto indisponível no
-modelo 0.2 e os efeitos financeiros de ausência/recusa permanecem pendentes para
-incrementos próprios.
+Endereço incorreto/erro do ERMES, produto indisponível no modelo 0.2 e os efeitos
+financeiros de ausência/recusa e três códigos inválidos permanecem pendentes
+para incrementos próprios.
+
+## Fechamento terminal após três códigos inválidos (0.2)
+
+O terceiro erro mantém o contador da tentativa em `3`, cria exatamente uma
+ocorrência `confirmation_failed` vinculada à tentativa, com `responsibility: null`,
+e inicia retorno. Não aceita nova validação. Durante `returning` e
+`awaiting_return_confirmation`, a projeção permanece
+`RETORNO_AO_ESTABELECIMENTO/CONFIRMADO`; `report-return` não encerra a tentativa.
+
+Somente `POST /api/company/deliveries/:id/confirm-return`, após retorno reportado,
+encerra a tentativa em `closed_unsuccessfully/terminal/confirmation_failed`,
+grava `returned_at`, remove a atribuição, persiste `returned` e registra
+`return_confirmed`, atomicamente. A resposta e as consultas passam a projetar
+`NAO_REALIZADA/ENCERRADO`, nunca `RECUSADO`. Falha no evento desfaz todo o fechamento.
+
+O fechamento exige tentativa em retorno, contador `3`, ocorrência única vinculada
+a essa tentativa e ao motoboy, histórico coerente das três validações e retorno
+reportado. Inconsistências retornam `409` para reconciliação sem mutação.
+Nas projeções legadas, também se exige encerramento terminal e evento empresarial
+de recebimento coerentes: um evento isolado, tentativa ausente, contador divergente
+ou causas contraditórias não autoriza inferência (`null` para `returned`). Não há
+backfill nem coluna nova. Pedido, Entrega, listagens e pagamento idempotente usam
+a mesma resolução de evidência; o pagamento repetido oculta o código.
+
+A responsabilidade permanece `null` até decisão explícita. A classificação já
+existente continua disponível, incluindo `CLIENTE`, `MOTOBOY`, `SISTEMA` e
+`INDEFINIDO`; segunda classificação retorna `409`. Classificar não altera estados,
+código, contador, tentativa ou ledger. O fechamento independe da classificação.
+
+A Entrega terminal não pode ser aceita, coletada, confirmada ou revalidada;
+não volta a disponível, não cria tentativa #2 nem ciclo de revalidação. Código e
+histórico permanecem no banco. Repetições não duplicam ocorrência, encerramento
+ou evento. Nenhum lançamento, reembolso ou distribuição financeira é criado
+neste incremento; o ledger permanece integralmente preservado. Ausência, recusa
+e cancelamento pós-coleta mantêm seus comportamentos anteriores.

@@ -1,6 +1,6 @@
 import { db, transaction } from "./database.js";
 import { INITIAL_DELIVERY_EVENT_TYPE, INITIAL_DELIVERY_STATE } from "./deliveries.js";
-import { officialDeliveryStatus } from "./official-statuses.js";
+import { officialDeliveryStatus, terminalDeliveryEvent } from "./official-statuses.js";
 import {
   decryptConfirmationCode, encryptConfirmationCode, hashConfirmationCode, newConfirmationCode,
 } from "./security.js";
@@ -60,16 +60,11 @@ function requireValidRecipientSnapshot(value) {
 
 function findDeliveryByOrderId(orderId) {
   const delivery = db.prepare(`SELECT id, order_id AS orderId, courier_id AS courierId, status,
-                                      (SELECT CASE WHEN COUNT(DISTINCT event_type) = 1
-                                                THEN MIN(event_type) END
-                                         FROM delivery_events WHERE delivery_id = deliveries.id
-                                          AND event_type IN ('client_cancelled_after_pickup',
-                                                             'recipient_absent', 'recipient_refused')) AS terminalEvent,
                                       confirmation_code_hash AS confirmationCodeHash,
                                       confirmation_code_ciphertext AS confirmationCodeCiphertext,
                                       created_at AS createdAt
                                FROM deliveries WHERE order_id = ?`).get(orderId);
-  return delivery ? { ...delivery } : null;
+  return delivery ? { ...delivery, terminalEvent: terminalDeliveryEvent(db, delivery.id) } : null;
 }
 
 function publicDelivery({ confirmationCodeHash, confirmationCodeCiphertext, terminalEvent, ...delivery }) {
