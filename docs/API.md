@@ -590,6 +590,13 @@ grava classificador, horário e `occurrence_classified` atomicamente. Uma segund
 classificação retorna `409`. Ocorrência inexistente ou de outra empresa retorna
 `404`; cliente e motoboy recebem `403`.
 
+Para `confirmation_failed`, somente `CLIENTE`, `MOTOBOY`, `SISTEMA` e
+`INDEFINIDO` são aceitas. `EMPRESA` retorna `400` nesse cenário, mas continua
+válida no enum global para outras ocorrências. A classificação exige retorno
+físico confirmado e evidência terminal coerente: durante `returning`, durante
+`awaiting_return_confirmation` ou com ciclo inconsistente retorna `409`, sem
+mutação. A restrição temporal é exclusiva de `confirmation_failed`.
+
 A classificação não altera o estado da Entrega, o ciclo da tentativa nem o
 financeiro. Este incremento não cria interface visual, revalidação nem
 consequências automáticas. O tipo genérico `address_problem` continua retornando
@@ -767,9 +774,10 @@ ou causas contraditórias não autoriza inferência (`null` para `returned`). N�
 backfill nem coluna nova. Pedido, Entrega, listagens e pagamento idempotente usam
 a mesma resolução de evidência; o pagamento repetido oculta o código.
 
-A responsabilidade permanece `null` até decisão explícita. A classificação já
-existente continua disponível, incluindo `CLIENTE`, `MOTOBOY`, `SISTEMA` e
-`INDEFINIDO`; segunda classificação retorna `409`. Classificar não altera estados,
+A responsabilidade permanece `null` até decisão explícita após retorno físico
+confirmado e evidência terminal íntegra. A classificação aceita exclusivamente
+`CLIENTE`, `MOTOBOY`, `SISTEMA` e `INDEFINIDO`; `EMPRESA` retorna `400` e segunda
+classificação retorna `409`. Classificar não altera estados,
 código, contador, tentativa ou ledger. O fechamento independe da classificação.
 
 A Entrega terminal não pode ser aceita, coletada, confirmada ou revalidada;

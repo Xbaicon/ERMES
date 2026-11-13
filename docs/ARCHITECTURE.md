@@ -166,3 +166,12 @@ Não cria tentativa nova, revalidação nem código novo. A classificação é s
 e não é requisito para terminalidade; `responsibility` permanece `NULL` até
 classificação explícita. O ledger não é alterado, e os efeitos financeiros desse
 cenário permanecem para incremento próprio.
+
+A classificação de `confirmation_failed` reutiliza
+`hasConfirmationFailureEvidence(db, deliveryId, true)` dentro da transação de
+classificação, depois de verificar propriedade e ausência de classificação
+anterior. Ciclo não fechado ou inconsistente retorna `409`; `EMPRESA` retorna
+`400` especificamente para esse tipo. As opções válidas são `CLIENTE`, `MOTOBOY`,
+`SISTEMA` e `INDEFINIDO`. O enum global preserva `EMPRESA` e as demais ocorrências
+mantêm seu contrato temporal. UPDATE da classificação e `occurrence_classified`
+continuam atômicos, sem efeitos financeiros ou alteração da terminalidade.

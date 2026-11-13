@@ -798,22 +798,71 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       await failConfirmation(item);
       const [occurrence] = storedOccurrences(item.delivery.id);
       assert.equal(occurrence.responsibility, null);
+      const classify = (value, cookie = cookies.company1) => request(
+        `/api/company/delivery-occurrences/${occurrence.id}/classify`, {
+          cookie, method: "POST", body: {
+            responsibility: value, analysisResult: "Análise após recebimento físico.",
+          },
+        });
+      const snapshot = () => ({
+        occurrence: storedOccurrences(item.delivery.id),
+        delivery: db.prepare("SELECT * FROM deliveries WHERE id = ?").get(item.delivery.id),
+        attempts: storedAttempts(item.delivery.id),
+        events: db.prepare("SELECT * FROM delivery_events WHERE delivery_id = ? ORDER BY id").all(item.delivery.id),
+        ledger: db.prepare("SELECT * FROM financial_entries ORDER BY id").all(),
+      });
+      const rejectUnchanged = async (value, status, cookie = cookies.company1) => {
+        const before = snapshot();
+        const response = await classify(value, cookie);
+        assert.equal(response.status, status);
+        assert.deepEqual(snapshot(), before);
+      };
+      assert.equal(snapshot().delivery.status, "returning");
+      await rejectUnchanged("CLIENTE", 409);
+      await rejectUnchanged("CLIENTE", 401, null);
+      await rejectUnchanged("CLIENTE", 403, cookies.client1);
+      await rejectUnchanged("CLIENTE", 403, cookies.courier1);
+      await rejectUnchanged("CLIENTE", 404, cookies.company2);
       assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
         cookie: cookies.company1, method: "POST", body: {},
       })).status, 409);
       await post(cookies.courier1, item.delivery.id, "report-return");
+      assert.equal(snapshot().delivery.status, "awaiting_return_confirmation");
+      await rejectUnchanged("SISTEMA", 409);
       assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
         cookie: cookies.company1, method: "POST", body: {},
       })).status, 200);
       assert.equal(storedOccurrences(item.delivery.id)[0].responsibility, null);
       const attempt = storedAttempts(item.delivery.id);
       const delivery = { ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(item.delivery.id) };
-      const classify = (value) => request(`/api/company/delivery-occurrences/${occurrence.id}/classify`, {
-        cookie: cookies.company1, method: "POST", body: { responsibility: value },
-      });
+      await rejectUnchanged("EMPRESA", 400);
+      assert.equal(storedOccurrences(item.delivery.id)[0].classifiedByUserId, null);
+      assert.equal(storedOccurrences(item.delivery.id)[0].classifiedAt, null);
+      assert.equal(storedOccurrences(item.delivery.id)[0].analysisResult, null);
+
+      // Estado returned isolado não substitui evidência terminal íntegra.
+      db.prepare("UPDATE deliveries SET return_reported_at = NULL WHERE id = ?").run(item.delivery.id);
+      await rejectUnchanged(responsibility, 409);
+      db.prepare("UPDATE deliveries SET return_reported_at = ? WHERE id = ?")
+        .run(delivery.return_reported_at, item.delivery.id);
+
+      db.exec(`CREATE TRIGGER fail_code_classification BEFORE INSERT ON delivery_events
+        WHEN NEW.event_type = 'occurrence_classified'
+        BEGIN SELECT RAISE(ABORT, 'forced code classification failure'); END;`);
+      try {
+        await rejectUnchanged(responsibility, 500);
+      } finally {
+        db.exec("DROP TRIGGER fail_code_classification");
+      }
       assert.equal((await classify(responsibility)).status, 200);
-      assert.equal(storedOccurrences(item.delivery.id)[0].responsibility, responsibility);
-      assert.equal((await classify("INDEFINIDO")).status, 409);
+      const classified = storedOccurrences(item.delivery.id)[0];
+      assert.equal(classified.responsibility, responsibility);
+      assert.equal(classified.classifiedByUserId, companyUser1);
+      assert.match(classified.classifiedAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+      assert.equal(classified.analysisResult, "Análise após recebimento físico.");
+      assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
+        WHERE delivery_id = ? AND event_type = 'occurrence_classified'`).get(item.delivery.id).total, 1);
+      await rejectUnchanged("INDEFINIDO", 409);
       assert.deepEqual(storedAttempts(item.delivery.id), attempt);
       assert.deepEqual({ ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(item.delivery.id) }, delivery);
       assert.deepEqual({ ...db.prepare(`SELECT confirmation_code_hash, confirmation_code_ciphertext
