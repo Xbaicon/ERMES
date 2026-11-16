@@ -10,6 +10,7 @@ test("chat por Pedido entre cliente e empresa", async (context) => {
   process.env.NODE_ENV = "production";
   const { server, startServer } = await import(`../src/server.js?chat=${Date.now()}`);
   const { db } = await import("../src/database.js");
+  const { recordPaymentInTransaction } = await import("../src/finance.js");
   const { hashConfirmationCode, hashPassword } = await import("../src/security.js");
   await startServer(0);
   context.after(async () => {
@@ -327,6 +328,25 @@ test("chat por Pedido entre cliente e empresa", async (context) => {
     db.prepare(`INSERT INTO delivery_attempts
       (delivery_id, attempt_number, courier_id, status)
       VALUES (?, 1, ?, 'returning')`).run(returnDelivery, courier);
+    const occurrenceId = Number(db.prepare(`INSERT INTO delivery_occurrences
+      (delivery_id, delivery_attempt_id, type, reported_by_user_id)
+      VALUES (?, (SELECT id FROM delivery_attempts WHERE delivery_id = ?), 'recipient_absent', ?)`)
+      .run(returnDelivery, returnDelivery, courier).lastInsertRowid);
+    db.prepare(`INSERT INTO delivery_events(delivery_id, actor_user_id, event_type)
+      VALUES (?, ?, 'order_collected')`).run(returnDelivery, courier);
+    db.prepare(`INSERT INTO delivery_events(delivery_id, actor_user_id, event_type, details_json)
+      VALUES (?, ?, 'recipient_absent', ?)`).run(returnDelivery, courier,
+      JSON.stringify({ occurrenceId }));
+    db.prepare(`INSERT INTO delivery_events(delivery_id, actor_user_id, event_type)
+      VALUES (?, ?, 'return_reported')`).run(returnDelivery, courier);
+    db.prepare(`UPDATE orders SET payment_status = 'paid', payment_paid_at = CURRENT_TIMESTAMP
+      WHERE id = ?`).run(returnOrder);
+    recordPaymentInTransaction(db, {
+      id: returnOrder, clientId: client1, itemsTotalCents: 0,
+      freightTotalCents: null,
+      paymentPaidAt: db.prepare("SELECT payment_paid_at AS value FROM orders WHERE id = ?")
+        .get(returnOrder).value,
+    }, returnDelivery);
     await assertTerminalRace({
       orderId: returnOrder,
       deliveryId: returnDelivery,

@@ -20,11 +20,10 @@ export const FINANCIAL_PARTIES = Object.freeze({
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const PENDING_DISTRIBUTION_REASONS = new Set([
-  "recipient_absent",
-  "recipient_refused",
   "address_problem",
   "confirmation_failed",
 ]);
+const RECIPIENT_TERMINAL_REASONS = new Set(["recipient_absent", "recipient_refused"]);
 const semanticEntryFields = Object.freeze([
   "orderId", "deliveryId", "entryType", "component", "partyType",
   "partyUserId", "partyCompanyId", "amountCents", "reason",
@@ -292,6 +291,140 @@ export function recordClientCancellationAfterPickupInTransaction(database, deliv
   }
 }
 
+function recipientTerminalFailureEvidence(database, delivery, attemptId, reason) {
+  const attempt = database.prepare(`SELECT a.courier_id AS courierId,
+      a.attempt_number AS attemptNumber, a.started_at AS startedAt, a.ended_at AS endedAt,
+      d.collected_at AS collectedAt, d.return_reported_at AS returnReportedAt,
+      d.returned_at AS returnedAt
+    FROM delivery_attempts a
+    JOIN deliveries d ON d.id = a.delivery_id AND d.status = 'returned'
+      AND d.return_reason = ? AND d.returned_at IS NOT NULL
+    JOIN orders o ON o.id = d.order_id AND o.company_id = ?
+    JOIN users courier ON courier.id = a.courier_id AND courier.role = 'courier'
+      AND courier.company_id = o.company_id
+    JOIN couriers profile ON profile.user_id = courier.id
+    WHERE a.id = ? AND a.delivery_id = ? AND a.status = 'closed_unsuccessfully'
+      AND a.end_nature = 'terminal' AND a.end_reason = ?
+      AND EXISTS (SELECT 1 FROM delivery_events event
+        JOIN users company_actor ON company_actor.id = event.actor_user_id
+        WHERE event.delivery_id = d.id AND event.event_type = 'return_confirmed'
+          AND event.occurred_at = d.returned_at AND company_actor.role = 'company'
+          AND company_actor.company_id = o.company_id)
+      AND a.id = (SELECT latest.id FROM delivery_attempts latest
+        WHERE latest.delivery_id = a.delivery_id ORDER BY latest.attempt_number DESC LIMIT 1)`)
+    .get(reason, delivery.companyId, attemptId, delivery.id, reason);
+  const occurrences = database.prepare(`SELECT id, type, reported_by_user_id AS reporterId,
+    reported_at AS reportedAt FROM delivery_occurrences
+    WHERE delivery_id = ? AND delivery_attempt_id = ?
+      AND type IN ('recipient_absent', 'recipient_refused',
+        'confirmation_failed', 'address_problem')`).all(delivery.id, attemptId);
+  const occurrence = occurrences[0];
+  if (!attempt || occurrences.length !== 1 || occurrence.type !== reason
+    || occurrence.reporterId !== attempt.courierId) {
+    throw financialError("A tentativa e a ocorrência terminal exigem reconciliação financeira.");
+  }
+  const events = deliveryEvents(database, delivery.id);
+  const collections = events.filter((event) => event.eventType === "order_collected");
+  const collected = collections.at(-1);
+  const terminalEvents = events.filter((event) => event.eventType === reason);
+  const terminal = terminalEvents[0];
+  const reports = events.filter((event) => event.eventType === "return_reported"
+    && collected && event.id > collected.id);
+  const report = reports[0];
+  const confirmations = events.filter((event) => event.eventType === "return_confirmed"
+    && collected && event.id > collected.id);
+  const confirmation = confirmations[0];
+  const conflictingTerminal = events.some((event) => collected && event.id > collected.id
+    && ["recipient_absent", "recipient_refused", "confirmation_failed",
+      "client_cancelled_after_pickup", "delivery_completed"].includes(event.eventType)
+    && event !== terminal);
+  const details = terminal && eventDetails(terminal);
+  if (collections.length !== attempt.attemptNumber || !collected || !terminal
+    || terminalEvents.length !== 1 || reports.length !== 1 || confirmations.length !== 1
+    || conflictingTerminal || !details
+    || (Object.hasOwn(details, "occurrenceId") && details.occurrenceId !== occurrence.id)
+    || !eventsFollowOrder([collected, terminal, report, confirmation])
+    || !courierEvent(collected, attempt.courierId, delivery.companyId)
+    || !courierEvent(terminal, attempt.courierId, delivery.companyId)
+    || !courierEvent(report, attempt.courierId, delivery.companyId)
+    || !companyEvent(confirmation, delivery.companyId)
+    || !chronological([attempt.startedAt, collected.occurredAt, occurrence.reportedAt,
+      terminal.occurredAt, report.occurredAt, confirmation.occurredAt, attempt.endedAt])
+    || !sameTimestamp(attempt.startedAt, collected.occurredAt)
+    || !sameTimestamp(attempt.collectedAt, collected.occurredAt)
+    || !sameTimestamp(occurrence.reportedAt, terminal.occurredAt)
+    || !sameTimestamp(attempt.returnReportedAt, report.occurredAt)
+    || !sameTimestamp(attempt.returnedAt, confirmation.occurredAt)
+    || !sameTimestamp(attempt.endedAt, confirmation.occurredAt)) {
+    throw financialError("A cadeia de coleta, ocorrência e retorno exige reconciliação financeira.");
+  }
+  return attempt.courierId;
+}
+
+export function recordRecipientTerminalFailureInTransaction(database, delivery, attemptId, reason) {
+  if (!RECIPIENT_TERMINAL_REASONS.has(reason)) throw new RangeError("Motivo terminal inválido.");
+  const courierId = recipientTerminalFailureEvidence(database, delivery, attemptId, reason);
+  if (delivery.paymentStatus !== "paid" || !isCanonicalTimestamp(delivery.paymentPaidAt)) {
+    throw financialError("O pagamento exige reconciliação financeira.");
+  }
+  const payments = paidComponents(database, delivery.orderId, delivery.clientId);
+  const paidProducts = payments.get(FINANCIAL_COMPONENTS.PRODUCTS);
+  if (paidProducts === undefined || paidProducts !== delivery.itemsTotalCents) {
+    throw financialError(`O pagamento de produtos do Pedido ${delivery.orderId} exige reconciliação.`);
+  }
+  const paidFreight = payments.get(FINANCIAL_COMPONENTS.FREIGHT);
+  if ((delivery.freightTotalCents === null) !== (paidFreight === undefined)
+    || (paidFreight !== undefined && paidFreight !== delivery.freightTotalCents)) {
+    throw financialError(`O pagamento de frete do Pedido ${delivery.orderId} exige reconciliação.`);
+  }
+  const freightRefunds = database.prepare(`SELECT amount_cents AS amountCents
+    FROM financial_entries WHERE order_id = ? AND entry_type = 'refund'
+      AND component = 'freight'`).all(delivery.orderId);
+  if (freightRefunds.length && paidFreight === undefined) {
+    throw financialError(`O Pedido ${delivery.orderId} possui reembolso de frete sem pagamento coerente.`);
+  }
+  let refundedFreightCents;
+  try {
+    refundedFreightCents = sumFinancialAmounts(freightRefunds.map(({ amountCents }) => amountCents));
+  } catch {
+    throw financialError(`O reembolso de frete do Pedido ${delivery.orderId} exige reconciliação.`);
+  }
+  if (refundedFreightCents !== 0) {
+    throw financialError(`O Pedido ${delivery.orderId} possui reembolso de frete incompatível.`);
+  }
+
+  const keyPrefix = `delivery:${delivery.id}:${reason.replaceAll("_", "-")}`;
+  const refundKey = `${keyPrefix}:refund-products`;
+  const priorRefunds = database.prepare(`SELECT amount_cents AS amountCents,
+    idempotency_key AS idempotencyKey FROM financial_entries
+    WHERE order_id = ? AND entry_type = 'refund' AND component = 'products'`).all(delivery.orderId);
+  const refundedByOthers = sumFinancialAmounts(priorRefunds
+    .filter((entry) => entry.idempotencyKey !== refundKey).map((entry) => entry.amountCents));
+  if (refundedByOthers > paidProducts) {
+    throw financialError(`O Pedido ${delivery.orderId} possui reembolso excessivo de produtos.`);
+  }
+  const base = entryBase(delivery, reason);
+  const remaining = paidProducts - refundedByOthers;
+  if (remaining > 0) {
+    insertRefund(database, delivery, base, FINANCIAL_COMPONENTS.PRODUCTS, remaining, refundKey);
+  } else if (findEntryByIdempotencyKey(database, refundKey)) {
+    throw financialError(`A chave financeira ${refundKey} existe sem saldo correspondente.`);
+  }
+  if (paidFreight === undefined) return;
+  const split = splitNormalFreight(paidFreight);
+  for (const [partyType, partyId, amountCents] of [
+    [FINANCIAL_PARTIES.COURIER, courierId, split.courierCents],
+    [FINANCIAL_PARTIES.COMPANY, delivery.companyId, split.companyCents],
+    [FINANCIAL_PARTIES.ERMES, null, split.ermesCents],
+  ]) {
+    insertFinancialEntryInTransaction(database, {
+      ...base, entryType: FINANCIAL_ENTRY_TYPES.DISTRIBUTION,
+      component: FINANCIAL_COMPONENTS.FREIGHT, partyType, partyId, amountCents,
+      idempotencyKey: `${keyPrefix}:distribution-freight:${partyType}`,
+    });
+  }
+}
+
 export function recordProductUnavailableInTransaction(database, delivery, occurredAt = null) {
   const payments = paidComponents(database, delivery.orderId, delivery.clientId);
   if (!payments.size) {
@@ -355,6 +488,47 @@ function pendingFinancialEffects(database, delivery, entries) {
   }
   if (PENDING_DISTRIBUTION_REASONS.has(delivery.returnReason)) {
     pending.push("freight_distribution_rule_undefined");
+  }
+  if (RECIPIENT_TERMINAL_REASONS.has(delivery.returnReason) && delivery.status === "returned") {
+    const payments = paidComponents(database, delivery.orderId, delivery.clientId);
+    const paidProductsCents = payments.get(FINANCIAL_COMPONENTS.PRODUCTS);
+    const paidFreightCents = payments.get(FINANCIAL_COMPONENTS.FREIGHT);
+    const refundedProductsCents = sumFinancialAmounts(entries.filter((entry) =>
+      entry.entryType === FINANCIAL_ENTRY_TYPES.REFUND
+        && entry.component === FINANCIAL_COMPONENTS.PRODUCTS).map((entry) => entry.amountCents));
+    if (paidProductsCents === undefined || paidProductsCents !== delivery.itemsTotalCents
+      || refundedProductsCents !== paidProductsCents) {
+      throw financialError(`Os produtos do Pedido ${delivery.orderId} exigem reconciliação.`);
+    }
+    if ((delivery.freightTotalCents === null) !== (paidFreightCents === undefined)
+      || (paidFreightCents !== undefined && paidFreightCents !== delivery.freightTotalCents)) {
+      throw financialError(`O frete do Pedido ${delivery.orderId} exige reconciliação.`);
+    }
+    if (paidFreightCents === undefined) {
+      pending.push("freight_amount_unavailable");
+    } else {
+      const distribution = database.prepare(`SELECT party_type AS partyType,
+        party_user_id AS partyUserId, party_company_id AS partyCompanyId,
+        amount_cents AS amountCents FROM financial_entries
+        WHERE delivery_id = ? AND entry_type = 'distribution' AND reason = ? ORDER BY id`)
+        .all(delivery.id, delivery.returnReason);
+      const attempt = database.prepare(`SELECT courier_id AS courierId FROM delivery_attempts
+        WHERE delivery_id = ? AND status = 'closed_unsuccessfully' AND end_nature = 'terminal'
+          AND end_reason = ? ORDER BY attempt_number DESC LIMIT 1`)
+        .get(delivery.id, delivery.returnReason);
+      const split = splitNormalFreight(paidFreightCents);
+      if (!attempt || distribution.length !== 3
+        || distribution[0].partyType !== "courier"
+        || distribution[0].partyUserId !== attempt.courierId
+        || distribution[0].amountCents !== split.courierCents
+        || distribution[1].partyType !== "company"
+        || distribution[1].partyCompanyId !== delivery.companyId
+        || distribution[1].amountCents !== split.companyCents
+        || distribution[2].partyType !== "ermes"
+        || distribution[2].amountCents !== split.ermesCents) {
+        throw financialError(`A distribuição do Pedido ${delivery.orderId} exige reconciliação.`);
+      }
+    }
   }
   const productUnavailable = entries.some((entry) => entry.reason === "product_unavailable")
     || hasAuthorizedProductUnavailableEvent(database, delivery);

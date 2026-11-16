@@ -778,7 +778,17 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
         WHERE delivery_id = ? AND event_type = 'return_confirmed'`)
         .get(item.delivery.id).total, 1);
-      assert.deepEqual(db.prepare("SELECT * FROM financial_entries ORDER BY id").all(), financialBefore);
+      const financialAfter = db.prepare("SELECT * FROM financial_entries ORDER BY id").all();
+      if (type === "confirmation_failed") {
+        assert.deepEqual(financialAfter, financialBefore);
+      } else {
+        const added = financialAfter.slice(financialBefore.length);
+        assert.equal(added.length, 1);
+        assert.equal(added[0].entry_type, "refund");
+        assert.equal(added[0].component, "products");
+        assert.equal(added[0].amount_cents, 1000);
+        assert.equal(added[0].reason, type);
+      }
       const currentCourier = await (await request("/api/courier/deliveries/current", {
         cookie: cookies.courier1,
       })).json();
