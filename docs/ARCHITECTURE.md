@@ -119,8 +119,18 @@ motoboy, grava `returned_at`, persiste `returned` e `return_confirmed` na mesma
 transação. As consultas de Entrega, de Pedido e a criação idempotente resolvem a
 mesma causa a partir do evento histórico, sem usar `return_reason` como atalho.
 Falha no evento final reverte tentativa, Entrega, atribuição e timestamp. O
-livro-razão não participa desse novo fechamento: reembolsos e distribuição
-70/25/5 de ausência/recusa permanecem para incremento financeiro separado.
+`recordRecipientTerminalFailureInTransaction` participa desse fechamento:
+valida pagamentos persistidos, completa somente o saldo de produtos ainda não
+reembolsado e divide o frete pago em 70/25/5 via `splitNormalFreight()`.
+O beneficiário motoboy vem da tentativa terminal correspondente, mesmo após
+`deliveries.courier_id` ser limpo. Sua identidade é confrontada com coleta,
+ocorrência e retorno do ciclo terminal; divergência exige reconciliação. Um
+refund anterior positivo de frete também exige reconciliação antes de novos
+lançamentos. Chaves idempotentes e triggers protegem o
+ledger append-only; falha financeira reverte também o fechamento operacional.
+Frete `NULL` sem pagamento gera `freight_amount_unavailable`, sem valor inventado;
+pagamento divergente exige reconciliação. Backfill automático não infere
+consequências para fechamentos históricos ambíguos.
 
 O impedimento específico `temporary_external_obstruction` é registrado no destino pelo motoboy atribuído, com descrição e metadados internos do estado. Não declara contato ou alternativa segura como realizados automaticamente. Ocorrência, retorno da tentativa, estado da Entrega e evento são uma transação. Não altera financeiro nem responsabilidade.
 
@@ -134,7 +144,8 @@ A operação de revalidação exige `revalidationId`, `release: true` e resultad
 
 Múltiplas conexões podem inicializar o mesmo banco SQLite. O bootstrap serializa
 o bloco inicial de schema em `BEGIN IMMEDIATE`, incluindo a substituição atômica
-de `financial_entry_payment_state_insert`. Assim, uma versão antiga do trigger é
+de `financial_entry_payment_state_insert` e dos triggers financeiros de tipo
+e beneficiário. Assim, versões antigas dos triggers são
 substituída, em vez de ser mantida com `IF NOT EXISTS`, e não há corrida entre
 `DROP TRIGGER` e `CREATE TRIGGER` de inicializações concorrentes. A contenção na
 ativação de WAL tem tratamento específico e limitado ao bootstrap; isso não

@@ -318,19 +318,27 @@ transaction(() => db.exec(`
       OR NEW.amount_cents < 0 OR NEW.amount_cents > 9007199254740991
     BEGIN SELECT RAISE(ABORT, 'financial amount must be safe integer cents'); END;
 
-  CREATE TRIGGER IF NOT EXISTS financial_entry_valid_kind_insert
+  DROP TRIGGER IF EXISTS financial_entry_valid_kind_insert;
+  CREATE TRIGGER financial_entry_valid_kind_insert
     BEFORE INSERT ON financial_entries
     WHEN NOT (
       (NEW.entry_type = 'payment' AND NEW.party_type = 'client'
         AND NEW.reason = 'simulated_payment')
       OR (NEW.entry_type = 'refund' AND NEW.party_type = 'client'
         AND NEW.delivery_id IS NOT NULL
-        AND NEW.reason IN ('client_cancelled_after_pickup', 'product_unavailable'))
+        AND (NEW.reason IN ('client_cancelled_after_pickup', 'product_unavailable')
+          OR (NEW.component = 'products'
+            AND NEW.reason IN ('recipient_absent', 'recipient_refused')
+            AND EXISTS (SELECT 1 FROM deliveries d WHERE d.id = NEW.delivery_id
+              AND d.status = 'returned' AND d.return_reason = NEW.reason
+              AND d.returned_at IS NOT NULL))))
       OR (NEW.entry_type = 'distribution' AND NEW.component = 'freight'
         AND NEW.delivery_id IS NOT NULL
         AND ((NEW.reason = 'delivery_completed'
               AND NEW.party_type IN ('courier', 'company', 'ermes'))
-          OR (NEW.reason = 'client_cancelled_after_pickup' AND NEW.party_type = 'courier')))
+          OR (NEW.reason = 'client_cancelled_after_pickup' AND NEW.party_type = 'courier')
+          OR (NEW.reason IN ('recipient_absent', 'recipient_refused')
+            AND NEW.party_type IN ('courier', 'company', 'ermes'))))
     )
     BEGIN SELECT RAISE(ABORT, 'invalid financial entry kind'); END;
 
@@ -387,7 +395,8 @@ transaction(() => db.exec(`
         AND component = NEW.component), 0)
     BEGIN SELECT RAISE(ABORT, 'refund exceeds effectively paid component'); END;
 
-  CREATE TRIGGER IF NOT EXISTS financial_entry_distribution_owner_insert
+  DROP TRIGGER IF EXISTS financial_entry_distribution_owner_insert;
+  CREATE TRIGGER financial_entry_distribution_owner_insert
     BEFORE INSERT ON financial_entries
     WHEN NEW.entry_type = 'distribution' AND NOT EXISTS (
       SELECT 1 FROM deliveries d JOIN orders o ON o.id = d.order_id
@@ -400,6 +409,21 @@ transaction(() => db.exec(`
             AND d.status = 'completed' AND NEW.party_company_id = o.company_id)
           OR (NEW.party_type = 'ermes' AND NEW.reason = 'delivery_completed'
             AND d.status = 'completed')
+          OR (NEW.reason IN ('recipient_absent', 'recipient_refused')
+            AND d.status = 'returned' AND d.return_reason = NEW.reason
+            AND d.returned_at IS NOT NULL
+            AND ((NEW.party_type = 'company' AND NEW.party_company_id = o.company_id)
+              OR (NEW.party_type = 'ermes')
+              OR (NEW.party_type = 'courier' AND EXISTS (
+                SELECT 1 FROM delivery_attempts a
+                JOIN users courier ON courier.id = a.courier_id
+                  AND courier.role = 'courier' AND courier.company_id = o.company_id
+                JOIN couriers profile ON profile.user_id = courier.id
+                WHERE a.delivery_id = d.id AND a.courier_id = NEW.party_user_id
+                  AND a.status = 'closed_unsuccessfully' AND a.end_nature = 'terminal'
+                  AND a.end_reason = NEW.reason
+                  AND a.id = (SELECT latest.id FROM delivery_attempts latest
+                    WHERE latest.delivery_id = d.id ORDER BY latest.attempt_number DESC LIMIT 1)))))
           OR (NEW.party_type = 'courier' AND EXISTS (
             SELECT 1 FROM users courier
             WHERE courier.id = NEW.party_user_id AND courier.role = 'courier'

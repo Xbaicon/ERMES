@@ -21,7 +21,7 @@ import { decryptConfirmationCode, verifyConfirmationCode } from "./security.js";
 import {
   clientFinancialSummary, companyFinancialSummary, courierFinancialSummary,
   recordClientCancellationAfterPickupInTransaction, recordNormalCompletionInTransaction,
-  recordProductUnavailableInTransaction,
+  recordProductUnavailableInTransaction, recordRecipientTerminalFailureInTransaction,
 } from "./finance.js";
 
 const TERMINAL_STATES = Object.freeze([
@@ -597,11 +597,24 @@ export function confirmReturn(id, companyUserId, companyId, body) {
                   WHERE id = ?`).run(DELIVERY_STATES.AVAILABLE, id);
       event(id, companyUserId, DELIVERY_EVENT_TYPES.REAVAILABLE, { previousReason: delivery.returnReason });
     } else {
+      const recipientTerminal = [DELIVERY_OCCURRENCE_TYPES.RECIPIENT_ABSENT,
+        DELIVERY_OCCURRENCE_TYPES.RECIPIENT_REFUSED].includes(delivery.returnReason);
+      const attempt = recipientTerminal ? findOpenDeliveryAttempt(db, id) : null;
+      if (recipientTerminal && (!attempt || attempt.status !== "returning"
+        || attempt.deliveryId !== id || !delivery.returnReportedAt
+        || db.prepare(`SELECT COUNT(*) AS total FROM delivery_occurrences
+          WHERE delivery_id = ? AND delivery_attempt_id = ? AND type = ?`)
+          .get(id, attempt.id, delivery.returnReason).total !== 1)) {
+        throw deliveryError("O retorno exige reconciliação da tentativa e ocorrência terminal.");
+      }
       closeDeliveryAttemptWithoutSuccessInTransaction(db, id, delivery.returnReason,
         DELIVERY_ATTEMPT_END_NATURES.TERMINAL);
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, returned_at = CURRENT_TIMESTAMP
                   WHERE id = ?`).run(DELIVERY_STATES.RETURNED, id);
       event(id, companyUserId, DELIVERY_EVENT_TYPES.RETURN_CONFIRMED, { reason: delivery.returnReason });
+      if (recipientTerminal) {
+        recordRecipientTerminalFailureInTransaction(db, delivery, attempt.id, delivery.returnReason);
+      }
       if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.CONFIRMATION_FAILED
         && !hasConfirmationFailureEvidence(db, id, true)) {
         throw deliveryError("O fechamento exige reconciliação da evidência terminal.");

@@ -744,12 +744,32 @@ pela empresa; o fechamento não depende dessa classificação. A Entrega termina
 não pode ser aceita, coletada, confirmada por código ou revalidada, não cria
 outra tentativa nem ciclo de revalidação e mantém o chat somente para leitura
 pelo comportamento já associado a `returned`. Repetições são rejeitadas sem
-duplicar ocorrência, evento ou encerramento. Nenhum reembolso ou distribuição
-financeira nova é criado por este incremento.
+duplicar ocorrência, evento ou encerramento. Na mesma transação do fechamento,
+o ledger completa o reembolso acumulado de `products` até o valor efetivamente
+pago, descontando refunds anteriores; não reembolsa `freight`. Se o frete estiver
+pago e corresponder ao snapshot, distribui o valor integral pelo
+`splitNormalFreight()` (70% motoboy da tentativa encerrada, 25% empresa, 5% ERMES,
+com maior resto). As chaves são específicas de Entrega, motivo, componente e
+beneficiário; falha em qualquer lançamento reverte o fechamento inteiro.
+O motoboy da tentativa terminal deve coincidir com o ator da coleta, da
+ocorrência e do retorno reportado; divergências exigem reconciliação. Qualquer
+refund anterior positivo de `freight` também impede o fechamento financeiro,
+pois o frete já não estaria integralmente cobrado.
+Pagamento de produtos ausente/divergente ou frete conhecido sem pagamento
+coerente exige `FINANCIAL_RECONCILIATION_REQUIRED` internamente (a API responde
+`500` com erro genérico). Com
+`freight_total_cents = NULL` e sem pagamento de frete, o refund dos produtos
+prossegue sem distribuição e `financial.pending` contém
+`freight_amount_unavailable`. Se há pagamento de frete com snapshot `NULL`,
+exige reconciliação. Classificação posterior não altera o ledger.
+Em retorno terminal histórico com lançamentos incompletos, a projeção
+financeira exige reconciliação em vez de informar distribuição concluída.
 
-Endereço incorreto/erro do ERMES, produto indisponível no modelo 0.2 e os efeitos
-financeiros de ausência/recusa e três códigos inválidos permanecem pendentes
-para incrementos próprios.
+Endereço incorreto/erro do ERMES, produto indisponível no modelo 0.2 e a
+implementação financeira de `confirmation_failed` permanecem para incrementos
+próprios. As consequências de `confirmation_failed` já definidas na Baseline
+0.2 continuam normativas; distribuição/custo interno permanece futuro onde a
+Baseline assim determina.
 
 ## Fechamento terminal após três códigos inválidos (0.2)
 

@@ -92,6 +92,12 @@ function assertInitialized(db) {
   const triggers = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").all(triggerName);
   assert.equal(triggers.length, 1);
   assert.equal(normalizeSql(triggers[0].sql), normalizeSql(expectedTrigger));
+  for (const name of ["financial_entry_valid_kind_insert", "financial_entry_distribution_owner_insert"]) {
+    const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+      .get(name)?.sql;
+    assert.match(sql, /recipient_absent/);
+    assert.match(sql, /recipient_refused/);
+  }
   assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
 }
 
@@ -145,6 +151,10 @@ test("inicialização concorrente substitui trigger legado sem perder schema ou 
           SELECT 1 FROM orders o WHERE o.id = NEW.order_id AND o.payment_status = 'paid'
             AND datetime(o.payment_paid_at) IS NOT NULL
         ) BEGIN SELECT RAISE(ABORT, 'legacy timestamp check'); END;`);
+      for (const name of ["financial_entry_valid_kind_insert", "financial_entry_distribution_owner_insert"]) {
+        db.exec(`DROP TRIGGER ${name}; CREATE TRIGGER ${name} BEFORE INSERT ON financial_entries
+          BEGIN SELECT RAISE(ABORT, 'legacy financial rule'); END;`);
+      }
     } finally { db.close(); }
     await initialize(path, 4);
     const after = inspect(path);
