@@ -262,6 +262,136 @@ function insertRefund(database, delivery, base, component, amountCents, idempote
   });
 }
 
+// Evidência compartilhada pela função financeira, projeções e trigger de INSERT.
+// Uma tentativa anterior, mesmo recuperável, não prova elegibilidade para 8.1.
+export const CLIENT_CANCELLATION_BEFORE_PICKUP_EVIDENCE_SQL = `
+  SELECT d.id, d.order_id AS orderId, o.client_id AS clientId,
+    o.items_total_cents AS itemsTotalCents, o.freight_total_cents AS freightTotalCents,
+    o.payment_status AS paymentStatus, o.payment_paid_at AS paymentPaidAt,
+    d.cancelled_at AS cancelledAt
+  FROM deliveries d JOIN orders o ON o.id = d.order_id
+  JOIN users client ON client.id = o.client_id AND client.role = 'client'
+  WHERE d.status = 'cancelled' AND o.status = 'confirmed'
+    AND d.courier_id IS NULL AND d.collected_at IS NULL AND d.completed_at IS NULL
+    AND d.return_reason IS NULL AND d.return_reported_at IS NULL AND d.returned_at IS NULL
+    AND is_canonical_timestamp(d.cancelled_at) = 1 AND d.cancelled_at <= CURRENT_TIMESTAMP
+    AND NOT EXISTS (SELECT 1 FROM delivery_attempts a WHERE a.delivery_id = d.id)
+    AND NOT EXISTS (SELECT 1 FROM delivery_occurrences oc WHERE oc.delivery_id = d.id
+      AND (oc.delivery_attempt_id IS NOT NULL OR oc.type <> 'courier_failure_before_pickup'))
+    AND NOT EXISTS (SELECT 1 FROM delivery_events conflict WHERE conflict.delivery_id = d.id
+      AND conflict.event_type NOT IN ('delivery_created', 'delivery_accepted',
+        'courier_arrived_at_pickup', 'courier_failed_before_pickup',
+        'occurrence_classified', 'client_cancelled_before_pickup'))
+    AND (SELECT COUNT(*) FROM delivery_events e WHERE e.delivery_id = d.id
+      AND e.event_type = 'client_cancelled_before_pickup') = 1
+    AND EXISTS (SELECT 1 FROM delivery_events e WHERE e.delivery_id = d.id
+      AND e.event_type = 'client_cancelled_before_pickup' AND e.actor_user_id = o.client_id
+      AND e.occurred_at = d.cancelled_at)
+`;
+
+function clientCancellationBeforePickupRefundPlan(database, deliveryId) {
+  try { return readClientCancellationBeforePickupRefundPlan(database, deliveryId); }
+  catch (error) {
+    // node:sqlite rejeita INTEGER fora do intervalo seguro antes da validação JS.
+    if (error.code === "ERR_OUT_OF_RANGE") throw financialError("Valor financeiro fora do inteiro seguro.");
+    throw error;
+  }
+}
+
+function readClientCancellationBeforePickupRefundPlan(database, deliveryId) {
+  const delivery = database.prepare(`${CLIENT_CANCELLATION_BEFORE_PICKUP_EVIDENCE_SQL}
+    AND d.id = ?`).get(deliveryId);
+  if (!delivery) {
+    throw financialError("O cancelamento pré-coleta exige reconciliação do histórico operacional, inclusive coletas anteriores.");
+  }
+  // Inclui também vínculos corrompidos que apontem para esta Entrega e outro Pedido.
+  const entries = database.prepare(`SELECT order_id AS orderId, delivery_id AS deliveryId,
+    entry_type AS entryType, component, party_type AS partyType,
+    party_user_id AS partyUserId, party_company_id AS partyCompanyId,
+    amount_cents AS amountCents, reason, idempotency_key AS idempotencyKey
+    FROM financial_entries WHERE order_id = ? OR delivery_id = ? ORDER BY id`)
+    .all(delivery.orderId, delivery.id);
+  const payments = new Map();
+  const incompatibleRefundReasons = new Set([
+    "client_cancelled_after_pickup", "product_unavailable", "confirmation_failed",
+    "recipient_absent", "recipient_refused", "address_problem", "delivery_completed",
+  ]);
+  for (const entry of entries) {
+    if (entry.orderId !== delivery.orderId
+      || (entry.deliveryId !== null && entry.deliveryId !== delivery.id)
+      || !Number.isSafeInteger(entry.amountCents) || entry.amountCents < 0
+      || !["products", "freight"].includes(entry.component)
+      || !["payment", "refund"].includes(entry.entryType)
+      || entry.partyType !== "client" || entry.partyUserId !== delivery.clientId
+      || entry.partyCompanyId !== null) {
+      throw financialError("Lançamento inválido, distribuição ou vínculo financeiro incompatível com a pré-coleta.");
+    }
+    if (entry.entryType === "payment") {
+      if (payments.has(entry.component) || entry.reason !== "simulated_payment") {
+        throw financialError("Pagamento duplicado ou incompatível com o Pedido.");
+      }
+      payments.set(entry.component, entry.amountCents);
+    } else if (incompatibleRefundReasons.has(entry.reason)) {
+      throw financialError("Refund de outro desfecho terminal exige reconciliação.");
+    }
+  }
+  if (delivery.paymentStatus === "pending") {
+    if (entries.length || delivery.paymentPaidAt !== null) {
+      throw financialError("Pedido pendente com evidência financeira inesperada.");
+    }
+  } else if (delivery.paymentStatus === "paid") {
+    const items = database.prepare(`SELECT quantity, unit_price_cents AS price
+      FROM order_items WHERE order_id = ?`).all(delivery.orderId);
+    let subtotal = 0n;
+    for (const item of items) {
+      if (!Number.isSafeInteger(item.quantity) || item.quantity <= 0
+        || !Number.isSafeInteger(item.price) || item.price < 0) {
+        throw financialError("Snapshot dos produtos inválido.");
+      }
+      subtotal += BigInt(item.quantity) * BigInt(item.price);
+    }
+    if (!isCanonicalTimestamp(delivery.paymentPaidAt) || delivery.paymentPaidAt > delivery.cancelledAt
+      || !items.length || !Number.isSafeInteger(delivery.itemsTotalCents)
+      || subtotal !== BigInt(delivery.itemsTotalCents)
+      || payments.get("products") !== delivery.itemsTotalCents
+      || (delivery.freightTotalCents === null
+        ? payments.has("freight") : payments.get("freight") !== delivery.freightTotalCents)) {
+      throw financialError("Pagamentos ausentes ou divergentes dos snapshots do Pedido.");
+    }
+  } else {
+    throw financialError("Estado de pagamento incompatível.");
+  }
+  const base = entryBase(delivery, "client_cancelled_before_pickup", delivery.cancelledAt);
+  return ["products", "freight"].map((component) => {
+    const paid = payments.get(component) ?? 0;
+    const refunds = entries.filter((entry) => entry.entryType === "refund" && entry.component === component);
+    let refunded;
+    try { refunded = sumFinancialAmounts(refunds.map((entry) => entry.amountCents)); }
+    catch { throw financialError("O total reembolsado exige reconciliação."); }
+    if (refunded > paid) throw financialError("Reembolso superior ao componente efetivamente pago.");
+    const idempotencyKey = `delivery:${delivery.id}:client-cancelled-before-pickup:refund-${component}`;
+    const ownRefund = refunds.find((entry) => entry.idempotencyKey === idempotencyKey);
+    const amountCents = paid - refunded + (ownRefund?.amountCents ?? 0);
+    const entry = {
+      ...base, entryType: "refund", component, partyType: "client",
+      partyId: delivery.clientId, amountCents, idempotencyKey,
+    };
+    const existing = findEntryByIdempotencyKey(database, idempotencyKey);
+    if (existing) {
+      if (amountCents === 0) throw financialError("Chave de refund existente sem saldo compatível.");
+      assertSameSemanticEntry(existing, normalizeEntry(entry));
+    }
+    return { entry, paid, refunded };
+  });
+}
+
+export function recordClientCancellationBeforePickupInTransaction(database, delivery) {
+  const plan = clientCancellationBeforePickupRefundPlan(database, delivery.id);
+  for (const { entry } of plan) {
+    if (entry.amountCents > 0) insertFinancialEntryInTransaction(database, entry);
+  }
+}
+
 export function recordClientCancellationAfterPickupInTransaction(database, delivery, occurredAt = null) {
   if (!delivery.courierId) throw financialError("O cancelamento pós-coleta não possui motoboy responsável.");
   const payments = paidComponents(database, delivery.orderId, delivery.clientId);
@@ -667,7 +797,17 @@ function pendingFinancialEffects(database, delivery, entries) {
   }
   const productUnavailable = entries.some((entry) => entry.reason === "product_unavailable")
     || hasAuthorizedProductUnavailableEvent(database, delivery);
-  if (delivery.status === "cancelled" && delivery.returnReason === null && !productUnavailable) {
+  const clientCancellation = database.prepare(`SELECT 1 FROM delivery_events
+    WHERE delivery_id = ? AND event_type = 'client_cancelled_before_pickup'`).get(delivery.id);
+  if (delivery.status === "cancelled" && clientCancellation) {
+    const plan = clientCancellationBeforePickupRefundPlan(database, delivery.id);
+    if (plan.some(({ paid, refunded }) => paid !== refunded)) {
+      throw financialError("Cancelamento pré-coleta histórico sem refunds completos; reconciliação explícita necessária.");
+    }
+    if (delivery.paymentStatus === "paid" && delivery.freightTotalCents === null) {
+      pending.push("freight_amount_unavailable");
+    }
+  } else if (delivery.status === "cancelled" && delivery.returnReason === null && !productUnavailable) {
     pending.push("client_cancellation_before_pickup_refund_rule_undefined");
   }
   return pending;

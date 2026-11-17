@@ -20,6 +20,7 @@ import {
 import { decryptConfirmationCode, verifyConfirmationCode } from "./security.js";
 import {
   clientFinancialSummary, companyFinancialSummary, courierFinancialSummary,
+  recordClientCancellationBeforePickupInTransaction,
   recordClientCancellationAfterPickupInTransaction, recordNormalCompletionInTransaction,
   recordProductUnavailableInTransaction, recordRecipientTerminalFailureInTransaction,
 } from "./finance.js";
@@ -633,6 +634,7 @@ export function cancelClientDelivery(id, clientId, body) {
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, cancelled_at = CURRENT_TIMESTAMP
                   WHERE id = ?`).run(DELIVERY_STATES.CANCELLED, id);
       event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_BEFORE_PICKUP);
+      recordClientCancellationBeforePickupInTransaction(db, delivery);
     } else if ([DELIVERY_STATES.IN_TRANSIT, DELIVERY_STATES.AWAITING_CONFIRMATION].includes(delivery.status)) {
       markOpenDeliveryAttemptReturningInTransaction(db, id);
       db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")

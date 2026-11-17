@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import {
   encryptConfirmationCode, hashConfirmationCode, hashPassword, newConfirmationCode,
 } from "./security.js";
-import { backfillFinancialEntries, isCanonicalTimestamp } from "./finance.js";
+import {
+  backfillFinancialEntries, isCanonicalTimestamp, CLIENT_CANCELLATION_BEFORE_PICKUP_EVIDENCE_SQL,
+} from "./finance.js";
 import { evolveRevalidationSchema } from "./revalidation-schema.js";
 import { migrateLegacyInvalidCodeAttempts } from "./delivery-attempts.js";
 
@@ -43,6 +45,11 @@ const financialEntryKindTrigger = `
       OR (NEW.entry_type = 'refund' AND NEW.party_type = 'client'
         AND NEW.delivery_id IS NOT NULL
         AND (NEW.reason IN ('client_cancelled_after_pickup', 'product_unavailable')
+          OR (NEW.reason = 'client_cancelled_before_pickup'
+            AND NEW.component IN ('products', 'freight')
+            AND EXISTS (${CLIENT_CANCELLATION_BEFORE_PICKUP_EVIDENCE_SQL}
+              AND d.id = NEW.delivery_id AND o.id = NEW.order_id
+              AND o.payment_status = 'paid'))
           OR (NEW.component = 'products'
             AND NEW.reason IN ('recipient_absent', 'recipient_refused')
             AND EXISTS (SELECT 1 FROM deliveries d WHERE d.id = NEW.delivery_id

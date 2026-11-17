@@ -480,11 +480,12 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
     assert.equal((await request(`/api/client/deliveries/${beforePickup.delivery.id}/cancel`, {
       cookie: cookies.client1, method: "POST", body: {},
     })).status, 200);
-    assert.deepEqual(new Set(ledger(beforePickup.orderId).map(({ entryType }) => entryType)), new Set(["payment"]));
+    assert.deepEqual(new Set(ledger(beforePickup.orderId).map(({ entryType }) => entryType)), new Set(["payment", "refund"]));
+    assert.equal(orderRefundSummary(db, beforePickup.orderId).refundedTotalCents, 3001);
     const beforeDetail = (await (await request(`/api/client/deliveries/${beforePickup.delivery.id}`,
       { cookie: cookies.client1 })).json()).delivery;
-    assert.deepEqual(beforeDetail.financial.pending,
-      ["client_cancellation_before_pickup_refund_rule_undefined"]);
+    assert.deepEqual(beforeDetail.financial.pending, []);
+    assert.equal(beforeDetail.financial.refundStatus, "full");
   });
 
   await context.test("falha no lançamento financeiro desfaz conclusão e evento", async () => {

@@ -1395,10 +1395,14 @@ test("acompanhamento operacional completo de entregas", async (context) => {
   });
 
   await context.test("cancelamentos e produto indisponível preservam regras antes e depois da coleta", async () => {
-    const before = createDelivery();
+    const before = createDelivery(company1, client1, true);
     const cancelled = await request(`/api/client/deliveries/${before.delivery.id}/cancel`,
       { cookie: cookies.client1, method: "POST", body: {} });
-    assert.equal((await cancelled.json()).delivery.status, "cancelled");
+    assert.equal(cancelled.status, 200);
+    const cancelledDelivery = (await cancelled.json()).delivery;
+    assert.equal(cancelledDelivery.status, "cancelled");
+    assert.equal(cancelledDelivery.financial.refundedTotalCents, 1000);
+    assert.equal(cancelledDelivery.financial.refundStatus, "full");
     const unavailable = createDelivery();
     const unavailableResponse = await request(`/api/company/deliveries/${unavailable.delivery.id}/product-unavailable`,
       { cookie: cookies.company1, method: "POST", body: {} });
