@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 const destination = JSON.stringify({
   postalCode: "01001000", state: "SP", city: "São Paulo", neighborhood: "Centro",
@@ -20,7 +21,9 @@ test("impedimento externo e revalidação da Baseline 0.2", async (context) => {
   const { createDeliveryForEligibleOrderInTransaction } = await import("../src/delivery-creation.js");
   const { createDeliveryAttemptInTransaction } = await import("../src/delivery-attempts.js");
   const { createDeliveryOccurrenceInTransaction } = await import("../src/delivery-occurrences.js");
-  const { recordPaymentInTransaction } = await import("../src/finance.js");
+  const { recordPaymentInTransaction,
+    recordClientCancellationAfterExternalObstructionInTransaction } = await import("../src/finance.js");
+  const { cancelClientDelivery } = await import("../src/delivery-operations.js");
   await startServer(0);
   context.after(async () => {
     await new Promise((resolve) => server.close(resolve));
@@ -73,19 +76,21 @@ test("impedimento externo e revalidação da Baseline 0.2", async (context) => {
     courier1: await login("motoboy1@ermes.local"), courier2: await login("motoboy2@ermes.local"),
     offline: await login("offline@ermes.local"), otherCourier: await login("outro@ermes.local"),
   };
-  function createDelivery(companyId = company1, clientId = client1) {
+  function createDelivery(companyId = company1, clientId = client1, { freightCents = null } = {}) {
     const recipient = JSON.stringify({ type: "self",
       name: db.prepare("SELECT full_name AS fullName FROM users WHERE id = ?").get(clientId).fullName });
     const orderId = Number(db.prepare(`INSERT INTO orders
       (client_id, company_id, status, destination_snapshot_json, recipient_snapshot_json, items_total_cents,
-       payment_status, payment_paid_at, confirmed_at)
-      VALUES (?, ?, 'confirmed', ?, ?, 1000, 'paid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
-      .run(clientId, companyId, destination, recipient).lastInsertRowid);
+       freight_total_cents, payment_status, payment_paid_at, confirmed_at)
+      VALUES (?, ?, 'confirmed', ?, ?, 1000, ?, 'paid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+      .run(clientId, companyId, destination, recipient, freightCents).lastInsertRowid);
+    db.prepare(`INSERT INTO order_items (order_id, product_id, quantity, unit_price_cents, unit_weight_kg)
+      VALUES (?, ?, 1, 1000, 1)`).run(orderId, product);
     return transaction(() => {
       const result = createDeliveryForEligibleOrderInTransaction(orderId);
       recordPaymentInTransaction(db, {
         id: orderId, clientId, itemsTotalCents: 1000,
-        freightTotalCents: null,
+        freightTotalCents: freightCents,
         paymentPaidAt: db.prepare("SELECT payment_paid_at AS value FROM orders WHERE id = ?")
           .get(orderId).value,
       }, result.delivery.id);
@@ -101,12 +106,22 @@ test("impedimento externo e revalidação da Baseline 0.2", async (context) => {
     events: rows('delivery_events', id), revalidations: rows('delivery_revalidations', id),
     finances: rows('financial_entries', id),
   });
+  const legacyMutation = (triggerNames, mutate) => {
+    const saved = triggerNames.map(name => db.prepare(`SELECT sql FROM sqlite_master
+      WHERE type = 'trigger' AND name = ?`).get(name).sql);
+    try {
+      for (const name of triggerNames) db.exec(`DROP TRIGGER ${name}`);
+      mutate();
+    } finally { for (const sql of saved) db.exec(sql); }
+  };
   const companyAction = (id, action, body = {}, cookie = cookies.company1) => request(
     `/api/company/deliveries/${id}/${action}`, { method: 'POST', body, cookie });
+  const cancel = (id, cookie = cookies.client1) => request(`/api/client/deliveries/${id}/cancel`,
+    { method: 'POST', body: {}, cookie });
   const releaseBody = (id) => ({ revalidationId: rows('delivery_revalidations', id).at(-1).id,
     release: true, verificationResult: 'Acesso verificado pela empresa e liberado.' });
-  async function atDestination() {
-    const item = createDelivery();
+  async function atDestination(options = {}) {
+    const item = createDelivery(company1, client1, options);
     for (const action of ['accept', 'arrive-pickup', 'collect', 'arrive-destination']) {
       assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
     }
@@ -119,8 +134,8 @@ test("impedimento externo e revalidação da Baseline 0.2", async (context) => {
     assert.equal(result.status, 200);
     return (await result.json()).delivery;
   }
-  async function awaiting() {
-    const item = await atDestination();
+  async function awaiting(options = {}) {
+    const item = await atDestination(options);
     await obstruct(item);
     assert.equal((await post(cookies.courier1, item.delivery.id, 'report-return')).status, 200);
     assert.equal((await companyAction(item.delivery.id, 'confirm-return')).status, 200);
@@ -380,5 +395,361 @@ test("impedimento externo e revalidação da Baseline 0.2", async (context) => {
       assert.equal(state.delivery.courier_id, null);
     }
   });
+
+  await context.test('cancelamento externo devolve products e freight integralmente sem distribution', async () => {
+    const item = await atDestination({ freightCents: 101 }), id = item.delivery.id;
+    const atDestinationLedger = snapshot(id).finances;
+    await obstruct(item);
+    assert.deepEqual(snapshot(id).finances, atDestinationLedger);
+    assert.equal((await post(cookies.courier1, id, 'report-return')).status, 200);
+    assert.deepEqual(snapshot(id).finances, atDestinationLedger);
+    assert.equal((await companyAction(id, 'confirm-return')).status, 200);
+    const before = snapshot(id);
+    assert.deepEqual(before.finances, atDestinationLedger);
+    const pending = await (await request(`/api/client/deliveries/${id}`, { cookie: cookies.client1 })).json();
+    assert.equal(pending.delivery.financial.refundStatus, 'none');
+    assert.equal(pending.delivery.orderOfficialStatus, 'CONFIRMADO');
+    assert.deepEqual(pending.delivery.financial.pending, ['freight_distribution_rule_undefined']);
+    const result = await cancel(id);
+    assert.equal(result.status, 200);
+    const view = (await result.json()).delivery;
+    assert.equal(view.status, 'cancelled');
+    assert.equal(view.officialStatus, 'CANCELADA');
+    assert.equal(view.orderOfficialStatus, 'CANCELADO');
+    assert.equal(view.financial.paymentStatus, 'paid');
+    assert.equal(view.financial.refundStatus, 'full');
+    assert.equal(view.financial.refundedTotalCents, 1101);
+    assert.deepEqual(view.financial.pending, ['freight_distribution_rule_undefined']);
+    const after = snapshot(id);
+    assert.equal(after.delivery.courier_id, null);
+    assert.equal(after.delivery.return_reason, 'temporary_external_obstruction');
+    assert.equal(after.delivery.returned_at, before.delivery.returned_at);
+    assert.equal(after.delivery.confirmation_code_hash, before.delivery.confirmation_code_hash);
+    assert.equal(after.delivery.confirmation_code_ciphertext, before.delivery.confirmation_code_ciphertext);
+    assert.deepEqual(after.attempts, before.attempts);
+    assert.deepEqual(after.occurrences, before.occurrences);
+    assert.deepEqual(after.revalidations, before.revalidations);
+    assert.equal(after.revalidations[0].verified_at, null);
+    assert.equal(after.events.at(-1).event_type, 'client_cancelled_after_external_obstruction');
+    assert.equal(after.events.at(-1).actor_user_id, client1);
+    assert.deepEqual(JSON.parse(after.events.at(-1).details_json), {
+      revalidationId: before.revalidations[0].id, occurrenceId: before.occurrences[0].id,
+    });
+    assert.deepEqual(after.finances.filter(e => e.entry_type === 'refund')
+      .map(e => [e.component, e.amount_cents, e.reason]), [
+        ['products', 1000, 'client_cancelled_after_external_obstruction'],
+        ['freight', 101, 'client_cancelled_after_external_obstruction'],
+      ]);
+    assert.equal(after.finances.filter(e => e.entry_type === 'distribution').length, 0);
+    assert.equal(db.prepare('SELECT order_blocked_until AS value FROM users WHERE id = ?').get(client1).value, null);
+    assert.equal((await companyAction(id, 'revalidate', releaseBody(id))).status, 409);
+    assert.equal((await cancel(id)).status, 409);
+    assert.deepEqual(snapshot(id), after);
+  });
+
+  await context.test('frete NULL sem pagamento de freight reembolsa apenas products', async () => {
+    const item = await awaiting(), id = item.delivery.id;
+    const result = await cancel(id);
+    assert.equal(result.status, 200);
+    const view = (await result.json()).delivery;
+    assert.equal(view.financial.refundStatus, 'full');
+    assert.equal(view.financial.refundedTotalCents, 1000);
+    assert.deepEqual(snapshot(id).finances.filter(e => e.entry_type === 'refund')
+      .map(e => [e.component, e.amount_cents]), [['products', 1000]]);
+  });
+
+  await context.test('refund anterior compatível completa somente saldo e mantém idempotência', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    db.prepare("UPDATE deliveries SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+    db.prepare(`INSERT INTO delivery_events (delivery_id, actor_user_id, event_type)
+      VALUES (?, ?, 'client_cancelled_after_external_obstruction')`).run(id, client1);
+    db.prepare(`INSERT INTO financial_entries (order_id, delivery_id, entry_type, component,
+      party_type, party_user_id, amount_cents, reason, idempotency_key)
+      VALUES (?, ?, 'refund', 'products', 'client', ?, 300,
+        'client_cancelled_after_external_obstruction', ?)`)
+      .run(item.delivery.orderId, id, client1, `prior:${id}:products`);
+    transaction(() => recordClientCancellationAfterExternalObstructionInTransaction(db, { id }));
+    const after = snapshot(id);
+    assert.deepEqual(after.finances.filter(e => e.entry_type === 'refund')
+      .map(e => [e.component, e.amount_cents]), [
+        ['products', 300], ['products', 700], ['freight', 101],
+      ]);
+    transaction(() => recordClientCancellationAfterExternalObstructionInTransaction(db, { id }));
+    assert.deepEqual(snapshot(id), after);
+  });
+
+  await context.test('cancelamento e revalidação concorrentes têm apenas um vencedor', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    const responses = await race([
+      { name: 'cancelClientDelivery', args: [id, client1, {}] },
+      { name: 'revalidateDelivery', args: [id, companyUser1, company1, releaseBody(id)] },
+    ]);
+    assert.deepEqual(responses.map(r => r.status).sort(), [200, 409], JSON.stringify(responses));
+    const state = snapshot(id);
+    const cancelled = state.delivery.status === 'cancelled';
+    assert.ok(cancelled || state.delivery.status === 'available');
+    assert.equal(state.revalidations[0].verified_at === null, cancelled);
+    assert.equal(state.events.filter(e => e.event_type === 'client_cancelled_after_external_obstruction').length,
+      cancelled ? 1 : 0);
+    assert.equal(state.finances.filter(e => e.entry_type === 'refund').length, cancelled ? 2 : 0);
+  });
+
+  await context.test('revalidação vencedora bloqueia o cancelamento especial posterior', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    assert.equal((await companyAction(id, 'revalidate', releaseBody(id))).status, 200);
+    const before = snapshot(id);
+    assert.equal((await cancel(id)).status, 409);
+    assert.deepEqual(snapshot(id), before);
+    assert.equal(before.delivery.status, 'available');
+    assert.ok(before.revalidations[0].verified_at);
+    assert.equal(before.finances.filter(e => e.entry_type === 'refund').length, 0);
+  });
+
+  await context.test('bootstrap repetido atualiza trigger sem criar dinheiro no banco existente', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    assert.equal((await cancel(id)).status, 200);
+    const before = snapshot(id);
+    const trigger = db.prepare(`SELECT sql FROM sqlite_master
+      WHERE type = 'trigger' AND name = 'financial_entry_valid_kind_insert'`).get().sql;
+    assert.match(trigger, /client_cancelled_after_external_obstruction/);
+    for (let pass = 0; pass < 2; pass++) {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e',
+        "import { db } from './src/database.js'; db.close();"], {
+        cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'production' },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(snapshot(id), before);
+      assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+    }
+  });
+
+  await context.test('ocorrência legítima de tentativa anterior não bloqueia o ciclo externo atual', async () => {
+    const item = await atDestination({ freightCents: 101 }), id = item.delivery.id;
+    assert.equal((await post(cookies.courier1, id, 'fail', { reason: 'Pneu furou' })).status, 200);
+    assert.equal((await post(cookies.courier1, id, 'report-return')).status, 200);
+    assert.equal((await companyAction(id, 'confirm-return')).status, 200);
+    for (const action of ['accept', 'arrive-pickup', 'collect', 'arrive-destination']) {
+      assert.equal((await post(cookies.courier1, id, action)).status, 200);
+    }
+    await obstruct(item);
+    assert.equal((await post(cookies.courier1, id, 'report-return')).status, 200);
+    assert.equal((await companyAction(id, 'confirm-return')).status, 200);
+    const before = snapshot(id);
+    assert.deepEqual(before.occurrences.map(o => o.type), [
+      'courier_failure_after_pickup', 'temporary_external_obstruction',
+    ]);
+    assert.notEqual(before.occurrences[0].delivery_attempt_id, before.occurrences[1].delivery_attempt_id);
+    const response = await cancel(id);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).delivery.financial.refundStatus, 'full');
+    assert.deepEqual(snapshot(id).attempts, before.attempts);
+  });
+
+  await context.test('ciclo externo anterior já verificado não bloqueia ciclo externo atual', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    assert.equal((await companyAction(id, 'revalidate', releaseBody(id))).status, 200);
+    for (const action of ['accept', 'arrive-pickup', 'collect', 'arrive-destination']) {
+      assert.equal((await post(cookies.courier1, id, action)).status, 200);
+    }
+    await obstruct(item);
+    assert.equal((await post(cookies.courier1, id, 'report-return')).status, 200);
+    assert.equal((await companyAction(id, 'confirm-return')).status, 200);
+    const before = snapshot(id);
+    assert.equal(before.revalidations.length, 2);
+    assert.ok(before.revalidations[0].verified_at);
+    assert.equal(before.revalidations[1].verified_at, null);
+    assert.equal((await cancel(id)).status, 200);
+    assert.deepEqual(snapshot(id).attempts, before.attempts);
+    assert.equal(snapshot(id).revalidations[1].verified_at, null);
+  });
+
+  for (const type of ['recipient_absent', 'recipient_refused', 'confirmation_failed',
+    'address_problem', 'courier_failure_before_pickup', 'courier_failure_after_pickup']) {
+    await context.test(`ocorrência ${type} na mesma tentativa bloqueia operação e trigger`, async () => {
+      const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+      const attemptId = rows('delivery_revalidations', id)[0].delivery_attempt_id;
+      db.prepare(`INSERT INTO delivery_occurrences
+        (delivery_id, delivery_attempt_id, type, description, reported_by_user_id)
+        VALUES (?, ?, ?, 'Histórico contraditório', ?)`).run(id, attemptId, type, courier1);
+      const before = snapshot(id);
+      assert.equal(before.delivery.status, 'awaiting_revalidation');
+      assert.equal(before.delivery.cancelled_at, null);
+      assert.equal(before.revalidations[0].verified_at, null);
+      assert.equal(before.attempts[0].status, 'closed_unsuccessfully');
+      assert.equal((await cancel(id)).status, 500);
+      assert.deepEqual(snapshot(id), before);
+      assert.equal(before.finances.filter(e => e.entry_type === 'distribution').length, 0);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.prepare(`UPDATE deliveries SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP
+          WHERE id = ?`).run(id);
+        db.prepare(`INSERT INTO delivery_events (delivery_id, actor_user_id, event_type)
+          VALUES (?, ?, 'client_cancelled_after_external_obstruction')`).run(id, client1);
+        for (const component of ['products', 'freight']) {
+          assert.throws(() => db.prepare(`INSERT INTO financial_entries
+            (order_id, delivery_id, entry_type, component, party_type, party_user_id,
+              amount_cents, reason, idempotency_key)
+            VALUES (?, ?, 'refund', ?, 'client', ?, 1,
+              'client_cancelled_after_external_obstruction', ?)`)
+            .run(item.delivery.orderId, id, component, client1,
+              `contradictory:${id}:${component}`), /invalid financial entry kind/);
+        }
+      } finally { db.exec('ROLLBACK'); }
+      assert.deepEqual(snapshot(id), before);
+    });
+  }
+
+  await context.test('pending pós-coleta com ou sem payments exige reconciliação e rollback', async () => {
+    const without = await awaiting({ freightCents: 101 }), id = without.delivery.id;
+    legacyMutation(['order_payment_ledger_regression_update', 'financial_entries_append_only_delete'], () => {
+      db.prepare('DELETE FROM financial_entries WHERE order_id = ?').run(without.delivery.orderId);
+      db.prepare("UPDATE orders SET payment_status = 'pending', payment_paid_at = NULL WHERE id = ?")
+        .run(without.delivery.orderId);
+    });
+    const before = snapshot(id);
+    assert.throws(() => cancelClientDelivery(id, client1, {}), { code: 'FINANCIAL_RECONCILIATION_REQUIRED' });
+    assert.deepEqual(snapshot(id), before);
+    const withPayment = await awaiting({ freightCents: 101 }), paidId = withPayment.delivery.id;
+    legacyMutation(['order_payment_ledger_regression_update'], () => {
+      db.prepare("UPDATE orders SET payment_status = 'pending' WHERE id = ?")
+        .run(withPayment.delivery.orderId);
+    });
+    const beforePaid = snapshot(paidId);
+    assert.throws(() => cancelClientDelivery(paidId, client1, {}), { code: 'FINANCIAL_RECONCILIATION_REQUIRED' });
+    assert.deepEqual(snapshot(paidId), beforePaid);
+  });
+
+  await context.test('autorização do cancelamento externo não muda estado nem ledger', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    const before = snapshot(id);
+    assert.equal((await request(`/api/client/deliveries/${id}/cancel`,
+      { method: 'POST', body: {} })).status, 401);
+    assert.equal((await cancel(id, cookies.company1)).status, 403);
+    assert.equal((await cancel(id, cookies.client2)).status, 404);
+    assert.deepEqual(snapshot(id), before);
+  });
+
+  await context.test('inconsistência de pagamento e de ciclo não cancela nem altera ledger', async () => {
+    const corrupt = async (mutate) => {
+      const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+      legacyMutation(['financial_entries_append_only_delete', 'financial_entries_append_only_update'],
+        () => mutate(item));
+      const before = snapshot(id);
+      assert.throws(() => cancelClientDelivery(id, client1, {}),
+        { code: 'FINANCIAL_RECONCILIATION_REQUIRED' });
+      assert.deepEqual(snapshot(id), before);
+    };
+    await corrupt(item => db.prepare(`DELETE FROM financial_entries WHERE order_id = ? AND component = 'products'`)
+      .run(item.delivery.orderId));
+    await corrupt(item => db.prepare(`DELETE FROM financial_entries WHERE order_id = ? AND component = 'freight'`)
+      .run(item.delivery.orderId));
+    await corrupt(item => db.prepare(`UPDATE financial_entries SET amount_cents = 999
+      WHERE order_id = ? AND component = 'products'`).run(item.delivery.orderId));
+    await corrupt(item => db.prepare(`UPDATE orders SET freight_total_cents = NULL WHERE id = ?`)
+      .run(item.delivery.orderId));
+    await corrupt(item => db.prepare(`UPDATE delivery_attempts SET end_nature = 'terminal'
+      WHERE delivery_id = ?`).run(item.delivery.id));
+    await corrupt(item => db.prepare(`UPDATE deliveries SET returned_at = NULL WHERE id = ?`)
+      .run(item.delivery.id));
+    await corrupt(item => db.prepare(`INSERT INTO delivery_attempts
+      (delivery_id, attempt_number, courier_id, status) VALUES (?, 2, ?, 'active')`)
+      .run(item.delivery.id, courier2));
+    await corrupt(item => legacyMutation(['revalidation_delete_forbidden'], () => db.prepare(
+      'DELETE FROM delivery_revalidations WHERE delivery_id = ?').run(item.delivery.id)));
+    await corrupt(item => {
+      const foreign = createDelivery();
+      legacyMutation(['revalidation_receipt_immutable'], () => db.prepare(
+        'UPDATE delivery_revalidations SET delivery_id = ? WHERE delivery_id = ?')
+        .run(foreign.delivery.id, item.delivery.id));
+    });
+    await corrupt(item => legacyMutation(['delivery_occurrences_report_immutable'], () => db.prepare(
+      "UPDATE delivery_occurrences SET type = 'recipient_absent' WHERE delivery_id = ?")
+      .run(item.delivery.id)));
+    await corrupt(item => db.prepare(`INSERT INTO delivery_attempts
+      (delivery_id, attempt_number, courier_id, status, ended_at, end_reason, end_nature)
+      VALUES (?, 2, ?, 'closed_unsuccessfully', CURRENT_TIMESTAMP,
+        'temporary_external_obstruction', 'recoverable')`).run(item.delivery.id, courier2));
+  });
+
+  await context.test('antes do retorno físico não usa a regra especial', async () => {
+    const item = await atDestination({ freightCents: 101 }), id = item.delivery.id;
+    await obstruct(item);
+    const before = snapshot(id);
+    assert.equal((await cancel(id)).status, 409);
+    assert.deepEqual(snapshot(id), before);
+    assert.equal((await post(cookies.courier1, id, 'report-return')).status, 200);
+    const reported = snapshot(id);
+    assert.equal((await cancel(id)).status, 409);
+    assert.deepEqual(snapshot(id), reported);
+    assert.equal((await companyAction(id, 'confirm-return')).status, 200);
+  });
+
+  await context.test('falhas de products e freight fazem rollback integral', async () => {
+    for (const component of ['products', 'freight']) {
+      const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+      const before = snapshot(id);
+      db.exec(`CREATE TRIGGER forced_external_refund BEFORE INSERT ON financial_entries
+        WHEN NEW.entry_type = 'refund' AND NEW.reason = 'client_cancelled_after_external_obstruction'
+          AND NEW.component = '${component}'
+        BEGIN SELECT RAISE(ABORT, 'forced refund failure'); END;`);
+      try { assert.equal((await cancel(id)).status, 500); }
+      finally { db.exec('DROP TRIGGER forced_external_refund'); }
+      assert.deepEqual(snapshot(id), before);
+      assert.equal((await cancel(id)).status, 200);
+    }
+  });
+
+  await context.test('gatilho permite refunds coerentes e rejeita distribution para todos', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    assert.throws(() => db.prepare(`INSERT INTO financial_entries (order_id, delivery_id,
+      entry_type, component, party_type, party_user_id, amount_cents, reason, idempotency_key)
+      VALUES (?, ?, 'refund', 'products', 'client', ?, 1,
+        'client_cancelled_after_external_obstruction', ?)`)
+      .run(item.delivery.orderId, id, client1, `too-early:${id}`), /invalid financial entry kind/);
+    assert.equal((await cancel(id)).status, 200);
+    for (const [party, userId, companyId] of [
+      ['courier', courier1, null], ['company', null, company1], ['ermes', null, null],
+    ]) {
+      assert.throws(() => db.prepare(`INSERT INTO financial_entries (order_id, delivery_id,
+        entry_type, component, party_type, party_user_id, party_company_id, amount_cents,
+        reason, idempotency_key) VALUES (?, ?, 'distribution', 'freight', ?, ?, ?, 1, ?, ?)`)
+        .run(item.delivery.orderId, id, party, userId, companyId,
+          'client_cancelled_after_external_obstruction', `invalid:${id}:${party}`));
+    }
+    assert.equal(snapshot(id).finances.filter(e => e.entry_type === 'distribution').length, 0);
+  });
+
+  await context.test('over-refund e colisão semântica exigem reconciliação', async () => {
+    const terminal = async () => {
+      const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+      db.prepare("UPDATE deliveries SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+      db.prepare(`INSERT INTO delivery_events (delivery_id, actor_user_id, event_type)
+        VALUES (?, ?, 'client_cancelled_after_external_obstruction')`).run(id, client1);
+      return item;
+    };
+    const insertRefund = (item, amount, key) => db.prepare(`INSERT INTO financial_entries
+      (order_id, delivery_id, entry_type, component, party_type, party_user_id,
+        amount_cents, reason, idempotency_key)
+      VALUES (?, ?, 'refund', 'products', 'client', ?, ?,
+        'client_cancelled_after_external_obstruction', ?)`)
+      .run(item.delivery.orderId, item.delivery.id, client1, amount, key);
+    const over = await terminal();
+    legacyMutation(['financial_entry_over_refund_insert'], () =>
+      insertRefund(over, 1001, `prior:${over.delivery.id}:over`));
+    const beforeOver = snapshot(over.delivery.id);
+    assert.throws(() => transaction(() =>
+      recordClientCancellationAfterExternalObstructionInTransaction(db, { id: over.delivery.id })),
+    { code: 'FINANCIAL_RECONCILIATION_REQUIRED' });
+    assert.deepEqual(snapshot(over.delivery.id), beforeOver);
+    const collision = await terminal();
+    insertRefund(collision, 1,
+      `delivery:${collision.delivery.id}:client-cancelled-after-external-obstruction:refund-products`);
+    const beforeCollision = snapshot(collision.delivery.id);
+    assert.throws(() => transaction(() =>
+      recordClientCancellationAfterExternalObstructionInTransaction(db, { id: collision.delivery.id })),
+    { code: 'FINANCIAL_RECONCILIATION_REQUIRED' });
+    assert.deepEqual(snapshot(collision.delivery.id), beforeCollision);
+  });
+
 
 });

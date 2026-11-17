@@ -56,6 +56,7 @@ test("centraliza eventos operacionais e a classificação de ocorrência da Base
     "courier_failed_after_pickup",
     "client_cancelled_before_pickup",
     "client_cancelled_after_pickup",
+    "client_cancelled_after_external_obstruction",
     "recipient_absent",
     "recipient_refused",
     "address_problem",

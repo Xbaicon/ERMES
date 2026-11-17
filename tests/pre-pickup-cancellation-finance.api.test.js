@@ -311,7 +311,7 @@ test("cancelamento pré-coleta financeiro — Baseline 0.2", async (context) => 
       const item = createDelivery();
       db.prepare("UPDATE deliveries SET status = ? WHERE id = ?").run(state, item.delivery.id);
       const before = snapshot(item);
-      assert.equal((await cancel(item)).status, 409);
+      assert.equal((await cancel(item)).status, state === "awaiting_revalidation" ? 500 : 409);
       assert.deepEqual(snapshot(item), before);
     }
   });

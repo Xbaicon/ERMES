@@ -9,7 +9,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
 | Baseline 0.2 | Em implementação incremental | `TentativaEntrega`, `OcorrenciaEntrega`/responsabilidade, impedimento externo/revalidação e fechamento operacional por ausência/recusa possuem incrementos funcionais; demais cenários e financeiro completo continuam pendentes |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
-| Incremento atual | Financeiro do cancelamento pré-coleta — IMPLEMENTADO | Refund integral acumulado dos componentes pagos na transação do cancelamento; sem distribuição ou tentativa nova; históricos ambíguos exigem reconciliação |
+| Incremento atual | Cancelamento após impedimento externo — IMPLEMENTADO | Em `awaiting_revalidation`, após retorno físico, cliente cancela com refund integral dos componentes pagos; sem distribuição ou sanção; política interna da tentativa continua futura |
 | Próximo passo técnico | Implementação incremental | Continuar os incrementos funcionais da Baseline 0.2 sobre SQLite, preservando as pendências registradas abaixo |
 | Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
 | Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |
@@ -26,6 +26,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Retornos da tentativa | PARCIAL | Falha mecânica é recuperável; ausência, recusa, três códigos inválidos e cancelamento são terminais, sempre após confirmação física do retorno. A classificação registrada ainda não altera esse comportamento; impedimento externo usa retorno recuperável e revalidação explícita |
 | Ocorrências e classificação 0.2 | PARCIAL | `delivery_occurrences` preserva falhas do motoboy antes/depois da coleta, ausência, recusa e três códigos inválidos. A empresa consulta e classifica uma única vez como `CLIENTE`, `EMPRESA`, `MOTOBOY`, `SISTEMA` ou `INDEFINIDO`; somente `confirmation_failed` aplica os refunds do cliente na classificação |
 | Revalidação por impedimento externo | IMPLEMENTADO | Ocorrência `temporary_external_obstruction`, retorno físico, tentativa encerrada recuperável, `awaiting_revalidation` persistido e liberação explícita/auditada pela empresa; nova tentativa somente na nova coleta |
+| Cancelamento durante revalidação externa | IMPLEMENTADO | Cliente proprietário cancela somente após retorno físico confirmado, com evento próprio e refund integral acumulado de payments coerentes; ciclo e tentativa ficam históricos, sem distribution, nova tentativa, retorno ou sanção |
 | Ausência e recusa do destinatário | OPERACIONAL E FINANCEIRO IMPLEMENTADOS | Retorno confirmado fecha tentativa terminal, projeta `NAO_REALIZADA/ENCERRADO`, completa reembolso de produtos pagos e distribui frete pago 70/25/5; sem presunção de responsabilidade, nova tentativa ou revalidação |
 | Fechamento terminal de `confirmation_failed` | OPERACIONAL IMPLEMENTADO | Terceiro erro cria ocorrência não classificada e inicia retorno; confirmação empresarial fecha tentativa terminal e projeta `NAO_REALIZADA/ENCERRADO`, sem financeiro. Tentativa, contador, ocorrência e histórico inconsistentes exigem reconciliação, sem backfill |
 | Cancelamento pré-coleta | IMPLEMENTADO | Estados available/heading_to_pickup/awaiting_pickup; pending sem refund, paid com refund integral acumulado; liberação do motoboy e projeções CANCELADA/CANCELADO; coleta/tentativa anterior exige reconciliação |
@@ -113,7 +114,7 @@ permanece pendente.
 - Chat permanece aberto, mas nenhuma mensagem autoriza liberação. Falta de tentativa, ocorrência inequívoca ou retorno comprovado exige reconciliação explícita, sem backfill.
 - O fechamento por ausência/recusa não cria nova tentativa ou revalidação nem presume responsabilidade. Completa o reembolso acumulado de produtos efetivamente pagos, preserva a cobrança de frete e divide frete reconciliado 70/25/5 pelo maior resto. Refund anterior parcial reduz o saldo; integral não duplica; over-refund é bloqueado. O motoboy vem da TentativaEntrega terminal, confrontada com coleta, ocorrência e retorno do ciclo; identidade contraditória exige reconciliação. Refund anterior positivo de frete também exige reconciliação. Chaves idempotentes, ledger append-only e transação única garantem rollback do fechamento em falha financeira.
 - Frete `NULL` sem pagamento de frete gera `freight_amount_unavailable` sem distribuição; frete conhecido sem pagamento coerente ou frete `NULL` com pagamento exige `FINANCIAL_RECONCILIATION_REQUIRED`. Não há backfill automático heurístico de consequências de retornos históricos.
-- Cancelamento posterior ao impedimento, erro corrigível/persistente do ERMES, endereço incorreto, produto indisponível/ajuste 0.2 e perfis RESPONSAVEL/ATENDENTE permanecem para incrementos próprios. As consequências financeiras do cliente em `confirmation_failed` estão implementadas na classificação; distribuição/custo interno continua futuro. Não há cobrança, reembolso ou remuneração nova no fluxo de revalidação.
+- Cancelamento durante a revalidação após impedimento externo está implementado; após a liberação pela empresa, a política de cancelamento permanece pendente. Erro corrigível/persistente do ERMES, endereço incorreto, produto indisponível/ajuste 0.2 e perfis RESPONSAVEL/ATENDENTE permanecem para incrementos próprios. As consequências financeiras do cliente em `confirmation_failed` estão implementadas na classificação; distribuição/custo interno continua futuro. Sem cancelamento, não há cobrança, reembolso ou remuneração nova no fluxo de revalidação.
 
 
 ## Incremento terminal de três códigos inválidos
@@ -163,7 +164,7 @@ permanece pendente.
   ocorrências, na mesma transação, com rollback e repetição verificados.
 
 
-## Financeiro do cancelamento pré-coleta — incremento atual
+## Financeiro do cancelamento pré-coleta — incremento anterior
 
 - `recordClientCancellationBeforePickupInTransaction` integra o ramo existente,
   sem mudar a máquina de estados. Cancelamento, evento e refunds são atômicos;
@@ -185,4 +186,25 @@ permanece pendente.
   append-only e demais proteções. Bootstrap legado continua coberto. Autorização,
   concorrência, pós-coleta 50/50 e `confirmation_failed` permanecem preservados.
 - Este incremento não conclui a Baseline 0.2 nem implementa financeiro de
-  impedimento externo, endereço/erro ERMES, produto indisponível 0.2 ou MySQL.
+  endereço/erro ERMES, produto indisponível 0.2 ou MySQL.
+
+## Cancelamento após impedimento externo — incremento atual
+
+- O registro de `temporary_external_obstruction`, `report-return`, confirmação
+  física e espera em `awaiting_revalidation` não alteram o ledger. Não há frete
+  por tentativa nem refund parcial enquanto o Pedido permanece aberto.
+- Apenas o cliente proprietário cancela a Entrega em `awaiting_revalidation`
+  mediante ciclo único pendente, tentativa mais recente encerrada recuperável,
+  ocorrência correspondente, retorno físico e Pedido confirmado. O evento
+  `client_cancelled_after_external_obstruction` projeta `CANCELADA/CANCELADO`.
+  Tentativa, ocorrência, código e revalidação não verificada permanecem históricos.
+- Pedido `paid` exige pagamentos coerentes com products/freight e snapshots;
+  refunds acumulados compatíveis reduzem o saldo. Frete `NULL` sem payment não
+  inventa valor, com payment exige reconciliação. Over-refund e desfecho
+  conflitante exigem reconciliação. Pedido pós-coleta `pending`, com ou sem
+  payments, não é normalizado para cancelamento sem dinheiro.
+- Cancelamento, evento e refunds são atômicos; falha de products ou freight
+  reverte tudo. Não há distribution, remuneração ao motoboy, retorno extra ou
+  sanção. `financial.pending` indica somente a política interna futura de custo
+  da tentativa; o refund integral deixa o cliente financeiramente resolvido.
+  Não há backfill automático, alteração de MySQL ou política pós-revalidação.

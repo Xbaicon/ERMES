@@ -154,7 +154,7 @@ financeiras.
 
 `src/revalidation-schema.js` amplia o CHECK de tipos de ocorrência via reconstrução transacional: cria tabela temporária, copia dados mantendo IDs, remove a anterior, renomeia e recria os índices/triggers preservados. FKs ficam ligadas; `foreign_key_check` é obrigatório antes do commit. O teste usa `tests/fixtures/revalidation-legacy.sql`, snapshot relevante do schema real da PR #22, e induz falha após cópia/DROP/RENAME, prova rollback integral e repete a evolução no mesmo banco. A reconstrução só é feita para o CHECK anterior conhecido; não há backfill de ocorrências, tentativas ou revalidações.
 
-O painel mostra a espera sem oferecer aceite/cancelamento incompatível. A revalidação e o registro específico têm API, sem formulário completo. O erro corrigível do ERMES ainda exige endereço originalmente informado e apresentado, evidências de divergência/correção e disponibilidade do cliente; esses dados não são inventados. `address_problem` segue bloqueado. Cancelamento posterior e financeiro desse cenário ficam para incremento próprio; nenhum legado é convertido para simular essas regras.
+O painel mostra a espera sem oferecer aceite/cancelamento incompatível. A revalidação e o registro específico têm API, sem formulário completo. O erro corrigível do ERMES ainda exige endereço originalmente informado e apresentado, evidências de divergência/correção e disponibilidade do cliente; esses dados não são inventados. `address_problem` segue bloqueado. O cancelamento durante a espera pelo impedimento externo é descrito abaixo; nenhum legado é convertido automaticamente.
 
 
 ### Fechamento de `confirmation_failed`
@@ -290,3 +290,30 @@ legados. Não há backfill novo. Projeções de cancelamentos comprovados verifi
 refunds completos e retiram a antiga pendência apenas quando reconciliados;
 Pedido pago com frete desconhecido mantém `freight_amount_unavailable`. Histórico sem causa
 continua pendente, e cancelamento histórico sem refunds exige reconciliação explícita.
+
+## Cancelamento após impedimento externo: refund integral atômico
+
+O ramo `awaiting_revalidation` de `cancelClientDelivery` verifica Entrega,
+Pedido, retorno físico, última tentativa recuperável, ocorrência externa e ciclo
+único pendente antes da transição. `BEGIN IMMEDIATE` serializa a disputa com
+`revalidateDelivery`: um dos comandos consome o estado, e o outro falha. Se a
+revalidação venceu, o estado `available` com ciclo anterior não é tratado como
+cancelamento pré-coleta; a política pós-revalidação segue pendente.
+
+Na mesma transação, a Entrega passa a `cancelled`, registra o evento específico
+do cliente e chama `recordClientCancellationAfterExternalObstructionInTransaction`.
+A função valida o estado terminal, pagamentos e snapshots do Pedido, lançamentos
+anteriores e limites de refund; completa apenas o saldo de products/freight.
+`pending` no estágio pós-coleta, inclusive sem pagamentos, exige reconciliação.
+Uma falha em qualquer refund reverte também estado, horário e evento. A tentativa
+e o ciclo ficam históricos, sem preencher os campos de verificação.
+
+`financial_entry_valid_kind_insert` permite apenas refund do novo motivo com
+evidência operacional, temporal e evento de cancelamento coerentes; não autoriza
+distribution. A instalação do trigger continua no bootstrap transacional para
+bancos novos e existentes. Nenhuma tabela é reconstruída para este incremento,
+e não há backfill de refunds de cancelamentos legados. `financial.pending` usa
+`freight_distribution_rule_undefined` apenas para a política interna futura da
+tentativa malsucedida. Durante a espera não há refund devido; após cancelamento
+e reembolso integral, não há pendência de valor ao cliente. A tentativa não
+gera outra cobrança de frete nem remuneração automática.
