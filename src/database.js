@@ -331,7 +331,20 @@ transaction(() => db.exec(`
             AND NEW.reason IN ('recipient_absent', 'recipient_refused')
             AND EXISTS (SELECT 1 FROM deliveries d WHERE d.id = NEW.delivery_id
               AND d.status = 'returned' AND d.return_reason = NEW.reason
-              AND d.returned_at IS NOT NULL))))
+              AND d.returned_at IS NOT NULL))
+          OR (NEW.reason = 'confirmation_failed' AND EXISTS (
+            SELECT 1 FROM deliveries d
+            JOIN delivery_attempts a ON a.delivery_id = d.id
+              AND a.status = 'closed_unsuccessfully' AND a.end_nature = 'terminal'
+              AND a.end_reason = 'confirmation_failed'
+            JOIN delivery_occurrences oc ON oc.delivery_id = d.id
+              AND oc.delivery_attempt_id = a.id AND oc.type = 'confirmation_failed'
+            WHERE d.id = NEW.delivery_id AND d.status = 'returned'
+              AND d.return_reason = 'confirmation_failed' AND d.returned_at IS NOT NULL
+              AND oc.classified_at IS NOT NULL
+              AND oc.responsibility IN ('CLIENTE', 'MOTOBOY', 'SISTEMA', 'INDEFINIDO')
+              AND (NEW.component = 'products' OR (NEW.component = 'freight'
+                AND oc.responsibility IN ('MOTOBOY', 'SISTEMA', 'INDEFINIDO')))))))
       OR (NEW.entry_type = 'distribution' AND NEW.component = 'freight'
         AND NEW.delivery_id IS NOT NULL
         AND ((NEW.reason = 'delivery_completed'

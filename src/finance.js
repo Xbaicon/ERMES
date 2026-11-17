@@ -437,6 +437,111 @@ export function recordProductUnavailableInTransaction(database, delivery, occurr
   }
 }
 
+const CONFIRMATION_FAILURE_RESPONSIBILITIES = new Set(["CLIENTE", "MOTOBOY", "SISTEMA", "INDEFINIDO"]);
+const FINAL_DISTRIBUTION_REASONS = new Set([
+  "confirmation_failed", "delivery_completed", "recipient_absent", "recipient_refused",
+  "client_cancelled_after_pickup",
+]);
+
+function confirmationFailureClassification(database, occurrenceId, responsibility) {
+  if (!CONFIRMATION_FAILURE_RESPONSIBILITIES.has(responsibility)) {
+    throw financialError("Responsabilidade incompatível com o financeiro de três códigos inválidos.");
+  }
+  const delivery = database.prepare(`SELECT d.id, d.order_id AS orderId,
+    o.client_id AS clientId, o.company_id AS companyId,
+    o.items_total_cents AS itemsTotalCents, o.freight_total_cents AS freightTotalCents,
+    o.payment_status AS paymentStatus, o.payment_paid_at AS paymentPaidAt,
+    oc.classified_at AS classifiedAt
+    FROM delivery_occurrences oc JOIN deliveries d ON d.id = oc.delivery_id
+    JOIN orders o ON o.id = d.order_id
+    WHERE oc.id = ? AND oc.type = 'confirmation_failed' AND oc.responsibility = ?
+      AND oc.classified_by_user_id IS NOT NULL AND oc.classified_at IS NOT NULL
+      AND d.status = 'returned' AND d.return_reason = 'confirmation_failed'`)
+    .get(occurrenceId, responsibility);
+  if (!delivery || delivery.paymentStatus !== "paid"
+    || !isCanonicalTimestamp(delivery.paymentPaidAt)) {
+    throw financialError("A classificação e o pagamento exigem reconciliação financeira.");
+  }
+  return delivery;
+}
+
+// O chamador valida a evidência operacional em official-statuses antes de
+// persistir a classificação. Esta camada valida somente classificação e ledger,
+// sem importar official-statuses de volta nem abrir outra transação.
+function confirmationFailureRefundPlan(database, delivery, responsibility) {
+  const entries = database.prepare(`SELECT order_id AS orderId, delivery_id AS deliveryId,
+    entry_type AS entryType, component, party_type AS partyType,
+    party_user_id AS partyUserId, party_company_id AS partyCompanyId,
+    amount_cents AS amountCents, reason, idempotency_key AS idempotencyKey
+    FROM financial_entries WHERE order_id = ? ORDER BY id`).all(delivery.orderId);
+  const payments = new Map();
+  for (const entry of entries) {
+    if (!Number.isSafeInteger(entry.amountCents) || entry.amountCents < 0
+      || !["products", "freight"].includes(entry.component)
+      || (entry.deliveryId !== null && entry.deliveryId !== delivery.id)) {
+      throw financialError("Lançamento financeiro inválido ou vinculado a outra Entrega.");
+    }
+    if (entry.entryType === "distribution") {
+      // Uma remuneração histórica de outra natureza não é, por si só, corrupção.
+      // Desfechos finais concorrentes e lançamentos atribuídos a este fluxo são.
+      if (FINAL_DISTRIBUTION_REASONS.has(entry.reason)
+        || entry.idempotencyKey.startsWith(`delivery:${delivery.id}:confirmation-failed:`)) {
+        throw financialError("Distribuição incompatível com o desfecho confirmation_failed.");
+      }
+      continue;
+    }
+    if (!["payment", "refund"].includes(entry.entryType)
+      || entry.partyType !== "client" || entry.partyUserId !== delivery.clientId
+      || entry.partyCompanyId !== null) {
+      throw financialError("O componente financeiro não pertence ao cliente do Pedido.");
+    }
+    if (entry.entryType === "payment") {
+      if (payments.has(entry.component) || entry.reason !== "simulated_payment") {
+        throw financialError("Pagamento duplicado ou incompatível.");
+      }
+      payments.set(entry.component, entry.amountCents);
+    }
+  }
+  if (payments.get("products") !== delivery.itemsTotalCents
+    || (delivery.freightTotalCents === null
+      ? payments.has("freight") : payments.get("freight") !== delivery.freightTotalCents)) {
+    throw financialError("Pagamentos ausentes ou divergentes dos snapshots do Pedido.");
+  }
+  const base = entryBase(delivery, "confirmation_failed", delivery.classifiedAt);
+  return ["products", "freight"].map((component) => {
+    const paid = payments.get(component) ?? 0;
+    const refunds = entries.filter((entry) => entry.entryType === "refund" && entry.component === component);
+    let refunded;
+    try { refunded = sumFinancialAmounts(refunds.map((entry) => entry.amountCents)); }
+    catch { throw financialError("O total reembolsado exige reconciliação."); }
+    if (refunded > paid || (component === "freight" && responsibility === "CLIENTE" && refunded > 0)) {
+      throw financialError("Reembolso excessivo ou incompatível com a responsabilidade classificada.");
+    }
+    const idempotencyKey = `delivery:${delivery.id}:confirmation-failed:refund-${component}`;
+    const existing = findEntryByIdempotencyKey(database, idempotencyKey);
+    const ownRefund = refunds.find((entry) => entry.idempotencyKey === idempotencyKey);
+    const shouldRefund = component === "products" || responsibility !== "CLIENTE";
+    const amountCents = shouldRefund ? paid - refunded + (ownRefund?.amountCents ?? 0) : 0;
+    const entry = {
+      ...base, entryType: "refund", component, partyType: "client",
+      partyId: delivery.clientId, amountCents, idempotencyKey,
+    };
+    if (existing) {
+      if (amountCents === 0) throw financialError("Chave de reembolso existente sem saldo compatível.");
+      assertSameSemanticEntry(existing, normalizeEntry(entry));
+    }
+    return { entry, refunded, paid, shouldRefund };
+  });
+}
+
+export function recordConfirmationFailureFinancialConsequencesInTransaction(database, occurrenceId, responsibility) {
+  const delivery = confirmationFailureClassification(database, occurrenceId, responsibility);
+  const plan = confirmationFailureRefundPlan(database, delivery, responsibility);
+  for (const { entry } of plan) {
+    if (entry.amountCents > 0) insertFinancialEntryInTransaction(database, entry);
+  }
+}
+
 function publicEntry({ entryType, component, amountCents, reason, occurredAt }) {
   return { entryType, component, amountCents, reason, occurredAt };
 }
@@ -488,6 +593,21 @@ function pendingFinancialEffects(database, delivery, entries) {
   }
   if (PENDING_DISTRIBUTION_REASONS.has(delivery.returnReason)) {
     pending.push("freight_distribution_rule_undefined");
+  }
+  if (delivery.returnReason === "confirmation_failed") {
+    const occurrences = database.prepare(`SELECT id, responsibility FROM delivery_occurrences
+      WHERE delivery_id = ? AND type = 'confirmation_failed'`).all(delivery.id);
+    const occurrence = occurrences.length === 1 ? occurrences[0] : null;
+    if (!occurrence || occurrence.responsibility === null) {
+      pending.push("confirmation_failure_classification_required");
+    } else {
+      const persisted = confirmationFailureClassification(database, occurrence.id, occurrence.responsibility);
+      const plan = confirmationFailureRefundPlan(database, persisted, occurrence.responsibility);
+      if (plan.some(({ shouldRefund, refunded, paid }) => shouldRefund && refunded !== paid)) {
+        throw financialError("Histórico classificado sem reembolsos completos; reconciliação explícita necessária.");
+      }
+    }
+    if (delivery.freightTotalCents === null && !paidFreight) pending.push("freight_amount_unavailable");
   }
   if (RECIPIENT_TERMINAL_REASONS.has(delivery.returnReason) && delivery.status === "returned") {
     const payments = paidComponents(database, delivery.orderId, delivery.clientId);
