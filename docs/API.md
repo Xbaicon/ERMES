@@ -597,10 +597,9 @@ físico confirmado e evidência terminal coerente: durante `returning`, durante
 `awaiting_return_confirmation` ou com ciclo inconsistente retorna `409`, sem
 mutação. A restrição temporal é exclusiva de `confirmation_failed`.
 
-A classificação não altera o estado da Entrega nem o ciclo da tentativa.
-Exclusivamente para `confirmation_failed`, aplica as consequências financeiras
-do cliente na mesma transação, conforme a seção financeira abaixo. As demais
-ocorrências mantêm a classificação sem efeitos financeiros. Não há nova interface visual. O tipo genérico `address_problem` continua retornando
+A classificação não altera o estado da Entrega, o ciclo da tentativa nem o
+financeiro. Este incremento não cria interface visual, revalidação nem
+consequências automáticas. O tipo genérico `address_problem` continua retornando
 `409` sem mutação até que o fluxo tipado de evidências e revalidação seja
 implementado. A autorização usa somente o papel técnico atual `company`;
 `RESPONSAVEL` e `ATENDENTE` ainda não foram implementados.
@@ -638,9 +637,10 @@ IDs internos não alteram essa equivalência. UPDATE e DELETE são rejeitados.
 
 Quando `freight_total_cents` é `NULL`, nenhum valor de frete é criado: os efeitos
 sobre o frete ficam indicados em `financial.pending`. O fechamento operacional
-por destinatário ausente ou recusa aplica o reembolso acumulado de produtos
-e a divisão do frete 70/25/5 descritos abaixo. Endereço incorreto e três códigos
-inválidos não recebem distribuição interna nova nesta etapa. O reembolso de cancelamento antes da
+por destinatário ausente ou recusa ainda não aplica os reembolsos e a divisão
+70/25/5 definidos pela Baseline 0.2; esses efeitos pertencem a incremento
+financeiro próprio. Endereço incorreto e três códigos inválidos também não
+recebem distribuição nova nesta etapa. O reembolso de cancelamento antes da
 coleta continua sem ser inferido pela API.
 Se o frete estiver preservado, mas faltar o lançamento de pagamento correspondente,
 a conclusão aborta com reconciliação financeira e não mantém estado, evento ou
@@ -765,10 +765,11 @@ exige reconciliação. Classificação posterior não altera o ledger.
 Em retorno terminal histórico com lançamentos incompletos, a projeção
 financeira exige reconciliação em vez de informar distribuição concluída.
 
-Endereço incorreto/erro do ERMES e produto indisponível no modelo 0.2
-permanecem para incrementos próprios. As consequências financeiras do cliente
-em `confirmation_failed` são aplicadas na classificação, conforme seção abaixo;
-a distribuição interna/custo operacional continua futura.
+Endereço incorreto/erro do ERMES, produto indisponível no modelo 0.2 e a
+implementação financeira de `confirmation_failed` permanecem para incrementos
+próprios. As consequências de `confirmation_failed` já definidas na Baseline
+0.2 continuam normativas; distribuição/custo interno permanece futuro onde a
+Baseline assim determina.
 
 ## Fechamento terminal após três códigos inválidos (0.2)
 
@@ -797,59 +798,11 @@ A responsabilidade permanece `null` até decisão explícita após retorno físi
 confirmado e evidência terminal íntegra. A classificação aceita exclusivamente
 `CLIENTE`, `MOTOBOY`, `SISTEMA` e `INDEFINIDO`; `EMPRESA` retorna `400` e segunda
 classificação retorna `409`. Classificar não altera estados,
-código, contador ou tentativa. O fechamento independe da classificação;
-os refunds do cliente nascem somente na classificação válida.
+código, contador, tentativa ou ledger. O fechamento independe da classificação.
 
 A Entrega terminal não pode ser aceita, coletada, confirmada ou revalidada;
 não volta a disponível, não cria tentativa #2 nem ciclo de revalidação. Código e
 histórico permanecem no banco. Repetições não duplicam ocorrência, encerramento
-ou evento. Terceiro erro, retorno reportado e retorno confirmado não criam
-refund nem distribution de `confirmation_failed`. Ausência, recusa e
-cancelamento pós-coleta mantêm seus comportamentos anteriores.
-
-
-## Financeiro do cliente na classificação de `confirmation_failed` (0.2)
-
-O POST de classificação existente mantém o gate de retorno físico confirmado e
-`hasConfirmationFailureEvidence(db, deliveryId, true)`. Na mesma transação,
-persiste responsabilidade, classificador, horário e análise, registra
-`occurrence_classified` e aplica os refunds. Qualquer falha, inclusive no segundo
-refund, reverte todos esses efeitos; a ocorrência pode ser classificada após
-reconciliação. A segunda classificação continua retornando `409`.
-
-| Responsabilidade | Produtos efetivamente pagos | Frete efetivamente pago | Distribuição interna nova |
-| --- | --- | --- | --- |
-| `CLIENTE` | Reembolso integral acumulado | Permanece integralmente cobrado | Nenhuma |
-| `MOTOBOY` | Reembolso integral acumulado | Reembolso integral acumulado | Nenhuma |
-| `SISTEMA` | Reembolso integral acumulado | Reembolso integral acumulado | Nenhuma |
-| `INDEFINIDO` | Reembolso integral acumulado | Reembolso integral acumulado | Nenhuma |
-
-`EMPRESA` continua retornando `400`. Sem sessão retorna `401`; cliente e motoboy,
-`403`; empresa alheia, `404`. Rejeições não alteram classificação, evento ou ledger.
-Não há inferência de culpado nem aplicação de 70/25/5 a esse fluxo.
-
-Cada refund completa somente o saldo entre o pagamento persistido e os refunds
-anteriores do componente. Refund integral anterior não é duplicado. Over-refund,
-pagamento de produtos ausente/duplicado/inválido/divergente, frete conhecido sem
-pagamento único coerente ou frete `NULL` com pagamento exigem
-`FINANCIAL_RECONCILIATION_REQUIRED` internamente (`500` com erro genérico na API).
-Em `CLIENTE`, qualquer refund anterior positivo de frete também exige reconciliação,
-sem recobrança nem compensação. Distribuições atribuídas a `confirmation_failed`
-ou a desfechos finais incompatíveis exigem reconciliação; a simples presença de
-remuneração histórica de outra natureza não é tratada como corrupção automática.
-Nada é apagado ou atualizado no ledger.
-
-Com frete `NULL` sem pagamento, os produtos são reembolsados sem inventar frete.
-`financial.pending` inclui `freight_amount_unavailable`. Antes da classificação,
-inclui `confirmation_failure_classification_required`; após a classificação
-coerente, esse item desaparece. `freight_distribution_rule_undefined` representa
-somente a distribuição interna/custo operacional futuro, inclusive a regra não
-presumida de `CLIENTE`; não indica dúvida sobre o frete devido pelo cliente.
-`refundStatus` continua derivado do ledger: com produtos 2000 e frete 101 pagos,
-`CLIENTE` recebe 2000 (`partial`), e os outros três recebem 2101 (`full`).
-
-Não há backfill automático dos refunds de históricos anteriormente classificados.
-Esses históricos exigem reconciliação explícita; a projeção financeira rejeita
-refunds incompletos em vez de declarar o financeiro concluído. O startup não
-infere esses refunds. Estados `returned/NAO_REALIZADA/ENCERRADO`, tentativa,
-contador, código e marcos operacionais permanecem inalterados.
+ou evento. Nenhum lançamento, reembolso ou distribuição financeira é criado
+neste incremento; o ledger permanece integralmente preservado. Ausência, recusa
+e cancelamento pós-coleta mantêm seus comportamentos anteriores.

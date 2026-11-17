@@ -1,10 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { spawnSync } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import { isCanonicalTimestamp } from "../src/finance.js";
 
@@ -188,78 +187,6 @@ test("três inicializações sequenciais no mesmo banco preservam schema, trigge
         assertFinancialRule(reopened);
         assert.deepEqual(data(reopened), beforeData);
       } finally { reopened.close(); }
-    }
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-
-test("bootstrap completo migra ocorrências legadas, reverte falha e repete sem perder dados", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "ermes-occurrence-bootstrap-"));
-  try {
-    const freshPath = join(directory, "fresh.sqlite");
-    await initialize(freshPath, 1);
-    const fresh = inspect(freshPath);
-    const financialTable = fresh.prepare("SELECT sql FROM sqlite_master WHERE name='financial_entries'").get().sql;
-    fresh.close();
-    const path = join(directory, "legacy.sqlite");
-    const legacy = inspect(path);
-    let beforeData, beforeSchema;
-    try {
-      legacy.exec(readFileSync(new URL("./fixtures/revalidation-legacy.sql", import.meta.url), "utf8"));
-      seed(legacy);
-      legacy.exec(`INSERT INTO users(id, company_id, role, full_name, email, password_hash)
-        VALUES (2,1,'company','Empresa','e','hash'),(3,1,'courier','Motoboy','m','hash');
-        INSERT INTO deliveries(id,order_id,status) VALUES (1,1,'returned');
-        INSERT INTO delivery_attempts(id,delivery_id,attempt_number,courier_id,status,ended_at,end_reason,end_nature)
-        VALUES (1,1,1,3,'closed_unsuccessfully',CURRENT_TIMESTAMP,'recipient_absent','terminal');
-        INSERT INTO delivery_occurrences(id,delivery_id,delivery_attempt_id,type,reported_by_user_id,
-          responsibility,classified_by_user_id,classified_at)
-        VALUES (42,1,1,'recipient_absent',3,'CLIENTE',2,CURRENT_TIMESTAMP);`);
-      legacy.exec(financialTable);
-      legacy.exec(`CREATE TRIGGER financial_entry_valid_kind_insert BEFORE INSERT ON financial_entries
-        BEGIN SELECT RAISE(ABORT, 'legacy protection'); END;`);
-      beforeData = data(legacy); beforeSchema = schema(legacy);
-    } finally { legacy.close(); }
-    // Falha após DROP/RENAME real, sem desligar constraints ou foreign keys.
-    const failed = spawnSync(process.execPath, ["--input-type=module", "-e", `
-      import { DatabaseSync } from 'node:sqlite';
-      const original = DatabaseSync.prototype.exec;
-      DatabaseSync.prototype.exec = function(sql) {
-        const result = original.call(this, sql);
-        if (sql.includes('ALTER TABLE delivery_occurrences_next RENAME')) throw new Error('forced migration failure');
-        return result;
-      };
-      await import('./src/database.js');
-    `], { cwd: process.cwd(), env: { ...process.env, NODE_ENV: "production", ERMES_DB_PATH: path }, encoding: "utf8" });
-    assert.notEqual(failed.status, 0);
-    assert.match(failed.stderr, /forced migration failure/);
-    const restored = inspect(path);
-    try { assert.deepEqual(schema(restored), beforeSchema); assert.deepEqual(data(restored), beforeData); }
-    finally { restored.close(); }
-    let finalSchema;
-    for (let pass = 0; pass < 2; pass++) {
-      await initialize(path, 1);
-      const db = inspect(path);
-      try {
-        assertInitialized(db);
-        for (const [table, rows] of Object.entries(beforeData)) {
-          assert.deepEqual(db.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all(), rows);
-        }
-        assert.equal(db.prepare('SELECT COUNT(*) n FROM financial_entries').get().n, 0);
-        const trigger = db.prepare("SELECT sql FROM sqlite_master WHERE name='financial_entry_valid_kind_insert'").get().sql;
-        assert.match(trigger, /classifier.role = 'company'/);
-        assert.match(trigger, /COUNT\(\*\)/);
-        assertFinancialRule(db);
-        db.exec('BEGIN IMMEDIATE');
-        try {
-          db.exec("UPDATE orders SET payment_status='paid', payment_paid_at=CURRENT_TIMESTAMP WHERE id=1");
-          db.exec(`INSERT INTO financial_entries(order_id,delivery_id,entry_type,component,party_type,party_user_id,amount_cents,reason,idempotency_key)
-            VALUES (1,1,'payment','products','client',1,1000,'simulated_payment','probe-payment')`);
-          assert.throws(() => db.exec(`INSERT INTO financial_entries(order_id,delivery_id,entry_type,component,party_type,party_user_id,amount_cents,reason,idempotency_key)
-            VALUES (1,1,'refund','products','client',1,1000,'confirmation_failed','probe-refund')`), /invalid financial entry kind/);
-        } finally { db.exec('ROLLBACK'); }
-        if (pass === 0) finalSchema = schema(db); else assert.deepEqual(schema(db), finalSchema);
-      } finally { db.close(); }
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

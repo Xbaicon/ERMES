@@ -79,8 +79,8 @@ const occurrenceObjects = `  CREATE INDEX IF NOT EXISTS delivery_occurrences_del
 
 `;
 
-export function evolveRevalidationSchema(database, { inTransaction = false } = {}) {
-  if (!inTransaction) database.exec("BEGIN IMMEDIATE");
+export function evolveRevalidationSchema(database) {
+  database.exec("BEGIN IMMEDIATE");
   try {
     const existing = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'delivery_occurrences'").get();
     if (existing && !existing.sql.includes("'temporary_external_obstruction'")) {
@@ -101,9 +101,9 @@ export function evolveRevalidationSchema(database, { inTransaction = false } = {
     if (database.prepare("PRAGMA foreign_key_check").all().length) {
       throw new Error("A evolução de revalidação encontrou vínculos inválidos; reconciliação necessária.");
     }
-    if (!inTransaction) database.exec("COMMIT");
+    database.exec("COMMIT");
   } catch (error) {
-    if (!inTransaction) database.exec("ROLLBACK");
+    database.exec("ROLLBACK");
     throw error;
   }
 }
