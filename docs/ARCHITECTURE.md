@@ -37,7 +37,7 @@ Não há dependências npm externas nesta etapa.
 - `src/delivery-operations.js` implementa consultas isoladas e transições transacionais. Atualizações condicionadas ao estado, o índice parcial `one_active_delivery_per_courier` e a serialização do SQLite protegem aceite e avanço concorrentes. Cada mudança efetiva grava exatamente um evento.
 - `src/delivery-attempts.js` concentra a persistência e o ciclo mínimo de `TentativaEntrega`. `delivery_attempts` usa os estados conceituais `active`, `returning`, `completed` e `closed_unsuccessfully`, equivalentes a `ATIVA`, `EM_RETORNO`, `CONCLUIDA` e `ENCERRADA_SEM_SUCESSO`. Cada tentativa possui `invalid_code_attempts` entre zero e três; a entidade não replica os estados operacionais detalhados da Entrega.
 - `src/delivery-occurrences.js` concentra o registro persistente e a classificação de `OcorrenciaEntrega`. Falha do motoboy antes da coleta não se vincula a tentativa; falha após a coleta, ausência, recusa e terceira validação inválida se vinculam à tentativa aberta. O registro preserva relator, horário, descrição e evidência interna; a projeção empresarial omite identificadores internos e evidências.
-- A responsabilidade permanece `NULL` enquanto não classificada e pode ser definida uma única vez pela empresa como `CLIENTE`, `EMPRESA`, `MOTOBOY`, `SISTEMA` ou `INDEFINIDO`. `INDEFINIDO` é uma classificação efetiva, distinta da ausência de classificação. A classificação e o evento `occurrence_classified` são atômicos e não alteram estado, tentativa ou financeiro.
+- A responsabilidade permanece `NULL` enquanto não classificada e pode ser definida uma única vez pela empresa como `CLIENTE`, `EMPRESA`, `MOTOBOY`, `SISTEMA` ou `INDEFINIDO`. `INDEFINIDO` é uma classificação efetiva, distinta da ausência de classificação. A classificação e o evento `occurrence_classified` são atômicos e não alteram estado ou tentativa. Para `confirmation_failed`, os refunds do cliente participam dessa mesma transação; as demais classificações não alteram o financeiro.
 - A confirmação da coleta executa em um único `BEGIN IMMEDIATE`: valida a Entrega atribuída em `awaiting_pickup`, verifica a ausência de tentativa aberta, calcula `MAX(attempt_number) + 1`, insere a tentativa, muda a Entrega para `in_transit`, grava `collected_at` e registra `order_collected`. Qualquer falha desfaz todos esses efeitos.
 - `UNIQUE(delivery_id, attempt_number)` protege a sequência. O índice parcial único `one_open_attempt_per_delivery`, para `active` e `returning`, protege no banco a regra de uma tentativa aberta por Entrega; a aplicação também verifica a regra dentro da transação. Uma futura mudança de banco deverá reproduzir essa invariante com mecanismo equivalente.
 - Código válido muda a tentativa ativa para `completed` e grava `ended_at` na mesma transação que conclui a Entrega, registra o evento e executa o financeiro existente. O código de confirmação, seu hash e sua representação cifrada continuam exclusivamente em `deliveries`.
@@ -175,8 +175,8 @@ encerra a tentativa, limpa atribuição, grava `returned_at`, `returned` e
 `return_confirmed`; falha no evento restaura integralmente o estado anterior.
 Não cria tentativa nova, revalidação nem código novo. A classificação é separada
 e não é requisito para terminalidade; `responsibility` permanece `NULL` até
-classificação explícita. O ledger não é alterado, e os efeitos financeiros desse
-cenário permanecem para incremento próprio.
+classificação explícita. O fechamento não altera o ledger; os refunds do cliente
+são aplicados somente na classificação válida.
 
 A classificação de `confirmation_failed` reutiliza
 `hasConfirmationFailureEvidence(db, deliveryId, true)` dentro da transação de
@@ -185,4 +185,67 @@ anterior. Ciclo não fechado ou inconsistente retorna `409`; `EMPRESA` retorna
 `400` especificamente para esse tipo. As opções válidas são `CLIENTE`, `MOTOBOY`,
 `SISTEMA` e `INDEFINIDO`. O enum global preserva `EMPRESA` e as demais ocorrências
 mantêm seu contrato temporal. UPDATE da classificação e `occurrence_classified`
-continuam atômicos, sem efeitos financeiros ou alteração da terminalidade.
+continuam atômicos com os refunds do cliente, sem alteração da terminalidade.
+
+
+### Consequências financeiras da classificação de `confirmation_failed`
+
+`classifyDeliveryOccurrence` chama
+`recordConfirmationFailureFinancialConsequencesInTransaction(db, occurrenceId, responsibility)`
+após o UPDATE e o INSERT de `occurrence_classified`, dentro do mesmo
+`BEGIN IMMEDIATE`, depois do gate operacional existente. `finance.js` não importa
+`official-statuses.js`; a direção dos imports é preservada.
+
+A função lê a classificação persistida e valida os pagamentos e refunds do
+ledger por Pedido, cliente, Entrega e componente. Exige pagamento único de
+produtos coerente com o snapshot e de frete quando conhecido. Em todos os casos
+completa o refund acumulado de produtos. Para `CLIENTE`, preserva frete cobrado
+e rejeita refund anterior positivo; para `MOTOBOY`, `SISTEMA` e `INDEFINIDO`,
+completa também o refund acumulado de frete pago. Frete `NULL` sem pagamento não
+gera valor; com pagamento exige reconciliação. Valores inválidos, over-refund,
+pagamentos ausentes/duplicados/divergentes e distribuições incompatíveis exigem
+`FINANCIAL_RECONCILIATION_REQUIRED`. Remuneração histórica de outra natureza não
+é automaticamente incompatível; distribuições de `confirmation_failed` ou de
+outros desfechos finais concorrentes são rejeitadas.
+
+Chaves determinísticas: `delivery:<id>:confirmation-failed:refund-products` e
+`delivery:<id>:confirmation-failed:refund-freight`. O saldo considera refunds
+anteriores e exclui apenas a própria chave ao calcular seu conteúdo esperado,
+permitindo repetição interna idempotente e detectando colisão semântica, inclusive
+chave existente sem saldo. Não há distribuição nova nem chamada a
+`splitNormalFreight()` nesse fluxo. A política de custo/distribuição interna
+continua futura e não altera as regras já definidas ao cliente.
+
+O bootstrap substitui atomicamente `financial_entry_valid_kind_insert`, ampliado
+somente para refunds `confirmation_failed` com ocorrência classificada e
+retorno terminal. Produtos aceitam as quatro responsabilidades válidas; frete
+somente `MOTOBOY`, `SISTEMA` e `INDEFINIDO`. Distribuições desse motivo continuam
+proibidas. Demais triggers, append-only, owner, limites e proteção contra
+over-refund são preservados. Não há coluna nova.
+
+Falha em products, freight ou evento reverte classificação completa, evento e
+todos os refunds. Nenhuma mutação operacional é feita. Projeções mantêm a
+pendência interna `freight_distribution_rule_undefined`, distinguem classificação
+ainda necessária e frete indisponível, e exigem reconciliação para histórico
+classificado sem refunds completos. Não foi adicionado backfill automático:
+reproduzir a cadeia operacional na migração ampliaria o escopo e duplicaria o
+gate canônico. Históricos anteriores exigem reconciliação explícita; o startup
+preserva esses históricos sem criar refunds por inferência de `returned`.
+
+
+### Correção das proteções financeiras de confirmation_failed
+
+O trigger financeiro e a validação da função financeira exigem uma única
+ocorrência `confirmation_failed` por Entrega, vinculada à tentativa terminal mais
+recente, sem ocorrência terminal contraditória no ciclo. O classificador deve
+ter papel `company` e pertencer à empresa do Pedido. O horário da classificação
+precisa ser canônico, posterior ou igual ao relato e ao retorno e não futuro.
+Históricos ambíguos exigem reconciliação, inclusive na projeção financeira.
+
+O bootstrap remove o trigger dependente, reconstrói ocorrências quando necessário
+e instala a única definição final do trigger dentro do mesmo `BEGIN IMMEDIATE`.
+A evolução de revalidação participa da transação externa nesse caminho e mantém
+sua própria transação quando chamada isoladamente. Falhas restauram schema,
+dados e trigger anteriores; não há janela de escrita sem proteção nem backfill
+financeiro novo. Testes executam o bootstrap completo sobre o fixture legado,
+induzem falha após DROP/RENAME e repetem a inicialização preservando o histórico.
