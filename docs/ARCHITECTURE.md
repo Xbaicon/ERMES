@@ -249,3 +249,44 @@ sua própria transação quando chamada isoladamente. Falhas restauram schema,
 dados e trigger anteriores; não há janela de escrita sem proteção nem backfill
 financeiro novo. Testes executam o bootstrap completo sobre o fixture legado,
 induzem falha após DROP/RENAME e repetem a inicialização preservando o histórico.
+
+
+## Cancelamento pré-coleta: financeiro atômico
+
+O ramo `BEFORE_PICKUP` de `cancelClientDelivery` chama
+`recordClientCancellationBeforePickupInTransaction` após atualizar a Entrega e
+registrar `client_cancelled_before_pickup`, no mesmo `BEGIN IMMEDIATE`. A função
+não abre transação nem altera tentativas. Falhas desfazem inclusive atribuição,
+`cancelled_at`, evento e refund de products quando a inserção de freight falha.
+A serialização e a validação de estado preservam a rejeição HTTP da repetição.
+
+A evidência SQL compartilhada entre função financeira, projeção e
+`financial_entry_valid_kind_insert` exige cancelamento registrado pelo cliente
+proprietário, horário canônico, ausência de custódia, coleta, tentativa ou causa
+terminal concorrente. Falhas mecânicas anteriores à coleta são compatíveis;
+tentativa recuperável anterior requer reconciliação explícita. O estado atual
+`available` e `collected_at = NULL` não demonstram ausência de coleta histórica.
+
+O plano verifica pagamentos únicos efetivos, proprietário, vínculos, inteiros
+seguros, snapshots e refunds acumulados por componente. Inclui lançamentos que
+apontem para a Entrega com Pedido divergente. Créditos históricos coerentes e sem
+motivo terminal concorrente reduzem o saldo; refunds de outros desfechos,
+distribuições, over-refund ou chaves incompatíveis abortam. O ledger permanece
+append-only. Chaves: `delivery:<id>:client-cancelled-before-pickup:refund-products`
+e `delivery:<id>:client-cancelled-before-pickup:refund-freight`. A própria chave é
+reconhecida para repetição interna sem duplicar o lançamento.
+
+Pedido pendente sem pagamentos não gera refund; pedido pago preserva `paid` e
+reembolsa integralmente os componentes persistidos. Frete zero é conhecido;
+frete `NULL` sem payment não cria valor, e com payment exige reconciliação.
+Não há distribuição, remuneração ao motoboy ou sanção temporal. Projeções oficiais
+e cancelamento pós-coleta permanecem inalterados.
+
+O trigger autoriza somente refunds do novo motivo com evidência operacional;
+proteções existentes de owner, vínculo Pedido/Entrega, valores, limites e
+append-only permanecem. Nenhuma tabela/coluna é adicionada. A instalação segue
+o bootstrap atômico após a evolução do schema de ocorrências, preservando bancos
+legados. Não há backfill novo. Projeções de cancelamentos comprovados verificam
+refunds completos e retiram a antiga pendência apenas quando reconciliados;
+Pedido pago com frete desconhecido mantém `freight_amount_unavailable`. Histórico sem causa
+continua pendente, e cancelamento histórico sem refunds exige reconciliação explícita.

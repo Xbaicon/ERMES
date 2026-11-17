@@ -9,7 +9,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
 | Baseline 0.2 | Em implementação incremental | `TentativaEntrega`, `OcorrenciaEntrega`/responsabilidade, impedimento externo/revalidação e fechamento operacional por ausência/recusa possuem incrementos funcionais; demais cenários e financeiro completo continuam pendentes |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
-| Incremento atual | Financeiro do cliente em `confirmation_failed` — IMPLEMENTADO | Classificação, evento e refunds acumulados atômicos; produtos nas quatro responsabilidades e frete para MOTOBOY/SISTEMA/INDEFINIDO; nenhuma distribuição interna presumida |
+| Incremento atual | Financeiro do cancelamento pré-coleta — IMPLEMENTADO | Refund integral acumulado dos componentes pagos na transação do cancelamento; sem distribuição ou tentativa nova; históricos ambíguos exigem reconciliação |
 | Próximo passo técnico | Implementação incremental | Continuar os incrementos funcionais da Baseline 0.2 sobre SQLite, preservando as pendências registradas abaixo |
 | Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
 | Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |
@@ -28,6 +28,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Revalidação por impedimento externo | IMPLEMENTADO | Ocorrência `temporary_external_obstruction`, retorno físico, tentativa encerrada recuperável, `awaiting_revalidation` persistido e liberação explícita/auditada pela empresa; nova tentativa somente na nova coleta |
 | Ausência e recusa do destinatário | OPERACIONAL E FINANCEIRO IMPLEMENTADOS | Retorno confirmado fecha tentativa terminal, projeta `NAO_REALIZADA/ENCERRADO`, completa reembolso de produtos pagos e distribui frete pago 70/25/5; sem presunção de responsabilidade, nova tentativa ou revalidação |
 | Fechamento terminal de `confirmation_failed` | OPERACIONAL IMPLEMENTADO | Terceiro erro cria ocorrência não classificada e inicia retorno; confirmação empresarial fecha tentativa terminal e projeta `NAO_REALIZADA/ENCERRADO`, sem financeiro. Tentativa, contador, ocorrência e histórico inconsistentes exigem reconciliação, sem backfill |
+| Cancelamento pré-coleta | IMPLEMENTADO | Estados available/heading_to_pickup/awaiting_pickup; pending sem refund, paid com refund integral acumulado; liberação do motoboy e projeções CANCELADA/CANCELADO; coleta/tentativa anterior exige reconciliação |
 | Financeiro do cliente em `confirmation_failed` | IMPLEMENTADO | Refund acumulado de produtos nas quatro responsabilidades; frete reembolsado em MOTOBOY/SISTEMA/INDEFINIDO e preservado em CLIENTE; gatilho atômico na classificação, sem distribuição interna |
 | Endereço incorreto e erro do ERMES | NÃO IMPLEMENTADO | `address_problem` continua bloqueado; faltam evidências específicas, comparação de endereço original/apresentado, correção e confirmação da disponibilidade do cliente |
 | Produto indisponível e ajuste excepcional do Pedido na 0.2 | PENDENTE | Falta o fluxo de produto/serviço indisponível com proposta de ajuste excepcional, concordância explícita do cliente, acerto da diferença de preço e efeitos financeiros correspondentes quando aplicáveis. O cancelamento legado, o reembolso já existente e o financeiro implementado da 0.1 não representam a conclusão desse fluxo da 0.2 |
@@ -95,8 +96,9 @@ alteradas, sem presumir que a nova regra já esteja implementada. No checkpoint
 - provedor e fluxo técnico de pagamento;
 - nomenclatura final dos estados UML.
 
-A infraestrutura financeira e as consequências expressamente definidas estão
-persistidas. Continuam sem distribuição interna destinatário ausente, recusa,
+No checkpoint congelado da 0.1, a infraestrutura financeira e as consequências
+então expressamente definidas estavam persistidas. As limitações históricas abaixo
+não substituem os incrementos da 0.2 descritos neste documento. Continuam sem distribuição interna destinatário ausente, recusa,
 endereço incorreto confirmado pelo cliente e falha após três códigos; também não
 foi inferido reembolso para cancelamento antes da coleta. Erro comprovável do
 sistema continua sem valores exatos. A interface de tentativa de contato também
@@ -159,3 +161,28 @@ permanece pendente.
   rejeitam ocorrências contraditórias e classificadores de outro papel/empresa.
   Bootstrap completo do schema legado instala o trigger após reconstruir
   ocorrências, na mesma transação, com rollback e repetição verificados.
+
+
+## Financeiro do cancelamento pré-coleta — incremento atual
+
+- `recordClientCancellationBeforePickupInTransaction` integra o ramo existente,
+  sem mudar a máquina de estados. Cancelamento, evento e refunds são atômicos;
+  falhas de products ou freight revertem também atribuição e timestamps.
+- Pagamento pendente sem ledger não cria valores. Pagamento efetivo coerente
+  reembolsa integralmente produtos e frete, descontando refunds anteriores.
+  Over-refund, duplicação, snapshots/vínculos divergentes, distribuição e refund
+  terminal incompatível exigem reconciliação; chaves determinísticas são idempotentes.
+- Frete conhecido exige pagamento correspondente; zero não é NULL. Frete NULL
+  sem payment não gera refund de frete e mantém `freight_amount_unavailable`;
+  com payment exige reconciliação. Nenhum motoboy recebe remuneração especial.
+- Aceite e chegada são preservados, atribuição é liberada e nenhuma tentativa é
+  criada/modificada. Tentativa recuperável anterior permanece fora deste fechamento
+  automático: mesmo após retorno e redisponibilização, exige reconciliação explícita.
+- O marcador de regra pré-coleta indefinida sai apenas dos casos comprovados e
+  reconciliados. Histórico sem causa mantém pendência; cancelamento comprovado
+  com refund faltante exige reconciliação. Startup não infere refunds históricos.
+- Trigger compartilha a evidência operacional com função e projeção; mantém
+  append-only e demais proteções. Bootstrap legado continua coberto. Autorização,
+  concorrência, pós-coleta 50/50 e `confirmation_failed` permanecem preservados.
+- Este incremento não conclui a Baseline 0.2 nem implementa financeiro de
+  impedimento externo, endereço/erro ERMES, produto indisponível 0.2 ou MySQL.

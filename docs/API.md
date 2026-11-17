@@ -640,8 +640,8 @@ Quando `freight_total_cents` é `NULL`, nenhum valor de frete é criado: os efei
 sobre o frete ficam indicados em `financial.pending`. O fechamento operacional
 por destinatário ausente ou recusa aplica o reembolso acumulado de produtos
 e a divisão do frete 70/25/5 descritos abaixo. Endereço incorreto e três códigos
-inválidos não recebem distribuição interna nova nesta etapa. O reembolso de cancelamento antes da
-coleta continua sem ser inferido pela API.
+inválidos não recebem distribuição interna nova nesta etapa. Cancelamento pré-coleta
+com evidência coerente aplica reembolso integral, conforme a seção abaixo.
 Se o frete estiver preservado, mas faltar o lançamento de pagamento correspondente,
 a conclusão aborta com reconciliação financeira e não mantém estado, evento ou
 distribuição parciais; esse caso não é apresentado como frete indisponível.
@@ -853,3 +853,41 @@ Esses históricos exigem reconciliação explícita; a projeção financeira rej
 refunds incompletos em vez de declarar o financeiro concluído. O startup não
 infere esses refunds. Estados `returned/NAO_REALIZADA/ENCERRADO`, tentativa,
 contador, código e marcos operacionais permanecem inalterados.
+
+
+### Financeiro do cancelamento do cliente antes da coleta — Baseline 0.2
+
+`POST /api/client/deliveries/:id/cancel`, com corpo `{}`, completa o financeiro
+nos estados `available`, `heading_to_pickup` e `awaiting_pickup`. A transação
+cancela a Entrega, limpa `courier_id`, grava `client_cancelled_before_pickup` e
+reembolsa os saldos pagos de produtos e frete. Não cria tentativa, distribuição,
+remuneração especial ao motoboy, taxa ou sanção. Aceite e chegada permanecem no
+histórico; o motoboy fica livre para outra Entrega. A projeção permanece
+`cancelled` / `CANCELADA` / Pedido `CANCELADO`, com `orders.status = confirmed`.
+
+- `pending` sem ledger: nenhum refund, `refundStatus = none`, pagamento permanece
+  pendente. Pagamento persistido inesperado exige reconciliação.
+- `paid`: pagamentos únicos e coerentes com cliente, Pedido, Entrega e snapshots
+  são obrigatórios. Para cada componente, completa apenas `pagamento - refunds
+  anteriores`; saldo zero não gera lançamento. `paymentStatus` permanece `paid`.
+- Frete conhecido, inclusive zero, exige payment correspondente. Frete `NULL`
+  sem payment reembolsa somente produtos e informa `freight_amount_unavailable`;
+  frete `NULL` com payment é incompatível.
+- Over-refund, distribuição, refund de outro desfecho terminal, colisão semântica
+  de chave, vínculo divergente ou histórico com coleta/tentativa anterior exigem
+  `FINANCIAL_RECONCILIATION_REQUIRED` internamente (HTTP `500`, mensagem pública
+  genérica existente). Inclui tentativa recuperável já encerrada, mesmo após
+  redisponibilização e limpeza de `collected_at`; esse cenário exige reconciliação
+  explícita, sem presumir compensação ou implementar financeiro do impedimento externo.
+
+Falha em evento, validação ou refund desfaz estado, atribuição, timestamps e
+lançamentos da transação. Repetição HTTP mantém `409`, sem duplicação; sem sessão
+retorna `401`, outro papel `403`, outro cliente `404`, corpo extra `400`.
+O cancelamento pós-coleta mantém integralmente a política anterior de 50/50.
+
+Cancelamentos pré-coleta comprovados e reconciliados deixam de apresentar
+`client_cancellation_before_pickup_refund_rule_undefined`. Histórico sem causa
+comprovada mantém a pendência; evidência de cancelamento com refunds faltantes
+ou conflitantes exige reconciliação. Produto indisponível mantém seu contrato.
+O startup não fabrica refunds para cancelamentos antigos: estado `cancelled`
+isolado não é prova suficiente e o incremento não adiciona backfill financeiro.
