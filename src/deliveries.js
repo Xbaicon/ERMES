@@ -25,6 +25,7 @@ export const DELIVERY_EVENT_TYPES = Object.freeze({
   COURIER_FAILED_AFTER_PICKUP: "courier_failed_after_pickup",
   CLIENT_CANCELLED_BEFORE_PICKUP: "client_cancelled_before_pickup",
   CLIENT_CANCELLED_AFTER_PICKUP: "client_cancelled_after_pickup",
+  CLIENT_CANCELLED_AFTER_EXTERNAL_OBSTRUCTION: "client_cancelled_after_external_obstruction",
   RECIPIENT_ABSENT: "recipient_absent",
   RECIPIENT_REFUSED: "recipient_refused",
   ADDRESS_PROBLEM: "address_problem",

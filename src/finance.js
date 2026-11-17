@@ -289,6 +289,202 @@ export const CLIENT_CANCELLATION_BEFORE_PICKUP_EVIDENCE_SQL = `
       AND e.occurred_at = d.cancelled_at)
 `;
 
+// Ciclo físico já encerrado. O estado é parametrizado para validar antes da
+// transição e novamente depois dela, inclusive no gatilho do ledger.
+const LATEST_COLLECTION_EVENT_ID_SQL = `(SELECT MAX(collected.id) FROM delivery_events collected
+  WHERE collected.delivery_id = d.id AND collected.event_type = 'order_collected')`;
+export const EXTERNAL_OBSTRUCTION_CYCLE_SQL = `
+  SELECT r.id AS revalidationId, oc.id AS occurrenceId,
+    d.id AS deliveryId, d.order_id AS orderId, d.cancelled_at AS cancelledAt
+  FROM deliveries d JOIN orders o ON o.id = d.order_id
+  JOIN users client ON client.id = o.client_id AND client.role = 'client'
+  JOIN delivery_revalidations r ON r.delivery_id = d.id
+  JOIN delivery_attempts a ON a.id = r.delivery_attempt_id AND a.delivery_id = d.id
+  JOIN users courier ON courier.id = a.courier_id AND courier.role = 'courier'
+    AND courier.company_id = o.company_id
+  JOIN users receiver ON receiver.id = r.received_by_user_id AND receiver.role = 'company'
+    AND receiver.company_id = o.company_id
+  JOIN delivery_occurrences oc ON oc.id = r.occurrence_id AND oc.delivery_id = d.id
+    AND oc.delivery_attempt_id = a.id
+  WHERE d.status = ? AND o.status = 'confirmed' AND r.verified_at IS NULL
+    AND (d.status <> 'awaiting_revalidation' OR d.cancelled_at IS NULL)
+    AND r.verified_by_user_id IS NULL AND r.verification_result IS NULL
+    AND d.return_reason = 'temporary_external_obstruction'
+    AND d.courier_id IS NULL AND d.completed_at IS NULL
+    AND is_canonical_timestamp(d.collected_at) = 1
+    AND is_canonical_timestamp(d.return_reported_at) = 1
+    AND is_canonical_timestamp(d.returned_at) = 1
+    AND d.collected_at <= d.return_reported_at AND d.return_reported_at <= d.returned_at
+    AND a.status = 'closed_unsuccessfully' AND a.end_nature = 'recoverable'
+    AND a.end_reason = 'temporary_external_obstruction'
+    AND is_canonical_timestamp(a.started_at) = 1 AND is_canonical_timestamp(a.ended_at) = 1
+    AND a.started_at <= a.ended_at AND a.ended_at <= d.returned_at
+    AND a.id = (SELECT latest.id FROM delivery_attempts latest
+      WHERE latest.delivery_id = d.id ORDER BY latest.attempt_number DESC LIMIT 1)
+    AND oc.type = 'temporary_external_obstruction'
+    AND is_canonical_timestamp(oc.reported_at) = 1
+    AND a.started_at <= oc.reported_at AND oc.reported_at <= d.returned_at
+    AND is_canonical_timestamp(r.received_at) = 1
+    AND d.returned_at <= r.received_at AND r.received_at <= CURRENT_TIMESTAMP
+    AND NOT EXISTS (SELECT 1 FROM delivery_attempts open WHERE open.delivery_id = d.id
+      AND open.status IN ('active', 'returning'))
+    AND (SELECT COUNT(*) FROM delivery_revalidations pending
+      WHERE pending.delivery_id = d.id AND pending.verified_at IS NULL) = 1
+    AND (SELECT COUNT(*) FROM delivery_occurrences evidence
+      WHERE evidence.delivery_id = d.id AND evidence.delivery_attempt_id = a.id
+        AND evidence.type = 'temporary_external_obstruction') = 1
+    AND (SELECT COUNT(*) FROM delivery_occurrences same_attempt
+      WHERE same_attempt.delivery_id = d.id AND same_attempt.delivery_attempt_id = a.id) = 1
+    AND (SELECT COUNT(*) FROM delivery_events e WHERE e.delivery_id = d.id
+      AND e.event_type = 'temporary_external_obstruction'
+      AND e.id > ${LATEST_COLLECTION_EVENT_ID_SQL}) = 1
+    AND EXISTS (SELECT 1 FROM delivery_events e WHERE e.delivery_id = d.id
+      AND e.event_type = 'temporary_external_obstruction' AND e.actor_user_id = a.courier_id
+      AND e.id > ${LATEST_COLLECTION_EVENT_ID_SQL}
+      AND json_valid(e.details_json) = 1
+      AND json_extract(e.details_json, '$.occurrenceId') = oc.id
+      AND e.occurred_at >= d.collected_at AND e.occurred_at <= d.return_reported_at)
+    AND EXISTS (SELECT 1 FROM delivery_events e WHERE e.delivery_id = d.id
+      AND e.event_type = 'return_reported' AND e.actor_user_id = a.courier_id
+      AND e.id > ${LATEST_COLLECTION_EVENT_ID_SQL}
+      AND e.occurred_at = d.return_reported_at)
+    AND (SELECT COUNT(*) FROM delivery_events e WHERE e.delivery_id = d.id
+      AND e.event_type = 'return_reported'
+      AND e.id > ${LATEST_COLLECTION_EVENT_ID_SQL}) = 1
+    AND EXISTS (SELECT 1 FROM delivery_events e WHERE e.delivery_id = d.id
+      AND e.event_type = 'delivery_awaiting_revalidation' AND e.actor_user_id = r.received_by_user_id
+      AND e.id > ${LATEST_COLLECTION_EVENT_ID_SQL}
+      AND json_valid(e.details_json) = 1
+      AND json_extract(e.details_json, '$.revalidationId') = r.id
+      AND json_extract(e.details_json, '$.occurrenceId') = oc.id
+      AND e.occurred_at = r.received_at)
+    AND (SELECT COUNT(*) FROM delivery_events e WHERE e.delivery_id = d.id
+      AND e.event_type = 'delivery_awaiting_revalidation'
+      AND e.id > ${LATEST_COLLECTION_EVENT_ID_SQL}) = 1
+    AND NOT EXISTS (SELECT 1 FROM delivery_events conflict WHERE conflict.delivery_id = d.id
+      AND conflict.event_type IN ('delivery_completed', 'client_cancelled_before_pickup',
+        'client_cancelled_after_pickup', 'recipient_absent', 'recipient_refused',
+        'confirmation_failed', 'product_unavailable'))
+    AND NOT EXISTS (SELECT 1 FROM delivery_events verified WHERE verified.delivery_id = d.id
+      AND verified.event_type = 'delivery_revalidated'
+      AND verified.id > ${LATEST_COLLECTION_EVENT_ID_SQL})
+`;
+
+export function externalObstructionCycle(database, deliveryId, status = "awaiting_revalidation") {
+  const cycles = database.prepare(`${EXTERNAL_OBSTRUCTION_CYCLE_SQL} AND d.id = ?`)
+    .all(status, deliveryId);
+  if (cycles.length !== 1) {
+    throw financialError("O impedimento externo e o ciclo pendente exigem reconciliação.");
+  }
+  return cycles[0];
+}
+
+function externalObstructionRefundPlan(database, deliveryId) {
+  try { return readExternalObstructionRefundPlan(database, deliveryId); }
+  catch (error) {
+    if (error.code === "ERR_OUT_OF_RANGE") throw financialError("Valor financeiro fora do inteiro seguro.");
+    throw error;
+  }
+}
+
+function readExternalObstructionRefundPlan(database, deliveryId) {
+  const cycle = externalObstructionCycle(database, deliveryId, "cancelled");
+  const delivery = database.prepare(`SELECT d.id, d.order_id AS orderId, d.cancelled_at AS cancelledAt,
+    o.client_id AS clientId, o.items_total_cents AS itemsTotalCents,
+    o.freight_total_cents AS freightTotalCents, o.payment_status AS paymentStatus,
+    o.payment_paid_at AS paymentPaidAt
+    FROM deliveries d JOIN orders o ON o.id = d.order_id WHERE d.id = ?`).get(deliveryId);
+  const cancellation = database.prepare(`SELECT e.occurred_at AS occurredAt, e.actor_user_id AS actorId
+    FROM delivery_events e WHERE e.delivery_id = ?
+      AND e.event_type = 'client_cancelled_after_external_obstruction'`).all(deliveryId);
+  if (!delivery || !isCanonicalTimestamp(delivery.cancelledAt)
+    || delivery.cancelledAt < database.prepare("SELECT returned_at AS value FROM deliveries WHERE id = ?")
+      .get(deliveryId).value
+    || delivery.cancelledAt > database.prepare("SELECT CURRENT_TIMESTAMP AS now").get().now
+    || cancellation.length !== 1 || cancellation[0].actorId !== delivery.clientId
+    || cancellation[0].occurredAt !== delivery.cancelledAt || cycle.orderId !== delivery.orderId) {
+    throw financialError("O cancelamento após impedimento externo exige reconciliação operacional.");
+  }
+  const entries = database.prepare(`SELECT order_id AS orderId, delivery_id AS deliveryId,
+    entry_type AS entryType, component, party_type AS partyType,
+    party_user_id AS partyUserId, party_company_id AS partyCompanyId,
+    amount_cents AS amountCents, reason, idempotency_key AS idempotencyKey
+    FROM financial_entries WHERE order_id = ? OR delivery_id = ? ORDER BY id`)
+    .all(delivery.orderId, delivery.id);
+  const payments = new Map();
+  const incompatible = new Set(["recipient_absent", "recipient_refused", "confirmation_failed",
+    "client_cancelled_before_pickup", "client_cancelled_after_pickup", "product_unavailable",
+    "address_problem", "delivery_completed"]);
+  for (const entry of entries) {
+    if (entry.orderId !== delivery.orderId
+      || (entry.deliveryId !== null && entry.deliveryId !== delivery.id)
+      || !Number.isSafeInteger(entry.amountCents) || entry.amountCents < 0
+      || !["products", "freight"].includes(entry.component)
+      || !["payment", "refund"].includes(entry.entryType)
+      || entry.partyType !== "client" || entry.partyUserId !== delivery.clientId
+      || entry.partyCompanyId !== null) {
+      throw financialError("Ledger ou vínculo incompatível com o impedimento externo.");
+    }
+    if (entry.entryType === "payment") {
+      if (payments.has(entry.component) || entry.reason !== "simulated_payment") {
+        throw financialError("Pagamento duplicado ou incompatível com o Pedido.");
+      }
+      payments.set(entry.component, entry.amountCents);
+    } else if (incompatible.has(entry.reason)) {
+      throw financialError("Refund de outro desfecho exige reconciliação.");
+    }
+  }
+  if (delivery.paymentStatus !== "paid") {
+    throw financialError("Pedido pós-coleta pendente exige reconciliação financeira.");
+  }
+  const items = database.prepare(`SELECT quantity, unit_price_cents AS price
+    FROM order_items WHERE order_id = ?`).all(delivery.orderId);
+  let subtotal = 0n;
+  for (const item of items) {
+    if (!Number.isSafeInteger(item.quantity) || item.quantity <= 0
+      || !Number.isSafeInteger(item.price) || item.price < 0) {
+      throw financialError("Snapshot dos produtos inválido.");
+    }
+    subtotal += BigInt(item.quantity) * BigInt(item.price);
+  }
+  if (!items.length || !Number.isSafeInteger(delivery.itemsTotalCents)
+    || subtotal !== BigInt(delivery.itemsTotalCents)
+    || !isCanonicalTimestamp(delivery.paymentPaidAt)
+    || delivery.paymentPaidAt > delivery.cancelledAt
+    || payments.get("products") !== delivery.itemsTotalCents
+    || (delivery.freightTotalCents === null
+      ? payments.has("freight") : payments.get("freight") !== delivery.freightTotalCents)) {
+    throw financialError("Pagamentos ausentes ou divergentes dos snapshots do Pedido.");
+  }
+  const base = entryBase(delivery, "client_cancelled_after_external_obstruction", delivery.cancelledAt);
+  return ["products", "freight"].map((component) => {
+    const paid = payments.get(component) ?? 0;
+    const refunds = entries.filter((entry) => entry.entryType === "refund" && entry.component === component);
+    let refunded;
+    try { refunded = sumFinancialAmounts(refunds.map((entry) => entry.amountCents)); }
+    catch { throw financialError("O total reembolsado exige reconciliação."); }
+    if (refunded > paid) throw financialError("Reembolso superior ao componente pago.");
+    const idempotencyKey = `delivery:${delivery.id}:client-cancelled-after-external-obstruction:refund-${component}`;
+    const ownRefund = refunds.find((entry) => entry.idempotencyKey === idempotencyKey);
+    const amountCents = paid - refunded + (ownRefund?.amountCents ?? 0);
+    const entry = { ...base, entryType: "refund", component, partyType: "client",
+      partyId: delivery.clientId, amountCents, idempotencyKey };
+    const existing = findEntryByIdempotencyKey(database, idempotencyKey);
+    if (existing) {
+      if (amountCents === 0) throw financialError("Chave de refund sem saldo compatível.");
+      assertSameSemanticEntry(existing, normalizeEntry(entry));
+    }
+    return { entry, paid, refunded };
+  });
+}
+
+export function recordClientCancellationAfterExternalObstructionInTransaction(database, delivery) {
+  const plan = externalObstructionRefundPlan(database, delivery.id);
+  for (const { entry } of plan) {
+    if (entry.amountCents > 0) insertFinancialEntryInTransaction(database, entry);
+  }
+}
+
 function clientCancellationBeforePickupRefundPlan(database, deliveryId) {
   try { return readClientCancellationBeforePickupRefundPlan(database, deliveryId); }
   catch (error) {
@@ -737,6 +933,17 @@ function pendingFinancialEffects(database, delivery, entries) {
   }
   if (PENDING_DISTRIBUTION_REASONS.has(delivery.returnReason)) {
     pending.push("freight_distribution_rule_undefined");
+  }
+  if (delivery.returnReason === "temporary_external_obstruction"
+    && ["awaiting_revalidation", "cancelled"].includes(delivery.status)) {
+    // Refere-se somente ao custo interno futuro da tentativa malsucedida.
+    pending.push("freight_distribution_rule_undefined");
+    if (delivery.status === "cancelled") {
+      const plan = externalObstructionRefundPlan(database, delivery.id);
+      if (plan.some(({ paid, refunded }) => paid !== refunded)) {
+        throw financialError("Cancelamento externo sem refunds integrais exige reconciliação.");
+      }
+    }
   }
   if (delivery.returnReason === "confirmation_failed") {
     const occurrences = database.prepare(`SELECT id, responsibility FROM delivery_occurrences

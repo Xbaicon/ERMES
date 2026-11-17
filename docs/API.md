@@ -720,7 +720,7 @@ O motoboy usa o endpoint existente `report-return`; a empresa usa `confirm-retur
 
 As novas rotas usam `400` para corpo/ID inválido, `401` sem sessão, `403` para papel incorreto, `404` para recurso alheio e `409` para transição/dados legados incompatíveis. Cliente e motoboy não liberam a Entrega. Mensagem de chat não altera estado. Duas liberações concorrentes geram uma única transição; aceite que disputa cedo demais é rejeitado.
 
-A revalidação não altera classificação, financeiro ou código e não cria tentativa. Nova coleta cria a próxima tentativa com contador zero. Painéis mostram o novo estado e bloqueiam ações incompatíveis; os comandos novos estão disponíveis somente via API neste incremento. Cancelamento posterior ao impedimento, erro do ERMES, estados terminais completos e consequências financeiras novas permanecem fora deste incremento.
+A revalidação não altera classificação, financeiro ou código e não cria tentativa. Nova coleta cria a próxima tentativa com contador zero. Painéis mostram o novo estado e bloqueiam ações incompatíveis; os comandos novos estão disponíveis somente via API neste incremento. O cancelamento pelo cliente enquanto aguarda revalidação está descrito abaixo. Erro do ERMES e estados terminais completos permanecem para incrementos próprios.
 
 ## Fechamento terminal por ausência ou recusa (0.2)
 
@@ -878,7 +878,8 @@ histórico; o motoboy fica livre para outra Entrega. A projeção permanece
   `FINANCIAL_RECONCILIATION_REQUIRED` internamente (HTTP `500`, mensagem pública
   genérica existente). Inclui tentativa recuperável já encerrada, mesmo após
   redisponibilização e limpeza de `collected_at`; esse cenário exige reconciliação
-  explícita, sem presumir compensação ou implementar financeiro do impedimento externo.
+  explícita, sem presumir compensação. O cancelamento específico durante
+  `awaiting_revalidation` após impedimento externo segue a regra abaixo.
 
 Falha em evento, validação ou refund desfaz estado, atribuição, timestamps e
 lançamentos da transação. Repetição HTTP mantém `409`, sem duplicação; sem sessão
@@ -891,3 +892,44 @@ comprovada mantém a pendência; evidência de cancelamento com refunds faltante
 ou conflitantes exige reconciliação. Produto indisponível mantém seu contrato.
 O startup não fabrica refunds para cancelamentos antigos: estado `cancelled`
 isolado não é prova suficiente e o incremento não adiciona backfill financeiro.
+
+### Cancelamento após impedimento externo confirmado — Baseline 0.2
+
+`POST /api/client/deliveries/:id/cancel` com `{}` aceita o cliente proprietário
+somente em `awaiting_revalidation`, após `temporary_external_obstruction`,
+`report-return` e recebimento físico confirmado pela empresa. Exige Pedido
+`confirmed`, tentativa mais recente `closed_unsuccessfully/recoverable`, ocorrência
+externa correspondente, ciclo único pendente e nenhuma tentativa aberta. Antes do
+retorno confirmado retorna `409`. Sem sessão retorna `401`, outro papel `403`,
+outro cliente `404`; repetição após cancelamento retorna `409`. Após a empresa
+revalidar, o cancelamento especial deixa de estar disponível; a política para
+esse estado posterior permanece pendente.
+
+O cancelamento grava `cancelled`, `cancelled_at` e evento
+`client_cancelled_after_external_obstruction` com `revalidationId` e
+`occurrenceId`. Projeta Entrega `CANCELADA` e Pedido `CANCELADO`, mantendo
+`orders.status = confirmed`. O retorno, a tentativa recuperável, a ocorrência,
+o código e o ciclo de revalidação permanecem históricos; os campos de verificação
+do ciclo continuam `null`. Uma chamada posterior a `revalidate` retorna `409`.
+Não inicia outro retorno, não cria tentativa nem aplica sanção temporal.
+
+O registro do impedimento, `report-return`, `confirm-return` e a espera pela
+empresa não criam refund, cobrança adicional de frete ou distribuição. Se o
+cliente cancelar, o Pedido `paid` exige pagamentos únicos e coerentes com
+snapshots e vínculos. A transação completa apenas o saldo acumulado dos refunds
+de `products` e `freight`, até 100% de cada pagamento efetivo. Frete `NULL` sem
+payment não gera valor fictício; frete `NULL` com payment, frete conhecido sem
+payment, over-refund e histórico terminal conflitante exigem
+`FINANCIAL_RECONCILIATION_REQUIRED`. `payment_status = pending`, com ou sem
+payments, é inconsistente nesse estágio pós-coleta e causa rollback. Falha de
+qualquer refund desfaz também status, horário e evento. O ledger é append-only;
+as chaves são `delivery:<id>:client-cancelled-after-external-obstruction:refund-products`
+e `delivery:<id>:client-cancelled-after-external-obstruction:refund-freight`.
+
+O resultado pago e integralmente devolvido tem `refundStatus = full`, sem nova
+`distribution` para motoboy, empresa ou ERMES. O frete da tentativa malsucedida
+não é cobrado separadamente. `financial.pending = ["freight_distribution_rule_undefined"]`
+nesse ciclo indica apenas política interna futura de custo/remuneração da tentativa;
+não há valor pendente de devolução ao cliente depois do cancelamento. Não há
+backfill automático de casos legados. O cancelamento pós-coleta comum segue a
+regra 50/50 já documentada.

@@ -23,6 +23,7 @@ import {
   recordClientCancellationBeforePickupInTransaction,
   recordClientCancellationAfterPickupInTransaction, recordNormalCompletionInTransaction,
   recordProductUnavailableInTransaction, recordRecipientTerminalFailureInTransaction,
+  externalObstructionCycle, recordClientCancellationAfterExternalObstructionInTransaction,
 } from "./finance.js";
 
 const TERMINAL_STATES = Object.freeze([
@@ -631,6 +632,9 @@ export function cancelClientDelivery(id, clientId, body) {
     const delivery = requireDelivery(id);
     if (delivery.clientId !== clientId) throw deliveryError("Entrega não encontrada.", 404);
     if (BEFORE_PICKUP.has(delivery.status)) {
+      if (db.prepare("SELECT 1 FROM delivery_revalidations WHERE delivery_id = ? LIMIT 1").get(id)) {
+        throw deliveryError("Cancelamento após revalidação exige regra específica futura.");
+      }
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, cancelled_at = CURRENT_TIMESTAMP
                   WHERE id = ?`).run(DELIVERY_STATES.CANCELLED, id);
       event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_BEFORE_PICKUP);
@@ -641,6 +645,16 @@ export function cancelClientDelivery(id, clientId, body) {
         .run(DELIVERY_STATES.RETURNING, "client_cancelled_after_pickup", id);
       event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_AFTER_PICKUP);
       recordClientCancellationAfterPickupInTransaction(db, delivery);
+    } else if (delivery.status === DELIVERY_STATES.AWAITING_REVALIDATION) {
+      const cycle = externalObstructionCycle(db, id);
+      const update = db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL,
+        cancelled_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND courier_id IS NULL`)
+        .run(DELIVERY_STATES.CANCELLED, id, DELIVERY_STATES.AWAITING_REVALIDATION);
+      if (Number(update.changes) !== 1) throw deliveryError("A entrega foi alterada.");
+      event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_AFTER_EXTERNAL_OBSTRUCTION, {
+        revalidationId: cycle.revalidationId, occurrenceId: cycle.occurrenceId,
+      });
+      recordClientCancellationAfterExternalObstructionInTransaction(db, delivery);
     } else {
       throw deliveryError("A entrega não pode ser cancelada pelo cliente no estado atual.");
     }

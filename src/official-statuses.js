@@ -95,7 +95,8 @@ export function hasConfirmationFailureEvidence(database, deliveryId, closed = fa
 export function terminalDeliveryEvent(database, deliveryId) {
   const events = database.prepare(`SELECT DISTINCT event_type AS type FROM delivery_events
     WHERE delivery_id = ? AND event_type IN ('client_cancelled_before_pickup',
-      'client_cancelled_after_pickup', 'recipient_absent', 'recipient_refused', 'confirmation_failed')`)
+      'client_cancelled_after_pickup', 'client_cancelled_after_external_obstruction',
+      'recipient_absent', 'recipient_refused', 'confirmation_failed')`)
     .all(deliveryId);
   if (events.length !== 1) return null;
   const type = events[0].type;
@@ -113,7 +114,8 @@ export function officialOrderStatus(status, deliveryStatus = null, terminalEvent
   if (status === "draft") return "EM_MONTAGEM";
   if (status !== "confirmed") return null;
   if (deliveryStatus === "completed") return "CONCLUIDO";
-  if ((deliveryStatus === "cancelled" && terminalEvent === "client_cancelled_before_pickup")
+  if ((deliveryStatus === "cancelled" && ["client_cancelled_before_pickup",
+    "client_cancelled_after_external_obstruction"].includes(terminalEvent))
     || (deliveryStatus === "returned" && cancelledReturnEvents.has(terminalEvent))) return "CANCELADO";
   if (deliveryStatus === "returned" && unsuccessfulReturnEvents.has(terminalEvent)) return "ENCERRADO";
   if (deliveryStatus === "cancelled" || deliveryStatus === "returned") return null;
