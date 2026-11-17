@@ -232,6 +232,75 @@ test("financeiro de confirmation_failed na classificação — Baseline 0.2", as
     assert.deepEqual(snapshot(item), before);
   });
 
+  const rawRefund = (item, component, amountCents) => db.prepare(`INSERT INTO financial_entries
+    (order_id, delivery_id, entry_type, component, party_type, party_user_id,
+     amount_cents, reason, idempotency_key)
+    VALUES (?, ?, 'refund', ?, 'client', ?, ?, 'confirmation_failed', ?)`)
+    .run(item.orderId, item.delivery.id, component, client1, amountCents,
+      `sql:${item.orderId}:${component}`);
+
+  await context.test("SQL: ocorrência contraditória não autoriza frete após CLIENTE", async () => {
+    const item = await terminal();
+    assert.equal((await classify(item, "CLIENTE")).status, 200);
+    const original = occurrence(item);
+    const duplicate = db.prepare(`INSERT INTO delivery_occurrences
+      (delivery_id, delivery_attempt_id, type, reported_by_user_id, responsibility,
+       classified_by_user_id, classified_at)
+      VALUES (?, ?, 'confirmation_failed', ?, 'SISTEMA', ?, CURRENT_TIMESTAMP)`)
+      .run(item.delivery.id, original.delivery_attempt_id, courier1, companyUser1);
+    const before = snapshot(item);
+    assert.throws(() => rawRefund(item, "freight", 101), /invalid financial entry kind/);
+    for (const [id, responsibility] of [[original.id, "CLIENTE"], [Number(duplicate.lastInsertRowid), "SISTEMA"]]) {
+      assert.throws(() => transaction(() => recordConfirmationFailureFinancialConsequencesInTransaction(db, id, responsibility)),
+        { code: "FINANCIAL_RECONCILIATION_REQUIRED" });
+    }
+    assert.equal((await request(`/api/client/deliveries/${item.delivery.id}`, { cookie: cookies.client1 })).status, 500);
+    assert.deepEqual(snapshot(item), before);
+  });
+
+  for (const [label, classifier] of [["outra empresa", companyUser2], ["papel client", client1]]) {
+    await context.test(`SQL: classificador ${label} não autoriza produtos nem frete`, async () => {
+      const item = await terminal();
+      db.prepare(`UPDATE delivery_occurrences SET responsibility = 'SISTEMA',
+        classified_by_user_id = ?, classified_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .run(classifier, occurrence(item).id);
+      const before = snapshot(item);
+      for (const [component, amount] of [["products", 2000], ["freight", 101]]) {
+        assert.throws(() => rawRefund(item, component, amount), /invalid financial entry kind/);
+      }
+      assert.throws(() => transaction(() => recordConfirmationFailureFinancialConsequencesInTransaction(db, occurrence(item).id, "SISTEMA")),
+        { code: "FINANCIAL_RECONCILIATION_REQUIRED" });
+      assert.deepEqual(snapshot(item), before);
+    });
+  }
+
+  await context.test("SQL: ocorrência única, classificador legítimo e proteções do ledger", async () => {
+    for (const responsibility of responsibilities) {
+      const item = await terminal();
+      const before = rawLedger(item);
+      for (const component of ["products", "freight"]) {
+        assert.throws(() => rawRefund(item, component, 1), /invalid financial entry kind/);
+      }
+      assert.deepEqual(rawLedger(item), before);
+      db.prepare(`UPDATE delivery_occurrences SET responsibility = ?,
+        classified_by_user_id = ?, classified_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .run(responsibility, companyUser1, occurrence(item).id);
+      assert.equal(rawRefund(item, "products", 2000).changes, 1);
+      if (responsibility === "CLIENTE") {
+        assert.throws(() => rawRefund(item, "freight", 101), /invalid financial entry kind/);
+      } else assert.equal(rawRefund(item, "freight", 101).changes, 1);
+      const complete = rawLedger(item);
+      assert.throws(() => rawRefund(item, "products", 1), /refund exceeds/);
+      assert.throws(() => db.prepare(`INSERT INTO financial_entries
+        (order_id, delivery_id, entry_type, component, party_type, amount_cents, reason, idempotency_key)
+        VALUES (?, ?, 'distribution', 'freight', 'ermes', 1, 'confirmation_failed', ?)`)
+        .run(item.orderId, item.delivery.id, `sql:distribution:${item.orderId}`));
+      assert.deepEqual(rawLedger(item), complete);
+      assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+      assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
+    }
+  });
+
   for (const responsibility of responsibilities) {
     await context.test(`${responsibility}: consequência do cliente, estados intactos e zero distribuição`, async () => {
       const item = await terminal();

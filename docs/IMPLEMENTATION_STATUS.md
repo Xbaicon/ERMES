@@ -154,3 +154,8 @@ permanece pendente.
 - Ausência/recusa (incluindo 70/25/5), cancelamento pós-coleta, conclusão normal,
   produto indisponível legado e revalidação preservam suas regras. Este incremento
   não declara o financeiro completo da Baseline 0.2.
+
+- Correções da auditoria de `confirmation_failed`: SQL direto e função financeira
+  rejeitam ocorrências contraditórias e classificadores de outro papel/empresa.
+  Bootstrap completo do schema legado instala o trigger após reconstruir
+  ocorrências, na mesma transação, com rollback e repetição verificados.

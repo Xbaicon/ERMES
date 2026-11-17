@@ -231,3 +231,21 @@ classificado sem refunds completos. Não foi adicionado backfill automático:
 reproduzir a cadeia operacional na migração ampliaria o escopo e duplicaria o
 gate canônico. Históricos anteriores exigem reconciliação explícita; o startup
 preserva esses históricos sem criar refunds por inferência de `returned`.
+
+
+### Correção das proteções financeiras de confirmation_failed
+
+O trigger financeiro e a validação da função financeira exigem uma única
+ocorrência `confirmation_failed` por Entrega, vinculada à tentativa terminal mais
+recente, sem ocorrência terminal contraditória no ciclo. O classificador deve
+ter papel `company` e pertencer à empresa do Pedido. O horário da classificação
+precisa ser canônico, posterior ou igual ao relato e ao retorno e não futuro.
+Históricos ambíguos exigem reconciliação, inclusive na projeção financeira.
+
+O bootstrap remove o trigger dependente, reconstrói ocorrências quando necessário
+e instala a única definição final do trigger dentro do mesmo `BEGIN IMMEDIATE`.
+A evolução de revalidação participa da transação externa nesse caminho e mantém
+sua própria transação quando chamada isoladamente. Falhas restauram schema,
+dados e trigger anteriores; não há janela de escrita sem proteção nem backfill
+financeiro novo. Testes executam o bootstrap completo sobre o fixture legado,
+induzem falha após DROP/RENAME e repetem a inicialização preservando o histórico.

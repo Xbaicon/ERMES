@@ -454,8 +454,22 @@ function confirmationFailureClassification(database, occurrenceId, responsibilit
     oc.classified_at AS classifiedAt
     FROM delivery_occurrences oc JOIN deliveries d ON d.id = oc.delivery_id
     JOIN orders o ON o.id = d.order_id
+    JOIN users classifier ON classifier.id = oc.classified_by_user_id
+      AND classifier.role = 'company' AND classifier.company_id = o.company_id
+    JOIN delivery_attempts a ON a.id = oc.delivery_attempt_id AND a.delivery_id = d.id
+      AND a.status = 'closed_unsuccessfully' AND a.end_nature = 'terminal'
+      AND a.end_reason = 'confirmation_failed'
     WHERE oc.id = ? AND oc.type = 'confirmation_failed' AND oc.responsibility = ?
-      AND oc.classified_by_user_id IS NOT NULL AND oc.classified_at IS NOT NULL
+      AND (SELECT COUNT(*) FROM delivery_occurrences evidence
+        WHERE evidence.delivery_id = d.id AND evidence.type = 'confirmation_failed') = 1
+      AND NOT EXISTS (SELECT 1 FROM delivery_occurrences conflict
+        WHERE conflict.delivery_attempt_id = a.id
+          AND conflict.type IN ('recipient_absent', 'recipient_refused', 'address_problem'))
+      AND a.attempt_number = (SELECT MAX(latest.attempt_number)
+        FROM delivery_attempts latest WHERE latest.delivery_id = d.id)
+      AND is_canonical_timestamp(oc.classified_at) = 1
+      AND oc.classified_at >= oc.reported_at AND oc.classified_at >= d.returned_at
+      AND oc.classified_at <= CURRENT_TIMESTAMP
       AND d.status = 'returned' AND d.return_reason = 'confirmation_failed'`)
     .get(occurrenceId, responsibility);
   if (!delivery || delivery.paymentStatus !== "paid"
@@ -598,6 +612,7 @@ function pendingFinancialEffects(database, delivery, entries) {
     const occurrences = database.prepare(`SELECT id, responsibility FROM delivery_occurrences
       WHERE delivery_id = ? AND type = 'confirmation_failed'`).all(delivery.id);
     const occurrence = occurrences.length === 1 ? occurrences[0] : null;
+    if (occurrences.length > 1) throw financialError("Ocorrências contraditórias exigem reconciliação financeira.");
     if (!occurrence || occurrence.responsibility === null) {
       pending.push("confirmation_failure_classification_required");
     } else {

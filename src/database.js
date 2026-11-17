@@ -34,8 +34,60 @@ while (true) {
   }
 }
 
+const financialEntryKindTrigger = `
+  CREATE TRIGGER financial_entry_valid_kind_insert
+    BEFORE INSERT ON financial_entries
+    WHEN NOT (
+      (NEW.entry_type = 'payment' AND NEW.party_type = 'client'
+        AND NEW.reason = 'simulated_payment')
+      OR (NEW.entry_type = 'refund' AND NEW.party_type = 'client'
+        AND NEW.delivery_id IS NOT NULL
+        AND (NEW.reason IN ('client_cancelled_after_pickup', 'product_unavailable')
+          OR (NEW.component = 'products'
+            AND NEW.reason IN ('recipient_absent', 'recipient_refused')
+            AND EXISTS (SELECT 1 FROM deliveries d WHERE d.id = NEW.delivery_id
+              AND d.status = 'returned' AND d.return_reason = NEW.reason
+              AND d.returned_at IS NOT NULL))
+          OR (NEW.reason = 'confirmation_failed' AND EXISTS (
+            SELECT 1 FROM deliveries d
+            JOIN delivery_attempts a ON a.delivery_id = d.id
+              AND a.status = 'closed_unsuccessfully' AND a.end_nature = 'terminal'
+              AND a.end_reason = 'confirmation_failed'
+            JOIN orders owner ON owner.id = d.order_id
+            JOIN delivery_occurrences oc ON oc.delivery_id = d.id
+              AND oc.delivery_attempt_id = a.id AND oc.type = 'confirmation_failed'
+            JOIN users classifier ON classifier.id = oc.classified_by_user_id
+              AND classifier.role = 'company' AND classifier.company_id = owner.company_id
+            WHERE d.id = NEW.delivery_id AND d.status = 'returned'
+              AND d.return_reason = 'confirmation_failed' AND d.returned_at IS NOT NULL
+              AND (SELECT COUNT(*) FROM delivery_occurrences evidence
+                WHERE evidence.delivery_id = d.id AND evidence.type = 'confirmation_failed') = 1
+              AND NOT EXISTS (SELECT 1 FROM delivery_occurrences conflict
+                WHERE conflict.delivery_attempt_id = a.id
+                  AND conflict.type IN ('recipient_absent', 'recipient_refused', 'address_problem'))
+              AND a.attempt_number = (SELECT MAX(latest.attempt_number)
+                FROM delivery_attempts latest WHERE latest.delivery_id = d.id)
+              AND is_canonical_timestamp(oc.classified_at) = 1
+              AND oc.classified_at >= oc.reported_at AND oc.classified_at >= d.returned_at
+              AND oc.classified_at <= CURRENT_TIMESTAMP
+              AND oc.responsibility IN ('CLIENTE', 'MOTOBOY', 'SISTEMA', 'INDEFINIDO')
+              AND (NEW.component = 'products' OR (NEW.component = 'freight'
+                AND oc.responsibility IN ('MOTOBOY', 'SISTEMA', 'INDEFINIDO')))))))
+      OR (NEW.entry_type = 'distribution' AND NEW.component = 'freight'
+        AND NEW.delivery_id IS NOT NULL
+        AND ((NEW.reason = 'delivery_completed'
+              AND NEW.party_type IN ('courier', 'company', 'ermes'))
+          OR (NEW.reason = 'client_cancelled_after_pickup' AND NEW.party_type = 'courier')
+          OR (NEW.reason IN ('recipient_absent', 'recipient_refused')
+            AND NEW.party_type IN ('courier', 'company', 'ermes'))))
+    )
+    BEGIN SELECT RAISE(ABORT, 'invalid financial entry kind'); END;
+`;
+
 // Serializa o bootstrap, inclusive a substituição de triggers de versões anteriores.
-transaction(() => db.exec(`
+transaction(() => {
+  db.exec("DROP TRIGGER IF EXISTS financial_entry_valid_kind_insert");
+  db.exec(`
   CREATE TABLE IF NOT EXISTS companies (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -318,43 +370,6 @@ transaction(() => db.exec(`
       OR NEW.amount_cents < 0 OR NEW.amount_cents > 9007199254740991
     BEGIN SELECT RAISE(ABORT, 'financial amount must be safe integer cents'); END;
 
-  DROP TRIGGER IF EXISTS financial_entry_valid_kind_insert;
-  CREATE TRIGGER financial_entry_valid_kind_insert
-    BEFORE INSERT ON financial_entries
-    WHEN NOT (
-      (NEW.entry_type = 'payment' AND NEW.party_type = 'client'
-        AND NEW.reason = 'simulated_payment')
-      OR (NEW.entry_type = 'refund' AND NEW.party_type = 'client'
-        AND NEW.delivery_id IS NOT NULL
-        AND (NEW.reason IN ('client_cancelled_after_pickup', 'product_unavailable')
-          OR (NEW.component = 'products'
-            AND NEW.reason IN ('recipient_absent', 'recipient_refused')
-            AND EXISTS (SELECT 1 FROM deliveries d WHERE d.id = NEW.delivery_id
-              AND d.status = 'returned' AND d.return_reason = NEW.reason
-              AND d.returned_at IS NOT NULL))
-          OR (NEW.reason = 'confirmation_failed' AND EXISTS (
-            SELECT 1 FROM deliveries d
-            JOIN delivery_attempts a ON a.delivery_id = d.id
-              AND a.status = 'closed_unsuccessfully' AND a.end_nature = 'terminal'
-              AND a.end_reason = 'confirmation_failed'
-            JOIN delivery_occurrences oc ON oc.delivery_id = d.id
-              AND oc.delivery_attempt_id = a.id AND oc.type = 'confirmation_failed'
-            WHERE d.id = NEW.delivery_id AND d.status = 'returned'
-              AND d.return_reason = 'confirmation_failed' AND d.returned_at IS NOT NULL
-              AND oc.classified_at IS NOT NULL
-              AND oc.responsibility IN ('CLIENTE', 'MOTOBOY', 'SISTEMA', 'INDEFINIDO')
-              AND (NEW.component = 'products' OR (NEW.component = 'freight'
-                AND oc.responsibility IN ('MOTOBOY', 'SISTEMA', 'INDEFINIDO')))))))
-      OR (NEW.entry_type = 'distribution' AND NEW.component = 'freight'
-        AND NEW.delivery_id IS NOT NULL
-        AND ((NEW.reason = 'delivery_completed'
-              AND NEW.party_type IN ('courier', 'company', 'ermes'))
-          OR (NEW.reason = 'client_cancelled_after_pickup' AND NEW.party_type = 'courier')
-          OR (NEW.reason IN ('recipient_absent', 'recipient_refused')
-            AND NEW.party_type IN ('courier', 'company', 'ermes'))))
-    )
-    BEGIN SELECT RAISE(ABORT, 'invalid financial entry kind'); END;
-
   CREATE TRIGGER IF NOT EXISTS financial_entry_payment_owner_insert
     BEFORE INSERT ON financial_entries
     WHEN NEW.entry_type = 'payment' AND NOT EXISTS (
@@ -496,9 +511,10 @@ transaction(() => db.exec(`
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
-`));
-
-evolveRevalidationSchema(db);
+`);
+  evolveRevalidationSchema(db, { inTransaction: true });
+  db.exec(financialEntryKindTrigger);
+});
 
 const orderColumns = new Set(db.prepare("PRAGMA table_info(orders)").all().map(({ name }) => name));
 if (!orderColumns.has("version")) {
