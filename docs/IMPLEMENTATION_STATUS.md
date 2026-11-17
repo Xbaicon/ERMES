@@ -9,7 +9,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
 | Baseline 0.2 | Em implementação incremental | `TentativaEntrega`, `OcorrenciaEntrega`/responsabilidade, impedimento externo/revalidação e fechamento operacional por ausência/recusa possuem incrementos funcionais; demais cenários e financeiro completo continuam pendentes |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
-| Incremento atual | Financeiro do cliente em `confirmation_failed` — IMPLEMENTADO | Classificação, evento e refunds acumulados atômicos; produtos nas quatro responsabilidades e frete para MOTOBOY/SISTEMA/INDEFINIDO; nenhuma distribuição interna presumida |
+| Incremento atual | Financeiro de ausência/recusa — IMPLEMENTADO | Reembolso acumulado de produtos e distribuição do frete 70/25/5 no fechamento terminal atômico; `confirmation_failed` segue sem execução financeira |
 | Próximo passo técnico | Implementação incremental | Continuar os incrementos funcionais da Baseline 0.2 sobre SQLite, preservando as pendências registradas abaixo |
 | Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
 | Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |
@@ -24,11 +24,10 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Conclusão normal | IMPLEMENTADO | Código válido conclui a tentativa ativa na mesma transação da Entrega, do evento e dos lançamentos financeiros já existentes |
 | Projeção da Entrega | IMPLEMENTADO | Consultas de detalhe incluem `attempts` de modo aditivo; não foi criado endpoint ou interface visual |
 | Retornos da tentativa | PARCIAL | Falha mecânica é recuperável; ausência, recusa, três códigos inválidos e cancelamento são terminais, sempre após confirmação física do retorno. A classificação registrada ainda não altera esse comportamento; impedimento externo usa retorno recuperável e revalidação explícita |
-| Ocorrências e classificação 0.2 | PARCIAL | `delivery_occurrences` preserva falhas do motoboy antes/depois da coleta, ausência, recusa e três códigos inválidos. A empresa consulta e classifica uma única vez como `CLIENTE`, `EMPRESA`, `MOTOBOY`, `SISTEMA` ou `INDEFINIDO`; somente `confirmation_failed` aplica os refunds do cliente na classificação |
+| Ocorrências e classificação 0.2 | PARCIAL | `delivery_occurrences` preserva falhas do motoboy antes/depois da coleta, ausência, recusa e três códigos inválidos. A empresa consulta e classifica uma única vez como `CLIENTE`, `EMPRESA`, `MOTOBOY`, `SISTEMA` ou `INDEFINIDO`, sem efeitos automáticos |
 | Revalidação por impedimento externo | IMPLEMENTADO | Ocorrência `temporary_external_obstruction`, retorno físico, tentativa encerrada recuperável, `awaiting_revalidation` persistido e liberação explícita/auditada pela empresa; nova tentativa somente na nova coleta |
 | Ausência e recusa do destinatário | OPERACIONAL E FINANCEIRO IMPLEMENTADOS | Retorno confirmado fecha tentativa terminal, projeta `NAO_REALIZADA/ENCERRADO`, completa reembolso de produtos pagos e distribui frete pago 70/25/5; sem presunção de responsabilidade, nova tentativa ou revalidação |
 | Fechamento terminal de `confirmation_failed` | OPERACIONAL IMPLEMENTADO | Terceiro erro cria ocorrência não classificada e inicia retorno; confirmação empresarial fecha tentativa terminal e projeta `NAO_REALIZADA/ENCERRADO`, sem financeiro. Tentativa, contador, ocorrência e histórico inconsistentes exigem reconciliação, sem backfill |
-| Financeiro do cliente em `confirmation_failed` | IMPLEMENTADO | Refund acumulado de produtos nas quatro responsabilidades; frete reembolsado em MOTOBOY/SISTEMA/INDEFINIDO e preservado em CLIENTE; gatilho atômico na classificação, sem distribuição interna |
 | Endereço incorreto e erro do ERMES | NÃO IMPLEMENTADO | `address_problem` continua bloqueado; faltam evidências específicas, comparação de endereço original/apresentado, correção e confirmação da disponibilidade do cliente |
 | Produto indisponível e ajuste excepcional do Pedido na 0.2 | PENDENTE | Falta o fluxo de produto/serviço indisponível com proposta de ajuste excepcional, concordância explícita do cliente, acerto da diferença de preço e efeitos financeiros correspondentes quando aplicáveis. O cancelamento legado, o reembolso já existente e o financeiro implementado da 0.1 não representam a conclusão desse fluxo da 0.2 |
 | Estados completos de Pedido e Entrega da 0.2 | PARCIAL | `officialStatus` é projeção derivada, sem coluna duplicada. `awaiting_revalidation` é novo estado operacional; `returned` com ausência/recusa explícita projeta `NAO_REALIZADA/ENCERRADO`, enquanto retorno ambíguo continua `null`. Demais regras terminais e financeiro completo continuam pendentes |
@@ -111,7 +110,7 @@ permanece pendente.
 - Chat permanece aberto, mas nenhuma mensagem autoriza liberação. Falta de tentativa, ocorrência inequívoca ou retorno comprovado exige reconciliação explícita, sem backfill.
 - O fechamento por ausência/recusa não cria nova tentativa ou revalidação nem presume responsabilidade. Completa o reembolso acumulado de produtos efetivamente pagos, preserva a cobrança de frete e divide frete reconciliado 70/25/5 pelo maior resto. Refund anterior parcial reduz o saldo; integral não duplica; over-refund é bloqueado. O motoboy vem da TentativaEntrega terminal, confrontada com coleta, ocorrência e retorno do ciclo; identidade contraditória exige reconciliação. Refund anterior positivo de frete também exige reconciliação. Chaves idempotentes, ledger append-only e transação única garantem rollback do fechamento em falha financeira.
 - Frete `NULL` sem pagamento de frete gera `freight_amount_unavailable` sem distribuição; frete conhecido sem pagamento coerente ou frete `NULL` com pagamento exige `FINANCIAL_RECONCILIATION_REQUIRED`. Não há backfill automático heurístico de consequências de retornos históricos.
-- Cancelamento posterior ao impedimento, erro corrigível/persistente do ERMES, endereço incorreto, produto indisponível/ajuste 0.2 e perfis RESPONSAVEL/ATENDENTE permanecem para incrementos próprios. As consequências financeiras do cliente em `confirmation_failed` estão implementadas na classificação; distribuição/custo interno continua futuro. Não há cobrança, reembolso ou remuneração nova no fluxo de revalidação.
+- Financeiro de `confirmation_failed`, cancelamento posterior ao impedimento, erro corrigível/persistente do ERMES, endereço incorreto, produto indisponível/ajuste 0.2 e perfis RESPONSAVEL/ATENDENTE permanecem para incrementos próprios. As consequências de `confirmation_failed` já definidas na Baseline 0.2 continuam normativas; distribuição/custo interno permanece futuro onde a Baseline assim determina. Não há cobrança, reembolso ou remuneração nova no fluxo de revalidação.
 
 
 ## Incremento terminal de três códigos inválidos
@@ -119,43 +118,6 @@ permanece pendente.
 - Contadores 1 e 2 mantêm a operação; o terceiro erro mantém contador 3, cria uma única ocorrência `confirmation_failed` com responsabilidade `NULL` e inicia retorno obrigatório.
 - Durante retorno e espera de recebimento: `RETORNO_AO_ESTABELECIMENTO/CONFIRMADO`, tentativa `returning`, sem encerramento definitivo.
 - Após confirmação empresarial: tentativa `closed_unsuccessfully/terminal/confirmation_failed`, Entrega legada `returned`, projeções `NAO_REALIZADA/ENCERRADO`, sem nova tentativa, aceite, coleta, confirmação ou revalidação.
-- Classificação explícita de `confirmation_failed` exige retorno físico confirmado e evidência terminal coerente; antes disso ou com histórico inconsistente retorna `409`. Aceita somente `CLIENTE`, `MOTOBOY`, `SISTEMA` e `INDEFINIDO`; `EMPRESA` retorna `400` nesse cenário e permanece disponível globalmente para outras ocorrências. Não altera estados, contador nem código; aplica os refunds do cliente atomicamente com a classificação. Não há presunção de culpa do cliente.
+- Classificação explícita de `confirmation_failed` exige retorno físico confirmado e evidência terminal coerente; antes disso ou com histórico inconsistente retorna `409`. Aceita somente `CLIENTE`, `MOTOBOY`, `SISTEMA` e `INDEFINIDO`; `EMPRESA` retorna `400` nesse cenário e permanece disponível globalmente para outras ocorrências. Não altera estados, contador, código nem financeiro. Não há presunção de culpa do cliente.
 - Operações, Pedido e pagamento idempotente compartilham validação de evidência. Dados legados ambíguos não recebem inferência; inconsistências no fechamento exigem reconciliação. Não há migração nem backfill.
-- Repetições não duplicam ocorrência/eventos. Falha induzida no evento final faz rollback integral. Lançamentos anteriores permanecem imutáveis; consequências financeiras do cliente são aplicadas na classificação. Custo/distribuição interna continua futuro.
-
-
-## Incremento financeiro do cliente após três códigos inválidos
-
-- Gatilho exclusivo: classificação válida de `confirmation_failed` após retorno
-  confirmado e evidência terminal coerente. Terceiro erro e `confirm-return`
-  continuam sem refund ou distribution desse motivo.
-- `CLIENTE`: produtos integralmente reembolsados; frete permanece integralmente
-  cobrado. Refund anterior positivo de frete exige reconciliação.
-- `MOTOBOY`, `SISTEMA` e `INDEFINIDO`: produtos e frete efetivamente pagos
-  integralmente reembolsados. Nenhuma responsabilidade adicional é inferida.
-- Refunds parciais anteriores reduzem o saldo; integrais não duplicam.
-  Over-refund, pagamentos ausentes/duplicados/inválidos/divergentes, frete conhecido
-  sem pagamento coerente e frete `NULL` com pagamento exigem reconciliação.
-  Frete `NULL` sem pagamento não gera valor inventado.
-- Classificação completa, evento e ambos os refunds são atômicos. Falha em
-  qualquer INSERT reverte tudo e permite classificação após reconciliação.
-  `EMPRESA` continua inválida (`400`), segunda classificação retorna `409` e
-  autorização permanece inalterada. Estado, tentativa, contador e código são preservados.
-- Nenhuma distribution interna é criada, nem regra 70/25/5 aplicada a esse fluxo.
-  Custo operacional/distribuição interna continua futuro. Distribuições de
-  desfechos incompatíveis exigem reconciliação; remuneração histórica de outra
-  natureza não é automaticamente corrupção.
-- `financial.pending` distingue `confirmation_failure_classification_required`,
-  `freight_amount_unavailable` e a pendência exclusivamente interna
-  `freight_distribution_rule_undefined`. `refundStatus` continua derivado do ledger.
-- Sem backfill automático dos refunds de históricos já classificados: exigem
-  reconciliação explícita. Startup não inventa esses valores; projeções financeiras
-  rejeitam históricos classificados com refunds incompletos.
-- Ausência/recusa (incluindo 70/25/5), cancelamento pós-coleta, conclusão normal,
-  produto indisponível legado e revalidação preservam suas regras. Este incremento
-  não declara o financeiro completo da Baseline 0.2.
-
-- Correções da auditoria de `confirmation_failed`: SQL direto e função financeira
-  rejeitam ocorrências contraditórias e classificadores de outro papel/empresa.
-  Bootstrap completo do schema legado instala o trigger após reconstruir
-  ocorrências, na mesma transação, com rollback e repetição verificados.
+- Repetições não duplicam ocorrência/eventos. Falha induzida no evento final faz rollback integral. O ledger completo é preservado; consequências financeiras de três códigos inválidos continuam pendentes para incremento separado.

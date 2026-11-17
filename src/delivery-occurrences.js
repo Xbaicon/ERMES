@@ -1,7 +1,6 @@
 import { db, transaction } from "./database.js";
 import { DELIVERY_EVENT_TYPES } from "./deliveries.js";
 import { hasConfirmationFailureEvidence } from "./official-statuses.js";
-import { recordConfirmationFailureFinancialConsequencesInTransaction } from "./finance.js";
 
 export const DELIVERY_OCCURRENCE_TYPES = Object.freeze({
   COURIER_FAILURE_BEFORE_PICKUP: "courier_failure_before_pickup",
@@ -173,11 +172,6 @@ export function classifyDeliveryOccurrence(occurrenceId, classifierUserId, compa
       JSON.stringify({ occurrenceId, responsibility: classification.responsibility }));
     if (Number(eventResult.changes) !== 1) {
       throw occurrenceError("Não foi possível registrar a classificação da ocorrência.", 500);
-    }
-    if (occurrence.type === DELIVERY_OCCURRENCE_TYPES.CONFIRMATION_FAILED) {
-      recordConfirmationFailureFinancialConsequencesInTransaction(
-        db, occurrenceId, classification.responsibility,
-      );
     }
     const classified = db.prepare(`${occurrenceSelect}
       WHERE occurrence.id = ? AND orders.company_id = ?`).get(occurrenceId, companyId);
