@@ -796,7 +796,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     }
   });
 
-  await context.test("falha de código terminal mantém classificação separada e ledger intacto", async () => {
+  await context.test("falha de código terminal aplica financeiro apenas na classificação", async () => {
     for (const responsibility of ["CLIENTE", "MOTOBOY", "SISTEMA", "INDEFINIDO"]) {
       const item = createDelivery(company1, client1, true);
       for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
@@ -864,6 +864,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       } finally {
         db.exec("DROP TRIGGER fail_code_classification");
       }
+      assert.deepEqual(db.prepare("SELECT * FROM financial_entries ORDER BY id").all(), ledger);
       assert.equal((await classify(responsibility)).status, 200);
       const classified = storedOccurrences(item.delivery.id)[0];
       assert.equal(classified.responsibility, responsibility);
@@ -883,7 +884,13 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       assert.equal(detail.officialStatus, "NAO_REALIZADA");
       assert.equal(detail.orderOfficialStatus, "ENCERRADO");
       assert.notEqual(detail.orderOfficialStatus, "RECUSADO");
-      assert.deepEqual(db.prepare("SELECT * FROM financial_entries ORDER BY id").all(), ledger);
+      const after = db.prepare("SELECT * FROM financial_entries ORDER BY id").all();
+      assert.deepEqual(after.slice(0, ledger.length), ledger);
+      assert.equal(after.length, ledger.length + 1);
+      assert.equal(after.at(-1).entry_type, "refund");
+      assert.equal(after.at(-1).component, "products");
+      assert.equal(after.at(-1).amount_cents, 1000);
+      assert.equal(after.at(-1).reason, "confirmation_failed");
     }
   });
 
