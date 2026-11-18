@@ -497,7 +497,7 @@ a conversa selecionada por polling HTTP a cada cinco segundos.
 | POST | `/courier/deliveries/:id/arrive-destination` | Registrar chegada ao destino |
 | POST | `/courier/deliveries/:id/confirm` | Validar código e concluir |
 | POST | `/courier/deliveries/:id/fail` | Registrar falha com motivo |
-| POST | `/courier/deliveries/:id/occurrences` | Registrar ausência ou recusa; problema genérico de endereço permanece bloqueado |
+| POST | `/courier/deliveries/:id/occurrences` | Registrar ausência, recusa ou problema de endereço no destino |
 | POST | `/courier/deliveries/:id/report-return` | Registrar devolução física à empresa |
 
 ### Operação e autorização de Entregas
@@ -570,7 +570,8 @@ sessão e retorna somente ocorrências de suas Entregas, em ordem cronológica
 estável. Cada item contém `id`, `deliveryId`, `deliveryAttemptId`, `type`,
 `description`, `reportedAt`, relator reduzido a nome/papel, estado da
 classificação, `responsibility`, `classifiedAt`, classificador reduzido a
-nome/papel e `analysisResult`. Evidências internas, IDs dos usuários, dados de
+nome/papel e `analysisResult`. `address_problem` acrescenta `addressEvidence`
+com `originalAddress` e `presentedAddress` normalizados. Evidências internas brutas, IDs dos usuários, dados de
 sessão e informações sensíveis não são expostos.
 
 `POST /company/delivery-occurrences/:occurrenceId/classify` aceita somente:
@@ -597,12 +598,15 @@ físico confirmado e evidência terminal coerente: durante `returning`, durante
 `awaiting_return_confirmation` ou com ciclo inconsistente retorna `409`, sem
 mutação. A restrição temporal é exclusiva de `confirmation_failed`.
 
-A classificação não altera o estado da Entrega nem o ciclo da tentativa.
+A classificação genérica não altera o estado da Entrega nem o ciclo da tentativa.
+Para `address_problem`, somente `CLIENTE` inicia o retorno após validar a evidência,
+na mesma transação do evento. `SISTEMA`, `EMPRESA`, `MOTOBOY` e `INDEFINIDO`
+apenas registram classificação; seus desfechos ainda não estão implementados.
+`SISTEMA` será tratado no incremento de erro do ERMES.
 Exclusivamente para `confirmation_failed`, aplica as consequências financeiras
 do cliente na mesma transação, conforme a seção financeira abaixo. As demais
-ocorrências mantêm a classificação sem efeitos financeiros. Não há nova interface visual. O tipo genérico `address_problem` continua retornando
-`409` sem mutação até que o fluxo tipado de evidências e revalidação seja
-implementado. A autorização usa somente o papel técnico atual `company`;
+ocorrências mantêm a classificação sem efeitos financeiros. Não há nova interface visual.
+A autorização usa somente o papel técnico atual `company`;
 `RESPONSAVEL` e `ATENDENTE` ainda não foram implementados.
 
 ### Projeções financeiras
@@ -653,9 +657,20 @@ coleta exige retorno e, após a dupla verificação, permite redisponibilizaçã
 Cancelamento do cliente antes da coleta encerra como `cancelled`; depois da
 coleta exige retorno, sem tolerância fixa ou bloqueio temporal. Ausência e recusa
 iniciam retorno e só encerram a tentativa depois da confirmação física pela
-empresa. O tipo genérico `address_problem` retorna `409` sem efeitos colaterais
-até que o fluxo tipado de evidências, revalidação e classificação de sua causa
-seja implementado. Os corpos de transições sem parâmetros devem ser `{}`.
+empresa. `address_problem` aceita `type`, `presentedAddress` obrigatório conforme
+o contrato de endereço e `description` opcional, textual e de até 500 caracteres.
+O endereço original vem de `orders.destination_snapshot_json`; ambos ficam na
+ocorrência imutável. O evento contém apenas `occurrenceId`. Registro isolado
+mantém Entrega em `awaiting_confirmation`, tentativa `active`, responsabilidade
+`null` e ledger inalterado. Duplicidade, causa terminal conflitante e confirmação
+por código enquanto o problema aguarda decisão retornam `409`. Classificação
+explícita `CLIENTE` inicia retorno; `report-return` e `confirm-return` continuam
+obrigatórios. No recebimento físico, a tentativa encerra terminalmente, Entrega
+projeta `NAO_REALIZADA` e Pedido `ENCERRADO`. Products pagos são reembolsados e
+freight pago permanece cobrado, dividido 70/25/5. Frete `NULL` sem pagamento
+não gera distribuição e indica `freight_amount_unavailable`. Endereço corrigido
+exige novo Pedido; o snapshot original não é editado. Os corpos de transições
+sem parâmetros devem ser `{}`.
 
 Bancos atualizados a partir da primeira implementação de `TentativaEntrega`
 recebem o contador novo com zero. A migração só transfere o contador legado
@@ -696,7 +711,7 @@ Os campos `status` existentes foram preservados. Pedidos e Entregas incluem `off
 { "description": "Rua temporariamente interditada, sem alternativa segura disponível." }
 ```
 
-Descrição textual não vazia, até 500 caracteres. Não aceita evidência arbitrária, responsabilidade, IDs de tentativa ou declarações automáticas de contato/rota. A ação é o registro explícito do motoboy após avaliar a viabilidade; não faz verificação geográfica. Retorna `200` com `{ "delivery": ... }`; cria ocorrência `temporary_external_obstruction` não classificada e inicia retorno na mesma transação do evento. Repetição retorna `409` sem mutação. `address_problem` genérico continua bloqueado.
+Descrição textual não vazia, até 500 caracteres. Não aceita evidência arbitrária, responsabilidade, IDs de tentativa ou declarações automáticas de contato/rota. A ação é o registro explícito do motoboy após avaliar a viabilidade; não faz verificação geográfica. Retorna `200` com `{ "delivery": ... }`; cria ocorrência `temporary_external_obstruction` não classificada e inicia retorno na mesma transação do evento. Repetição retorna `409` sem mutação. `address_problem` segue seu fluxo próprio de evidência e classificação.
 
 ### Receber e consultar
 
