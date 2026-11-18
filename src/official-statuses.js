@@ -1,4 +1,5 @@
 import { isCanonicalTimestamp } from "./finance.js";
+import { clientAddressEvidence } from "./client-address-evidence.js";
 
 // Projeções derivadas: status legado continua sendo a única fonte persistida.
 export const ORDER_OFFICIAL_STATUSES = Object.freeze([
@@ -18,7 +19,7 @@ const deliveryStatuses = Object.freeze({
   awaiting_revalidation: "AGUARDANDO_REVALIDACAO", completed: "FINALIZADA", cancelled: "CANCELADA",
 });
 const cancelledReturnEvents = new Set(["client_cancelled_after_pickup"]);
-const unsuccessfulReturnEvents = new Set(["recipient_absent", "recipient_refused", "confirmation_failed"]);
+const unsuccessfulReturnEvents = new Set(["recipient_absent", "recipient_refused", "confirmation_failed", "address_problem"]);
 
 // Somente evidência persistida coerente autoriza a projeção de falha de código.
 // O mesmo critério protege o fechamento e todos os consumidores de projeções.
@@ -96,10 +97,11 @@ export function terminalDeliveryEvent(database, deliveryId) {
   const events = database.prepare(`SELECT DISTINCT event_type AS type FROM delivery_events
     WHERE delivery_id = ? AND event_type IN ('client_cancelled_before_pickup',
       'client_cancelled_after_pickup', 'client_cancelled_after_external_obstruction',
-      'recipient_absent', 'recipient_refused', 'confirmation_failed')`)
+      'recipient_absent', 'recipient_refused', 'confirmation_failed', 'address_problem')`)
     .all(deliveryId);
   if (events.length !== 1) return null;
   const type = events[0].type;
+  if (type === "address_problem" && !clientAddressEvidence(database, deliveryId, "closed")) return null;
   return type === "confirmation_failed" && !hasConfirmationFailureEvidence(database, deliveryId, true)
     ? null : type;
 }

@@ -11,6 +11,7 @@ import {
 } from "./finance.js";
 import { evolveRevalidationSchema } from "./revalidation-schema.js";
 import { migrateLegacyInvalidCodeAttempts } from "./delivery-attempts.js";
+import { CLIENT_ADDRESS_CLOSED_SQL } from "./client-address-evidence.js";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databasePath = process.env.ERMES_DB_PATH || resolve(projectRoot, "data", "ermes.sqlite");
@@ -68,6 +69,9 @@ const financialEntryKindTrigger = `
             AND EXISTS (SELECT 1 FROM deliveries d WHERE d.id = NEW.delivery_id
               AND d.status = 'returned' AND d.return_reason = NEW.reason
               AND d.returned_at IS NOT NULL))
+          OR (NEW.reason = 'address_problem' AND NEW.component = 'products'
+            AND EXISTS (${CLIENT_ADDRESS_CLOSED_SQL}
+              AND d.id = NEW.delivery_id AND o.id = NEW.order_id AND o.payment_status = 'paid'))
           OR (NEW.reason = 'confirmation_failed' AND EXISTS (
             SELECT 1 FROM deliveries d
             JOIN delivery_attempts a ON a.delivery_id = d.id
@@ -99,7 +103,11 @@ const financialEntryKindTrigger = `
               AND NEW.party_type IN ('courier', 'company', 'ermes'))
           OR (NEW.reason = 'client_cancelled_after_pickup' AND NEW.party_type = 'courier')
           OR (NEW.reason IN ('recipient_absent', 'recipient_refused')
-            AND NEW.party_type IN ('courier', 'company', 'ermes'))))
+            AND NEW.party_type IN ('courier', 'company', 'ermes'))
+          OR (NEW.reason = 'address_problem'
+            AND NEW.party_type IN ('courier', 'company', 'ermes')
+            AND EXISTS (${CLIENT_ADDRESS_CLOSED_SQL}
+              AND d.id = NEW.delivery_id AND o.id = NEW.order_id AND o.payment_status = 'paid'))))
     )
     BEGIN SELECT RAISE(ABORT, 'invalid financial entry kind'); END;
 `;
@@ -457,7 +465,7 @@ transaction(() => {
             AND d.status = 'completed' AND NEW.party_company_id = o.company_id)
           OR (NEW.party_type = 'ermes' AND NEW.reason = 'delivery_completed'
             AND d.status = 'completed')
-          OR (NEW.reason IN ('recipient_absent', 'recipient_refused')
+          OR (NEW.reason IN ('recipient_absent', 'recipient_refused', 'address_problem')
             AND d.status = 'returned' AND d.return_reason = NEW.reason
             AND d.returned_at IS NOT NULL
             AND ((NEW.party_type = 'company' AND NEW.party_company_id = o.company_id)

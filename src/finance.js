@@ -1,4 +1,5 @@
 import { splitNormalFreight } from "./freight.js";
+import { clientAddressEvidence } from "./client-address-evidence.js";
 
 export const FINANCIAL_ENTRY_TYPES = Object.freeze({
   PAYMENT: "payment",
@@ -20,10 +21,9 @@ export const FINANCIAL_PARTIES = Object.freeze({
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const PENDING_DISTRIBUTION_REASONS = new Set([
-  "address_problem",
   "confirmation_failed",
 ]);
-const RECIPIENT_TERMINAL_REASONS = new Set(["recipient_absent", "recipient_refused"]);
+const RECIPIENT_TERMINAL_REASONS = new Set(["recipient_absent", "recipient_refused", "address_problem"]);
 const semanticEntryFields = Object.freeze([
   "orderId", "deliveryId", "entryType", "component", "partyType",
   "partyUserId", "partyCompanyId", "amountCents", "reason",
@@ -689,6 +689,9 @@ function recipientTerminalFailureEvidence(database, delivery, attemptId, reason)
 
 export function recordRecipientTerminalFailureInTransaction(database, delivery, attemptId, reason) {
   if (!RECIPIENT_TERMINAL_REASONS.has(reason)) throw new RangeError("Motivo terminal inválido.");
+  if (reason === "address_problem" && !clientAddressEvidence(database, delivery.id, "closed")) {
+    throw financialError("O endereço atribuído ao cliente exige reconciliação operacional.");
+  }
   const courierId = recipientTerminalFailureEvidence(database, delivery, attemptId, reason);
   if (delivery.paymentStatus !== "paid" || !isCanonicalTimestamp(delivery.paymentPaidAt)) {
     throw financialError("O pagamento exige reconciliação financeira.");
@@ -749,6 +752,12 @@ export function recordRecipientTerminalFailureInTransaction(database, delivery, 
       idempotencyKey: `${keyPrefix}:distribution-freight:${partyType}`,
     });
   }
+}
+
+export function recordClientAddressFailureInTransaction(database, delivery) {
+  const evidence = clientAddressEvidence(database, delivery.id, "closed");
+  if (!evidence) throw financialError("O endereço atribuído ao cliente exige reconciliação.");
+  recordRecipientTerminalFailureInTransaction(database, delivery, evidence.attemptId, "address_problem");
 }
 
 export function recordProductUnavailableInTransaction(database, delivery, occurredAt = null) {
@@ -962,6 +971,10 @@ function pendingFinancialEffects(database, delivery, entries) {
     if (delivery.freightTotalCents === null && !paidFreight) pending.push("freight_amount_unavailable");
   }
   if (RECIPIENT_TERMINAL_REASONS.has(delivery.returnReason) && delivery.status === "returned") {
+    if (delivery.returnReason === "address_problem"
+      && !clientAddressEvidence(database, delivery.id, "closed")) {
+      throw financialError("O histórico de endereço atribuído ao cliente exige reconciliação.");
+    }
     const payments = paidComponents(database, delivery.orderId, delivery.clientId);
     const paidProductsCents = payments.get(FINANCIAL_COMPONENTS.PRODUCTS);
     const paidFreightCents = payments.get(FINANCIAL_COMPONENTS.FREIGHT);

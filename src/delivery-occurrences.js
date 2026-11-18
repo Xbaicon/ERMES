@@ -2,6 +2,7 @@ import { db, transaction } from "./database.js";
 import { DELIVERY_EVENT_TYPES } from "./deliveries.js";
 import { hasConfirmationFailureEvidence } from "./official-statuses.js";
 import { recordConfirmationFailureFinancialConsequencesInTransaction } from "./finance.js";
+import { clientAddressEvidence, validAddressEvidence } from "./client-address-evidence.js";
 
 export const DELIVERY_OCCURRENCE_TYPES = Object.freeze({
   COURIER_FAILURE_BEFORE_PICKUP: "courier_failure_before_pickup",
@@ -85,7 +86,7 @@ export function createDeliveryOccurrenceInTransaction(database, {
 }
 
 function safeOccurrence(row) {
-  return {
+  const safe = {
     id: row.id,
     deliveryId: row.deliveryId,
     deliveryAttemptId: row.deliveryAttemptId,
@@ -99,12 +100,21 @@ function safeOccurrence(row) {
     classifier: row.classifierName ? { fullName: row.classifierName, role: row.classifierRole } : null,
     analysisResult: row.analysisResult,
   };
+  if (row.type === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM) {
+    let evidence;
+    try { evidence = JSON.parse(row.evidenceJson); } catch { evidence = null; }
+    safe.addressEvidence = validAddressEvidence(row.snapshotJson, row.evidenceJson) ? {
+      originalAddress: evidence.originalAddress, presentedAddress: evidence.presentedAddress,
+    } : null;
+  }
+  return safe;
 }
 
 const occurrenceSelect = `SELECT occurrence.id,
     occurrence.delivery_id AS deliveryId,
     occurrence.delivery_attempt_id AS deliveryAttemptId,
-    occurrence.type, occurrence.description,
+    occurrence.type, occurrence.description, occurrence.evidence_json AS evidenceJson,
+    orders.destination_snapshot_json AS snapshotJson,
     occurrence.reported_at AS reportedAt,
     occurrence.responsibility,
     occurrence.classified_at AS classifiedAt,
@@ -159,6 +169,14 @@ export function classifyDeliveryOccurrence(occurrenceId, classifierUserId, compa
       }
     }
 
+    if (occurrence.type === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM
+      && classification.responsibility === "CLIENTE") {
+      const evidence = clientAddressEvidence(db, occurrence.deliveryId, "unclassified");
+      if (!evidence || evidence.occurrenceId !== occurrenceId) {
+        throw occurrenceError("A ocorrência de endereço exige reconciliação antes do retorno.");
+      }
+    }
+
     const update = db.prepare(`UPDATE delivery_occurrences
       SET responsibility = ?, classified_by_user_id = ?, classified_at = CURRENT_TIMESTAMP,
           analysis_result = ?
@@ -173,6 +191,19 @@ export function classifyDeliveryOccurrence(occurrenceId, classifierUserId, compa
       JSON.stringify({ occurrenceId, responsibility: classification.responsibility }));
     if (Number(eventResult.changes) !== 1) {
       throw occurrenceError("Não foi possível registrar a classificação da ocorrência.", 500);
+    }
+    if (occurrence.type === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM
+      && classification.responsibility === "CLIENTE") {
+      if (!clientAddressEvidence(db, occurrence.deliveryId, "classified")) {
+        throw occurrenceError("A classificação exige evidência operacional coerente.");
+      }
+      const attempt = db.prepare(`UPDATE delivery_attempts SET status = 'returning'
+        WHERE id = ? AND status = 'active'`).run(occurrence.deliveryAttemptId);
+      const delivery = db.prepare(`UPDATE deliveries SET status = 'returning', return_reason = 'address_problem'
+        WHERE id = ? AND status = 'awaiting_confirmation'`).run(occurrence.deliveryId);
+      if (Number(attempt.changes) !== 1 || Number(delivery.changes) !== 1) {
+        throw occurrenceError("Não foi possível iniciar o retorno da mercadoria.");
+      }
     }
     if (occurrence.type === DELIVERY_OCCURRENCE_TYPES.CONFIRMATION_FAILED) {
       recordConfirmationFailureFinancialConsequencesInTransaction(

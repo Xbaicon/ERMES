@@ -268,7 +268,7 @@ test("impedimento externo e revalidação da Baseline 0.2", async (context) => {
       { description: 'Rua bloqueada', evidence: {} }]) {
       assert.equal((await post(cookies.courier1, id, 'external-obstruction', body)).status, 400);
     }
-    assert.equal((await post(cookies.courier1, id, 'occurrences', { type: 'address_problem' })).status, 409);
+    assert.equal((await post(cookies.courier1, id, 'occurrences', { type: 'address_problem' })).status, 400);
     assert.deepEqual(snapshot(id), before);
     db.prepare('DELETE FROM delivery_attempts WHERE delivery_id = ?').run(id);
     const legacy = snapshot(id);

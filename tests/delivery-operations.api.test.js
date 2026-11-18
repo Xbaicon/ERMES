@@ -19,6 +19,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
   const { createDeliveryForEligibleOrderInTransaction } = await import("../src/delivery-creation.js");
   const { createDeliveryAttemptInTransaction } = await import("../src/delivery-attempts.js");
   const { createDeliveryOccurrenceInTransaction } = await import("../src/delivery-occurrences.js");
+  const { clientAddressEvidence } = await import("../src/client-address-evidence.js");
   const { recordPaymentInTransaction } = await import("../src/finance.js");
   await startServer(0);
   context.after(async () => {
@@ -72,14 +73,14 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     courier1: await login("motoboy1@ermes.local"), courier2: await login("motoboy2@ermes.local"),
     offline: await login("offline@ermes.local"), otherCourier: await login("outro@ermes.local"),
   };
-  function createDelivery(companyId = company1, clientId = client1, withStoredItem = false) {
+  function createDelivery(companyId = company1, clientId = client1, withStoredItem = false, freightCents = null) {
     const recipient = JSON.stringify({ type: "self",
       name: db.prepare("SELECT full_name AS fullName FROM users WHERE id = ?").get(clientId).fullName });
     const orderId = Number(db.prepare(`INSERT INTO orders
       (client_id, company_id, status, destination_snapshot_json, recipient_snapshot_json, items_total_cents,
-       payment_status, payment_paid_at, confirmed_at)
-      VALUES (?, ?, 'confirmed', ?, ?, 1000, 'paid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
-      .run(clientId, companyId, destination, recipient).lastInsertRowid);
+       freight_total_cents, payment_status, payment_paid_at, confirmed_at)
+      VALUES (?, ?, 'confirmed', ?, ?, 1000, ?, 'paid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+      .run(clientId, companyId, destination, recipient, freightCents).lastInsertRowid);
     if (withStoredItem) {
       db.prepare(`INSERT INTO order_items
         (order_id, product_id, quantity, unit_price_cents, unit_weight_kg)
@@ -89,7 +90,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       const result = createDeliveryForEligibleOrderInTransaction(orderId);
       recordPaymentInTransaction(db, {
         id: orderId, clientId, itemsTotalCents: 1000,
-        freightTotalCents: null,
+        freightTotalCents: freightCents,
         paymentPaidAt: db.prepare("SELECT payment_paid_at AS value FROM orders WHERE id = ?")
           .get(orderId).value,
       }, result.delivery.id);
@@ -1318,7 +1319,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     }
   });
 
-  await context.test("problema genérico de endereço é rejeitado sem efeitos colaterais", async () => {
+  await context.test("problema de endereço exige corpo válido e preserva estado até classificação", async () => {
     const item = createDelivery();
     for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
       assert.equal((await post(cookies.courier1, item.delivery.id, action)).status, 200);
@@ -1341,8 +1342,7 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     const response = await post(cookies.courier1, item.delivery.id, "occurrences", {
       type: "address_problem",
     });
-    assert.equal(response.status, 409);
-    assert.match((await response.json()).error, /classificação de ocorrências da Baseline 0\.2/i);
+    assert.equal(response.status, 400);
     assert.deepEqual({ ...db.prepare(`SELECT status, return_reason AS returnReason
       FROM deliveries WHERE id = ?`).get(item.delivery.id) }, deliveryBefore);
     assert.deepEqual(storedAttempts(item.delivery.id), attemptBefore);
@@ -1352,8 +1352,339 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       .get(item.delivery.id).total, financialBefore);
     assert.equal(storedOccurrences(item.delivery.id).length, occurrencesBefore);
 
+    const created = await post(cookies.courier1, item.delivery.id, "occurrences", {
+      type: "address_problem", presentedAddress: JSON.parse(destination),
+    });
+    assert.equal(created.status, 200);
+    assert.equal(storedOccurrences(item.delivery.id)[0].responsibility, null);
+    assert.equal(storedAttempts(item.delivery.id)[0].status, "active");
+    assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(item.delivery.id).status,
+      "awaiting_confirmation");
     assert.equal((await post(cookies.courier1, item.delivery.id, "confirm", {
       code: item.confirmationCode,
+    })).status, 409);
+    const occurrenceId = storedOccurrences(item.delivery.id)[0].id;
+    const classified = await request(`/api/company/delivery-occurrences/${occurrenceId}/classify`, {
+      cookie: cookies.company1, method: "POST", body: { responsibility: "CLIENTE" },
+    });
+    assert.equal(classified.status, 200);
+    assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(item.delivery.id).status, "returning");
+    assert.equal((await post(cookies.courier1, item.delivery.id, "report-return")).status, 200);
+    const confirmed = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    });
+    assert.equal(confirmed.status, 200);
+    assert.equal((await confirmed.json()).delivery.officialStatus, "NAO_REALIZADA");
+  });
+
+  await context.test("endereço do cliente preserva evidência, exige retorno e reparte frete", async () => {
+    const item = createDelivery(company1, client1, true, 101);
+    const id = item.delivery.id;
+    for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+      assert.equal((await post(cookies.courier1, id, action)).status, 200);
+    }
+    const presentedAddress = { ...JSON.parse(destination), postalCode: "01001-000",
+      street: "  Praça da Sé  ", complement: "  sala 2 " };
+    const invalid = await post(cookies.courier1, id, "occurrences", {
+      type: "address_problem", presentedAddress: { ...presentedAddress, state: "XXX" },
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal((await post(cookies.courier1, id, "occurrences", {
+      type: "address_problem", presentedAddress, description: " ",
+    })).status, 400);
+    assert.equal((await post(cookies.courier1, id, "occurrences", {
+      type: "address_problem", presentedAddress, evidence: { responsibility: "CLIENTE" },
+    })).status, 400);
+    assert.equal(storedOccurrences(id).length, 0);
+    db.prepare("UPDATE client_default_addresses SET street = 'Rua Atualizada' WHERE client_id = ?")
+      .run(client1);
+    const recorded = await post(cookies.courier1, id, "occurrences", {
+      type: "address_problem", description: "  Número errado  ", presentedAddress,
+    });
+    db.prepare("UPDATE client_default_addresses SET street = 'Rua Um' WHERE client_id = ?")
+      .run(client1);
+    assert.equal(recorded.status, 200);
+    const [occurrence] = storedOccurrences(id);
+    const directEntry = (type, component, party, amount, key) => db.prepare(`INSERT INTO financial_entries
+      (order_id, delivery_id, entry_type, component, party_type, party_user_id,
+       party_company_id, amount_cents, reason, idempotency_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'address_problem', ?)`).run(
+      item.delivery.orderId, id, type, component, party,
+      party === "client" ? client1 : party === "courier" ? courier1 : null,
+      party === "company" ? company1 : null, amount, key,
+    );
+    assert.throws(() => directEntry("refund", "products", "client", 1000, `direct:${id}:unclassified`));
+    assert.equal(occurrence.description, "Número errado");
+    assert.equal(occurrence.responsibility, null);
+    assert.throws(() => db.prepare("UPDATE delivery_occurrences SET evidence_json = '{}' WHERE id = ?")
+      .run(occurrence.id), /delivery occurrence report is immutable/);
+    assert.deepEqual(occurrence.evidence, {
+      deliveryState: "awaiting_confirmation", originalAddress: JSON.parse(destination),
+      presentedAddress: { ...presentedAddress, postalCode: "01001000",
+        street: "Praça da Sé", complement: "sala 2" },
+    });
+    const companyOccurrences = await (await request("/api/company/delivery-occurrences", {
+      cookie: cookies.company1,
+    })).json();
+    const projected = companyOccurrences.occurrences.find(({ id: occurrenceId }) => occurrenceId === occurrence.id);
+    assert.deepEqual(projected.addressEvidence, {
+      originalAddress: JSON.parse(destination), presentedAddress: occurrence.evidence.presentedAddress,
+    });
+    assert.equal(Object.hasOwn(projected, "evidenceJson"), false);
+    assert.equal(Object.hasOwn(projected, "snapshotJson"), false);
+    assert.equal((await post(cookies.courier1, id, "occurrences", {
+      type: "address_problem", presentedAddress,
+    })).status, 409);
+    assert.equal(storedOccurrences(id).length, 1);
+    assert.equal((await post(cookies.courier1, id, "occurrences", { type: "recipient_absent" })).status, 409);
+    assert.equal((await post(cookies.courier1, id, "confirm", { code: item.confirmationCode })).status, 409);
+    assert.equal(storedAttempts(id)[0].invalidCodeAttempts, 0);
+    assert.equal((await request(`/api/company/delivery-occurrences/${occurrence.id}/classify`, {
+      cookie: cookies.company2, method: "POST", body: { responsibility: "CLIENTE" },
+    })).status, 404);
+    assert.equal((await post(cookies.courier1, id, "report-return")).status, 409);
+    assert.equal((await request(`/api/company/delivery-occurrences/${occurrence.id}/classify`, {
+      cookie: cookies.company1, method: "POST", body: { responsibility: "CLIENTE" },
+    })).status, 200);
+    assert.equal(storedAttempts(id)[0].status, "returning");
+    assert.equal(db.prepare("SELECT return_reason AS reason FROM deliveries WHERE id = ?").get(id).reason,
+      "address_problem");
+    assert.equal((await request(`/api/company/delivery-occurrences/${occurrence.id}/classify`, {
+      cookie: cookies.company1, method: "POST", body: { responsibility: "CLIENTE" },
+    })).status, 409);
+    assert.throws(() => directEntry("distribution", "freight", "courier", 71, `direct:${id}:before-return`));
+    assert.equal((await post(cookies.courier2, id, "report-return")).status, 404);
+    assert.equal((await post(cookies.courier1, id, "report-return")).status, 200);
+    const reportCount = db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
+      WHERE delivery_id = ? AND event_type = 'return_reported'`).get(id).total;
+    const reportedAt = db.prepare("SELECT return_reported_at AS value FROM deliveries WHERE id = ?").get(id).value;
+    assert.equal(reportCount, 1);
+    assert.ok(reportedAt);
+    assert.equal(storedAttempts(id)[0].status, "returning");
+    assert.equal((await post(cookies.courier1, id, "report-return")).status, 409);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
+      WHERE delivery_id = ? AND event_type = 'return_reported'`).get(id).total, reportCount);
+    assert.equal(db.prepare("SELECT return_reported_at AS value FROM deliveries WHERE id = ?").get(id).value,
+      reportedAt);
+    const returned = await request(`/api/company/deliveries/${id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    });
+    assert.equal(returned.status, 200);
+    const result = (await returned.json()).delivery;
+    assert.equal(result.officialStatus, "NAO_REALIZADA");
+    assert.equal(result.orderOfficialStatus, "ENCERRADO");
+    assert.deepEqual(storedAttempts(id).map(({ status, endNature, endReason }) => (
+      { status, endNature, endReason }
+    )), [{ status: "closed_unsuccessfully", endNature: "terminal", endReason: "address_problem" }]);
+    const entries = db.prepare(`SELECT entry_type AS type, component, party_type AS party,
+      amount_cents AS amount, reason FROM financial_entries WHERE delivery_id = ?
+      AND reason = 'address_problem' ORDER BY id`).all(id);
+    assert.deepEqual(entries.map(({ type, component, party, amount }) => ({ type, component, party, amount })), [
+      { type: "refund", component: "products", party: "client", amount: 1000 },
+      { type: "distribution", component: "freight", party: "courier", amount: 71 },
+      { type: "distribution", component: "freight", party: "company", amount: 25 },
+      { type: "distribution", component: "freight", party: "ermes", amount: 5 },
+    ]);
+    assert.throws(() => directEntry("refund", "freight", "client", 1, `direct:${id}:freight-refund`));
+    assert.throws(() => directEntry("distribution", "products", "courier", 1, `direct:${id}:products-distribution`));
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare(`INSERT INTO delivery_occurrences
+        (delivery_id, delivery_attempt_id, type, reported_by_user_id)
+        VALUES (?, ?, 'recipient_absent', ?)`).run(id, storedAttempts(id)[0].id, courier1);
+      assert.throws(() => directEntry("refund", "products", "client", 0, `direct:${id}:conflict`),
+        /invalid financial entry kind/);
+    } finally { db.exec("ROLLBACK"); }
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare(`INSERT INTO delivery_attempts
+        (delivery_id, attempt_number, courier_id, status, ended_at, end_reason, end_nature)
+        VALUES (?, 2, ?, 'closed_unsuccessfully', CURRENT_TIMESTAMP, 'recipient_absent', 'terminal')`)
+        .run(id, courier1);
+      assert.throws(() => directEntry("refund", "products", "client", 0, `direct:${id}:wrong-attempt`),
+        /invalid financial entry kind/);
+    } finally { db.exec("ROLLBACK"); }
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec("DROP TRIGGER delivery_occurrences_classification_final");
+      db.prepare("UPDATE delivery_occurrences SET classified_by_user_id = ? WHERE id = ?")
+        .run(companyUser2, occurrence.id);
+      assert.throws(() => directEntry("refund", "products", "client", 0, `direct:${id}:foreign-classifier`),
+        /invalid financial entry kind/);
+    } finally { db.exec("ROLLBACK"); }
+    assert.equal(db.prepare("SELECT destination_snapshot_json AS snapshot FROM orders WHERE id = ?")
+      .get(item.delivery.orderId).snapshot, destination);
+    assert.equal((await (await request(`/api/client/orders/confirmed/${item.delivery.orderId}`, {
+      cookie: cookies.client1,
+    })).json()).order.officialStatus, "ENCERRADO");
+    assert.equal(db.prepare("SELECT COUNT(*) AS total FROM delivery_revalidations WHERE delivery_id = ?")
+      .get(id).total, 0);
+    assert.equal((await post(cookies.courier1, id, "confirm", { code: item.confirmationCode })).status, 404);
+  });
+
+  await context.test("SQL direto rejeita segundo return_reported do ciclo CLIENTE", async () => {
+    const item = createDelivery(company1, client1, true, 101);
+    const id = item.delivery.id;
+    for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+      assert.equal((await post(cookies.courier1, id, action)).status, 200);
+    }
+    assert.equal((await post(cookies.courier1, id, "occurrences", {
+      type: "address_problem", presentedAddress: JSON.parse(destination),
+    })).status, 200);
+    const occurrenceId = storedOccurrences(id)[0].id;
+    assert.equal((await request(`/api/company/delivery-occurrences/${occurrenceId}/classify`, {
+      cookie: cookies.company1, method: "POST", body: { responsibility: "CLIENTE" },
+    })).status, 200);
+    assert.equal((await post(cookies.courier1, id, "report-return")).status, 200);
+    assert.equal((await request(`/api/company/deliveries/${id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    })).status, 200);
+    assert.ok(clientAddressEvidence(db, id, "closed"));
+    const validLedger = db.prepare("SELECT * FROM financial_entries WHERE delivery_id = ? ORDER BY id")
+      .all(id).map((row) => ({ ...row }));
+    assert.equal(validLedger.filter((entry) => entry.reason === "address_problem").length, 4);
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare(`INSERT INTO delivery_events (delivery_id, actor_user_id, event_type, details_json)
+        VALUES (?, ?, 'return_reported', '{}')`).run(id, courier1);
+      assert.equal(clientAddressEvidence(db, id, "closed"), null);
+      const corrupted = {
+        delivery: { ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(id) },
+        attempts: storedAttempts(id), occurrences: storedOccurrences(id),
+        events: db.prepare("SELECT * FROM delivery_events WHERE delivery_id = ? ORDER BY id")
+          .all(id).map((row) => ({ ...row })),
+        ledger: db.prepare("SELECT * FROM financial_entries WHERE delivery_id = ? ORDER BY id")
+          .all(id).map((row) => ({ ...row })),
+      };
+      assert.throws(() => db.prepare(`INSERT INTO financial_entries (order_id, delivery_id,
+        entry_type, component, party_type, party_user_id, amount_cents, reason, idempotency_key)
+        VALUES (?, ?, 'refund', 'products', 'client', ?, 0, 'address_problem', ?)`)
+        .run(item.delivery.orderId, id, client1, `duplicate:${id}:refund`), /invalid financial entry kind/);
+      assert.throws(() => db.prepare(`INSERT INTO financial_entries (order_id, delivery_id,
+        entry_type, component, party_type, party_company_id, amount_cents, reason, idempotency_key)
+        VALUES (?, ?, 'distribution', 'freight', 'company', ?, 0, 'address_problem', ?)`)
+        .run(item.delivery.orderId, id, company1, `duplicate:${id}:distribution`), /invalid financial entry kind/);
+      assert.deepEqual({ ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(id) }, corrupted.delivery);
+      assert.deepEqual(storedAttempts(id), corrupted.attempts);
+      assert.deepEqual(storedOccurrences(id), corrupted.occurrences);
+      assert.deepEqual(db.prepare("SELECT * FROM delivery_events WHERE delivery_id = ? ORDER BY id")
+        .all(id).map((row) => ({ ...row })), corrupted.events);
+      assert.deepEqual(db.prepare("SELECT * FROM financial_entries WHERE delivery_id = ? ORDER BY id")
+        .all(id).map((row) => ({ ...row })), corrupted.ledger);
+    } finally { db.exec("ROLLBACK"); }
+    assert.ok(clientAddressEvidence(db, id, "closed"));
+    assert.deepEqual(db.prepare("SELECT * FROM financial_entries WHERE delivery_id = ? ORDER BY id")
+      .all(id).map((row) => ({ ...row })), validLedger);
+  });
+
+  await context.test("return_reported de tentativa recuperável anterior não bloqueia endereço atual", async () => {
+    const item = createDelivery(company1, client1, true, 101);
+    const id = item.delivery.id;
+    for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+      assert.equal((await post(cookies.courier1, id, action)).status, 200);
+    }
+    assert.equal((await post(cookies.courier1, id, "fail", { reason: "Pane mecânica" })).status, 200);
+    assert.equal((await post(cookies.courier1, id, "report-return")).status, 200);
+    assert.equal((await request(`/api/company/deliveries/${id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    })).status, 200);
+    for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+      assert.equal((await post(cookies.courier1, id, action)).status, 200);
+    }
+    assert.equal((await post(cookies.courier1, id, "occurrences", {
+      type: "address_problem", presentedAddress: JSON.parse(destination),
+    })).status, 200);
+    const occurrenceId = storedOccurrences(id).at(-1).id;
+    assert.equal((await request(`/api/company/delivery-occurrences/${occurrenceId}/classify`, {
+      cookie: cookies.company1, method: "POST", body: { responsibility: "CLIENTE" },
+    })).status, 200);
+    assert.equal((await post(cookies.courier1, id, "report-return")).status, 200);
+    assert.equal((await request(`/api/company/deliveries/${id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    })).status, 200);
+    assert.equal(storedAttempts(id).length, 2);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events WHERE delivery_id = ?
+      AND event_type = 'return_reported'`).get(id).total, 2);
+    assert.ok(clientAddressEvidence(db, id, "closed"));
+  });
+
+  await context.test("falhas financeiras no retorno de endereço revertem estado, evento e ledger", async () => {
+    for (const failure of ["refund", "distribution"]) {
+      const item = createDelivery(company1, client1, true, 101);
+      const id = item.delivery.id;
+      for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+        assert.equal((await post(cookies.courier1, id, action)).status, 200);
+      }
+      assert.equal((await post(cookies.courier1, id, "occurrences", {
+        type: "address_problem", presentedAddress: JSON.parse(destination),
+      })).status, 200);
+      const occurrenceId = storedOccurrences(id)[0].id;
+      assert.equal((await request(`/api/company/delivery-occurrences/${occurrenceId}/classify`, {
+        cookie: cookies.company1, method: "POST", body: { responsibility: "CLIENTE" },
+      })).status, 200);
+      assert.equal((await post(cookies.courier1, id, "report-return")).status, 200);
+      const before = {
+        delivery: { ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(id) },
+        attempts: storedAttempts(id),
+        occurrences: storedOccurrences(id),
+        events: db.prepare("SELECT * FROM delivery_events WHERE delivery_id = ? ORDER BY id").all(id)
+          .map((row) => ({ ...row })),
+        ledger: db.prepare("SELECT * FROM financial_entries WHERE delivery_id = ? ORDER BY id").all(id)
+          .map((row) => ({ ...row })),
+      };
+      db.exec(`CREATE TRIGGER fail_address_finance BEFORE INSERT ON financial_entries
+        WHEN NEW.reason = 'address_problem' AND NEW.entry_type = '${failure}'
+          AND (NEW.entry_type <> 'distribution' OR NEW.party_type = 'company')
+        BEGIN SELECT RAISE(ABORT, 'forced address financial failure'); END;`);
+      const failed = await request(`/api/company/deliveries/${id}/confirm-return`, {
+        cookie: cookies.company1, method: "POST", body: {},
+      });
+      db.exec("DROP TRIGGER fail_address_finance");
+      assert.equal(failed.status, 500);
+      assert.deepEqual({ ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(id) }, before.delivery);
+      assert.deepEqual(storedAttempts(id), before.attempts);
+      assert.deepEqual(storedOccurrences(id), before.occurrences);
+      assert.deepEqual(db.prepare("SELECT * FROM delivery_events WHERE delivery_id = ? ORDER BY id").all(id)
+        .map((row) => ({ ...row })), before.events);
+      assert.deepEqual(db.prepare("SELECT * FROM financial_entries WHERE delivery_id = ? ORDER BY id").all(id)
+        .map((row) => ({ ...row })), before.ledger);
+      assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM financial_entries
+        WHERE delivery_id = ? AND reason = 'address_problem' AND entry_type = 'distribution'`)
+        .get(id).total, 0);
+      assert.equal((await request(`/api/company/deliveries/${id}/confirm-return`, {
+        cookie: cookies.company1, method: "POST", body: {},
+      })).status, 200);
+    }
+  });
+
+  await context.test("classificação de endereço faz rollback se evento falha", async () => {
+    const item = createDelivery(company1, client1, true, 100);
+    const id = item.delivery.id;
+    for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+      assert.equal((await post(cookies.courier1, id, action)).status, 200);
+    }
+    assert.equal((await post(cookies.courier1, id, "occurrences", {
+      type: "address_problem", presentedAddress: JSON.parse(destination),
+    })).status, 200);
+    const occurrenceId = storedOccurrences(id)[0].id;
+    db.exec(`CREATE TRIGGER fail_address_classification BEFORE INSERT ON delivery_events
+      WHEN NEW.event_type = 'occurrence_classified'
+      BEGIN SELECT RAISE(ABORT, 'forced address classification failure'); END;`);
+    const failed = await request(`/api/company/delivery-occurrences/${occurrenceId}/classify`, {
+      cookie: cookies.company1, method: "POST", body: { responsibility: "CLIENTE" },
+    });
+    db.exec("DROP TRIGGER fail_address_classification");
+    assert.equal(failed.status, 500);
+    assert.equal(storedOccurrences(id)[0].responsibility, null);
+    assert.equal(storedAttempts(id)[0].status, "active");
+    assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(id).status,
+      "awaiting_confirmation");
+    assert.equal((await request(`/api/company/delivery-occurrences/${occurrenceId}/classify`, {
+      cookie: cookies.company1, method: "POST", body: { responsibility: "CLIENTE" },
+    })).status, 200);
+    assert.equal((await post(cookies.courier1, id, "report-return")).status, 200);
+    assert.equal((await request(`/api/company/deliveries/${id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
     })).status, 200);
   });
 
@@ -1474,5 +1805,207 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     db.prepare("UPDATE deliveries SET status = 'cancelled' WHERE id = ?").run(third);
     assert.equal(db.prepare("UPDATE deliveries SET courier_id = ?, status = 'heading_to_pickup' WHERE id = ?")
       .run(indexCourier, fourth).changes, 1);
+  });
+
+  await context.test("classificação CLIENTE e confirmação por código concorrentes não concluem juntas", async () => {
+    const item = createDelivery(company1, client1, true, 101);
+    const id = item.delivery.id;
+    for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+      assert.equal((await post(cookies.courier1, id, action)).status, 200);
+    }
+    assert.equal((await post(cookies.courier1, id, "occurrences", {
+      type: "address_problem", presentedAddress: JSON.parse(destination),
+    })).status, 200);
+    const occurrenceId = storedOccurrences(id)[0].id;
+    const [classified, confirmed] = await Promise.all([
+      request(`/api/company/delivery-occurrences/${occurrenceId}/classify`, {
+        cookie: cookies.company1, method: "POST", body: { responsibility: "CLIENTE" },
+      }),
+      post(cookies.courier1, id, "confirm", { code: item.confirmationCode }),
+    ]);
+    assert.equal(classified.status, 200);
+    assert.equal(confirmed.status, 409);
+    assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(id).status, "returning");
+    assert.equal(storedAttempts(id)[0].invalidCodeAttempts, 0);
+    assert.equal((await post(cookies.courier1, id, "report-return")).status, 200);
+    assert.equal((await request(`/api/company/deliveries/${id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
+    })).status, 200);
+  });
+
+  await context.test("responsabilidades não CLIENTE não iniciam retorno nem autorizam financeiro", async () => {
+    for (const responsibility of ["SISTEMA", "EMPRESA", "MOTOBOY", "INDEFINIDO"]) {
+      const item = createDelivery(company1, client1, true, 100);
+      const id = item.delivery.id;
+      for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+        assert.equal((await post(cookies.courier1, id, action)).status, 200);
+      }
+      assert.equal((await post(cookies.courier1, id, "occurrences", {
+        type: "address_problem", presentedAddress: JSON.parse(destination),
+      })).status, 200);
+      const occurrenceId = storedOccurrences(id)[0].id;
+      const before = db.prepare("SELECT COUNT(*) AS total FROM financial_entries WHERE delivery_id = ?").get(id).total;
+      assert.equal((await request(`/api/company/delivery-occurrences/${occurrenceId}/classify`, {
+        cookie: cookies.company1, method: "POST", body: { responsibility },
+      })).status, 200);
+      assert.equal(db.prepare("SELECT status FROM deliveries WHERE id = ?").get(id).status,
+        "awaiting_confirmation");
+      assert.equal(storedAttempts(id)[0].status, "active");
+      assert.equal(db.prepare("SELECT COUNT(*) AS total FROM financial_entries WHERE delivery_id = ?").get(id).total,
+        before);
+      assert.throws(() => db.prepare(`INSERT INTO financial_entries
+        (order_id, delivery_id, entry_type, component, party_type, party_user_id,
+         amount_cents, reason, idempotency_key)
+        VALUES (?, ?, 'refund', 'products', 'client', ?, 1, 'address_problem', ?)`)
+        .run(item.delivery.orderId, id, client1, `invalid:${id}:${responsibility}`));
+      assert.throws(() => db.prepare(`INSERT INTO financial_entries
+        (order_id, delivery_id, entry_type, component, party_type, party_user_id,
+         amount_cents, reason, idempotency_key)
+        VALUES (?, ?, 'distribution', 'freight', 'courier', ?, 1, 'address_problem', ?)`)
+        .run(item.delivery.orderId, id, courier1, `invalid:${id}:${responsibility}:courier`));
+      assert.equal((await post(cookies.courier1, id, "confirm", { code: item.confirmationCode })).status, 409);
+      // A decisão está registrada, mas seu desfecho operacional será outro incremento.
+      db.prepare("UPDATE deliveries SET status = 'returned', courier_id = NULL WHERE id = ?").run(id);
+    }
+  });
+
+  await context.test("endereço do cliente exige pagamentos e refunds compatíveis", async () => {
+    const legacyMutate = (names, mutate) => {
+      const saved = names.map((name) => db.prepare(`SELECT sql FROM sqlite_master
+        WHERE type = 'trigger' AND name = ?`).get(name).sql);
+      try {
+        for (const name of names) db.exec(`DROP TRIGGER ${name}`);
+        mutate();
+      } finally {
+        for (const sql of saved) db.exec(sql);
+      }
+    };
+    const cases = [
+      { name: "products parcial", freight: 101, priorProducts: 250, expectedRefund: 750 },
+      { name: "products integral", freight: 101, priorProducts: 1000, expectedRefund: 0 },
+      { name: "freight desconhecido", freight: null, expectedRefund: 1000 },
+      { name: "freight conhecido sem payment", freight: 101, removeFreightPayment: true, fails: true },
+      { name: "freight NULL com payment", freight: 101, clearFreightSnapshot: true, fails: true },
+      { name: "pending pós-coleta", freight: 101, pending: true, fails: true },
+      { name: "courier contraditório", freight: 101, courierMismatch: true, fails: true,
+        expectedStatus: 409 },
+      { name: "refund freight anterior", freight: 101, priorFreight: 1, fails: true },
+      { name: "over-refund products", freight: 101, priorProducts: 1001, fails: true },
+    ];
+    for (const scenario of cases) {
+      const item = createDelivery(company1, client1, true, scenario.freight);
+      const id = item.delivery.id;
+      for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+        assert.equal((await post(cookies.courier1, id, action)).status, 200, scenario.name);
+      }
+      assert.equal((await post(cookies.courier1, id, "occurrences", {
+        type: "address_problem", presentedAddress: JSON.parse(destination),
+      })).status, 200, scenario.name);
+      const occurrenceId = storedOccurrences(id)[0].id;
+      assert.equal((await request(`/api/company/delivery-occurrences/${occurrenceId}/classify`, {
+        cookie: cookies.company1, method: "POST", body: { responsibility: "CLIENTE" },
+      })).status, 200, scenario.name);
+      assert.equal((await post(cookies.courier1, id, "report-return")).status, 200, scenario.name);
+      if (scenario.priorProducts) {
+        const insertPrior = () => {
+          db.prepare(`INSERT INTO financial_entries (order_id, delivery_id, entry_type,
+            component, party_type, party_user_id, amount_cents, reason, idempotency_key)
+            VALUES (?, ?, 'refund', 'products', 'client', ?, ?, 'product_unavailable', ?)`)
+            .run(item.delivery.orderId, id, client1, scenario.priorProducts, `prior:${id}:products`);
+        };
+        if (scenario.priorProducts > 1000) legacyMutate(["financial_entry_over_refund_insert"], insertPrior);
+        else insertPrior();
+      }
+      if (scenario.priorFreight) db.prepare(`INSERT INTO financial_entries (order_id, delivery_id,
+        entry_type, component, party_type, party_user_id, amount_cents, reason, idempotency_key)
+        VALUES (?, ?, 'refund', 'freight', 'client', ?, ?, 'product_unavailable', ?)`)
+        .run(item.delivery.orderId, id, client1, scenario.priorFreight, `prior:${id}:freight`);
+      if (scenario.removeFreightPayment) {
+        legacyMutate(["financial_entries_append_only_delete"], () =>
+          db.prepare("DELETE FROM financial_entries WHERE order_id = ? AND component = 'freight'")
+            .run(item.delivery.orderId));
+      }
+      if (scenario.clearFreightSnapshot) db.prepare("UPDATE orders SET freight_total_cents = NULL WHERE id = ?")
+        .run(item.delivery.orderId);
+      if (scenario.pending) legacyMutate(["order_payment_ledger_regression_update"], () =>
+        db.prepare("UPDATE orders SET payment_status = 'pending' WHERE id = ?")
+          .run(item.delivery.orderId));
+      if (scenario.courierMismatch) db.prepare("UPDATE delivery_attempts SET courier_id = ? WHERE delivery_id = ?")
+        .run(courier2, id);
+      const before = {
+        delivery: { ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(id) },
+        attempt: storedAttempts(id),
+        entries: db.prepare("SELECT COUNT(*) AS total FROM financial_entries WHERE delivery_id = ?").get(id).total,
+      };
+      const response = await request(`/api/company/deliveries/${id}/confirm-return`, {
+        cookie: cookies.company1, method: "POST", body: {},
+      });
+      assert.equal(response.status, scenario.expectedStatus ?? (scenario.fails ? 500 : 200), scenario.name);
+      if (scenario.fails) {
+        assert.deepEqual({ ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(id) }, before.delivery);
+        assert.deepEqual(storedAttempts(id), before.attempt);
+        assert.equal(db.prepare("SELECT COUNT(*) AS total FROM financial_entries WHERE delivery_id = ?").get(id).total,
+          before.entries);
+        db.prepare("UPDATE deliveries SET status = 'returned', courier_id = NULL WHERE id = ?").run(id);
+      } else {
+        const refunds = db.prepare(`SELECT amount_cents AS amount FROM financial_entries
+          WHERE delivery_id = ? AND reason = 'address_problem' AND entry_type = 'refund'`).all(id);
+        assert.equal(refunds.reduce((sum, row) => sum + row.amount, 0), scenario.expectedRefund, scenario.name);
+        if (scenario.freight === null) {
+          const detail = await (await request(`/api/company/deliveries/${id}`, {
+            cookie: cookies.company1,
+          })).json();
+          assert.ok(detail.delivery.financial.pending.includes("freight_amount_unavailable"));
+        }
+      }
+    }
+  });
+
+  await context.test("report-return de endereço rejeita tentativa ou responsabilidade incoerente", async () => {
+    for (const scenario of [
+      { label: "active sem classificação", attemptStatus: "active", responsibility: null },
+      { label: "returning sem classificação", attemptStatus: "returning", responsibility: null },
+      ...["SISTEMA", "EMPRESA", "MOTOBOY", "INDEFINIDO"].map((responsibility) => ({
+        label: responsibility, attemptStatus: "returning", responsibility,
+      })),
+    ]) {
+      const item = createDelivery(company1, client1, true, 101);
+      const id = item.delivery.id;
+      for (const action of ["accept", "arrive-pickup", "collect", "arrive-destination"]) {
+        assert.equal((await post(cookies.courier1, id, action)).status, 200, scenario.label);
+      }
+      assert.equal((await post(cookies.courier1, id, "occurrences", {
+        type: "address_problem", presentedAddress: JSON.parse(destination),
+      })).status, 200, scenario.label);
+      if (scenario.responsibility !== null) {
+        const occurrenceId = storedOccurrences(id)[0].id;
+        assert.equal((await request(`/api/company/delivery-occurrences/${occurrenceId}/classify`, {
+          cookie: cookies.company1, method: "POST", body: { responsibility: scenario.responsibility },
+        })).status, 200, scenario.label);
+      }
+      db.prepare("UPDATE delivery_attempts SET status = ? WHERE delivery_id = ?")
+        .run(scenario.attemptStatus, id);
+      db.prepare("UPDATE deliveries SET status = 'returning', return_reason = 'address_problem' WHERE id = ?")
+        .run(id);
+      const before = {
+        delivery: { ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(id) },
+        attempts: storedAttempts(id), occurrences: storedOccurrences(id),
+        events: db.prepare("SELECT * FROM delivery_events WHERE delivery_id = ? ORDER BY id")
+          .all(id).map((row) => ({ ...row })),
+        ledger: db.prepare("SELECT * FROM financial_entries WHERE delivery_id = ? ORDER BY id")
+          .all(id).map((row) => ({ ...row })),
+      };
+      assert.equal((await post(cookies.courier1, id, "report-return")).status, 409, scenario.label);
+      assert.deepEqual({ ...db.prepare("SELECT * FROM deliveries WHERE id = ?").get(id) }, before.delivery);
+      assert.deepEqual(storedAttempts(id), before.attempts);
+      assert.deepEqual(storedOccurrences(id), before.occurrences);
+      assert.deepEqual(db.prepare("SELECT * FROM delivery_events WHERE delivery_id = ? ORDER BY id")
+        .all(id).map((row) => ({ ...row })), before.events);
+      assert.deepEqual(db.prepare("SELECT * FROM financial_entries WHERE delivery_id = ? ORDER BY id")
+        .all(id).map((row) => ({ ...row })), before.ledger);
+      assert.equal(before.delivery.status, "returning");
+      assert.equal(before.delivery.return_reported_at, null);
+      db.prepare("UPDATE deliveries SET status = 'returned', courier_id = NULL WHERE id = ?").run(id);
+    }
   });
 });

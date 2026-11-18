@@ -1,4 +1,6 @@
 import { db, transaction } from "./database.js";
+import { normalizeAddress } from "./address.js";
+import { clientAddressEvidence, validAddressEvidence } from "./client-address-evidence.js";
 import {
   closeDeliveryAttemptWithoutSuccessInTransaction,
   completeDeliveryAttemptInTransaction,
@@ -23,6 +25,7 @@ import {
   recordClientCancellationBeforePickupInTransaction,
   recordClientCancellationAfterPickupInTransaction, recordNormalCompletionInTransaction,
   recordProductUnavailableInTransaction, recordRecipientTerminalFailureInTransaction,
+  recordClientAddressFailureInTransaction,
   externalObstructionCycle, recordClientCancellationAfterExternalObstructionInTransaction,
 } from "./finance.js";
 
@@ -291,11 +294,12 @@ export function acceptDelivery(id, courierId, companyId, body) {
   });
 }
 
-function courierTransition(id, courierId, companyId, body, from, to, eventType, timestampColumn) {
+function courierTransition(id, courierId, companyId, body, from, to, eventType, timestampColumn, validate = null) {
   requireEmptyDeliveryBody(body);
   return transaction(() => {
     const delivery = requireCourierDelivery(id, courierId, companyId);
     if (delivery.status !== from) throw deliveryError(`A entrega não pode avançar a partir de ${delivery.status}.`);
+    if (validate) validate(delivery);
     const timestamp = timestampColumn ? `, ${timestampColumn} = CURRENT_TIMESTAMP` : "";
     const update = db.prepare(`UPDATE deliveries SET status = ?${timestamp} WHERE id = ? AND status = ? AND courier_id = ?`)
       .run(to, id, from, courierId);
@@ -352,6 +356,10 @@ export function confirmDelivery(id, courierId, companyId, body) {
         "A Entrega não possui TentativaEntrega ativa; é necessária reconciliação dos dados legados.",
       );
     }
+    if (db.prepare(`SELECT 1 FROM delivery_occurrences WHERE delivery_attempt_id = ?
+      AND type = 'address_problem' LIMIT 1`).get(activeAttempt.id)) {
+      throw deliveryError("O problema de endereço exige decisão empresarial antes da confirmação.");
+    }
     if (activeAttempt.invalidCodeAttempts >= 3) {
       throw deliveryError("O limite de três validações inválidas foi atingido.");
     }
@@ -407,6 +415,11 @@ export function reportCourierFailure(id, courierId, companyId, body) {
       event(id, courierId, DELIVERY_EVENT_TYPES.COURIER_FAILED_BEFORE_PICKUP,
         { ...details, occurrenceId });
     } else if ([DELIVERY_STATES.IN_TRANSIT, DELIVERY_STATES.AWAITING_CONFIRMATION].includes(delivery.status)) {
+      if (db.prepare(`SELECT 1 FROM delivery_occurrences oc
+        JOIN delivery_attempts a ON a.id = oc.delivery_attempt_id
+        WHERE a.delivery_id = ? AND a.status = 'active' AND oc.type = 'address_problem' LIMIT 1`).get(id)) {
+        throw deliveryError("O problema de endereço exige decisão empresarial antes de outra ocorrência.");
+      }
       const activeAttempt = findOpenDeliveryAttempt(db, id);
       if (!activeAttempt) throw deliveryError("A Entrega não possui TentativaEntrega ativa.");
       const occurrenceId = createDeliveryOccurrenceInTransaction(db, {
@@ -432,42 +445,77 @@ export function reportCourierFailure(id, courierId, companyId, body) {
 const occurrenceEvents = Object.freeze({
   recipient_absent: DELIVERY_EVENT_TYPES.RECIPIENT_ABSENT,
   recipient_refused: DELIVERY_EVENT_TYPES.RECIPIENT_REFUSED,
+  address_problem: DELIVERY_EVENT_TYPES.ADDRESS_PROBLEM,
 });
 
 const occurrenceTypes = Object.freeze({
   recipient_absent: DELIVERY_OCCURRENCE_TYPES.RECIPIENT_ABSENT,
   recipient_refused: DELIVERY_OCCURRENCE_TYPES.RECIPIENT_REFUSED,
+  address_problem: DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM,
 });
 
 export function reportDeliveryOccurrence(id, courierId, companyId, body) {
-  requireObject(body, ["type"]);
+  if (body === null || Array.isArray(body) || typeof body !== "object") {
+    throw deliveryError("O corpo deve ser um objeto JSON.", 400);
+  }
   const addressProblem = body.type === "address_problem";
-  if (!addressProblem && !Object.hasOwn(occurrenceEvents, body.type)) {
+  requireObject(body, addressProblem ? ["type", "description", "presentedAddress"] : ["type"]);
+  if (!Object.hasOwn(occurrenceEvents, body.type)) {
     throw deliveryError("Tipo de ocorrência inválido.", 400);
+  }
+  const description = addressProblem && body.description !== undefined
+    ? (typeof body.description === "string" ? body.description.trim() : "") : null;
+  if (addressProblem && body.description !== undefined && (!description || description.length > 500)) {
+    throw deliveryError("A descrição deve ser texto não vazio de até 500 caracteres.", 400);
   }
   return transaction(() => {
     const delivery = requireCourierDelivery(id, courierId, companyId);
+    const presentedAddress = addressProblem ? normalizeAddress(body.presentedAddress) : null;
     if (delivery.status !== DELIVERY_STATES.AWAITING_CONFIRMATION) {
       throw deliveryError("A ocorrência só pode ser registrada no destino.");
     }
-    if (addressProblem) {
-      throw deliveryError(
-        "Problema de endereço depende da classificação de ocorrências da Baseline 0.2.",
-      );
-    }
     const activeAttempt = findOpenDeliveryAttempt(db, id);
-    if (!activeAttempt) throw deliveryError("A Entrega não possui TentativaEntrega ativa.");
+    if (!activeAttempt || activeAttempt.status !== "active" || activeAttempt.courierId !== courierId
+      || delivery.orderStatus !== "confirmed") throw deliveryError("A Entrega não possui tentativa ativa coerente.");
+    if (db.prepare(`SELECT 1 FROM delivery_occurrences WHERE delivery_attempt_id = ? LIMIT 1`)
+      .get(activeAttempt.id)) throw deliveryError("A tentativa já possui ocorrência terminal.");
+    if (addressProblem && db.prepare(`SELECT 1 FROM delivery_events conflict
+      WHERE conflict.delivery_id = ? AND conflict.id > (
+        SELECT MAX(collected.id) FROM delivery_events collected
+        WHERE collected.delivery_id = ? AND collected.event_type = 'order_collected')
+        AND conflict.event_type IN ('recipient_absent', 'recipient_refused',
+          'confirmation_failed', 'delivery_completed', 'client_cancelled_after_pickup',
+          'temporary_external_obstruction', 'courier_failed_after_pickup') LIMIT 1`)
+      .get(id, id)) throw deliveryError("A tentativa possui histórico terminal contraditório.");
+    let originalAddress;
+    if (addressProblem) {
+      try {
+        originalAddress = normalizeAddress(JSON.parse(delivery.destinationSnapshotJson));
+        if (!validAddressEvidence(delivery.destinationSnapshotJson, JSON.stringify({
+          deliveryState: delivery.status, originalAddress, presentedAddress,
+        }))) throw new Error("Snapshot não canônico.");
+      } catch {
+        throw deliveryError("O snapshot de destino do Pedido exige reconciliação.");
+      }
+    }
     const occurrenceId = createDeliveryOccurrenceInTransaction(db, {
       deliveryId: id,
       deliveryAttemptId: activeAttempt.id,
       type: occurrenceTypes[body.type],
+      description,
       reportedByUserId: courierId,
-      evidence: { deliveryState: delivery.status },
+      evidence: addressProblem ? { deliveryState: delivery.status, originalAddress, presentedAddress }
+        : { deliveryState: delivery.status },
     });
-    markOpenDeliveryAttemptReturningInTransaction(db, id);
-    db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
-      .run(DELIVERY_STATES.RETURNING, body.type, id);
+    if (!addressProblem) {
+      markOpenDeliveryAttemptReturningInTransaction(db, id);
+      db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
+        .run(DELIVERY_STATES.RETURNING, body.type, id);
+    }
     event(id, courierId, occurrenceEvents[body.type], { occurrenceId });
+    if (addressProblem && !clientAddressEvidence(db, id, "unclassified")) {
+      throw deliveryError("A ocorrência exige reconciliação do ciclo de coleta e chegada.");
+    }
     return courierView(requireDelivery(id));
   });
 }
@@ -475,7 +523,14 @@ export function reportDeliveryOccurrence(id, courierId, companyId, body) {
 export function reportReturn(id, courierId, companyId, body) {
   return courierTransition(id, courierId, companyId, body, DELIVERY_STATES.RETURNING,
     DELIVERY_STATES.AWAITING_RETURN_CONFIRMATION, DELIVERY_EVENT_TYPES.RETURN_REPORTED,
-    "return_reported_at");
+    "return_reported_at", (delivery) => {
+      if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM) {
+        const evidence = clientAddressEvidence(db, id, "returning");
+        if (!evidence || evidence.courierId !== courierId) {
+          throw deliveryError("O retorno de endereço exige classificação CLIENTE e tentativa coerente.");
+        }
+      }
+    });
 }
 
 export function reportExternalObstruction(id, courierId, companyId, body) {
@@ -492,6 +547,10 @@ export function reportExternalObstruction(id, courierId, companyId, body) {
     const attempt = findOpenDeliveryAttempt(db, id);
     if (!attempt || attempt.status !== "active" || attempt.courierId !== courierId) {
       throw deliveryError("A tentativa ativa exige reconciliação dos dados legados.");
+    }
+    if (db.prepare(`SELECT 1 FROM delivery_occurrences WHERE delivery_attempt_id = ?
+      AND type = 'address_problem' LIMIT 1`).get(attempt.id)) {
+      throw deliveryError("O problema de endereço exige decisão empresarial antes de outra ocorrência.");
     }
     const occurrenceId = createDeliveryOccurrenceInTransaction(db, {
       deliveryId: id, deliveryAttemptId: attempt.id,
@@ -571,6 +630,12 @@ export function confirmReturn(id, companyUserId, companyId, body) {
         throw deliveryError("O retorno exige reconciliação de tentativa, contador, ocorrência e histórico.");
       }
     }
+    if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM) {
+      requireCompanyParticipant(companyUserId, companyId);
+      if (!clientAddressEvidence(db, id, "reported")) {
+        throw deliveryError("O retorno de endereço exige reconciliação de classificação e evidências.");
+      }
+    }
     if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.EXTERNAL_OBSTRUCTION) {
       requireCompanyParticipant(companyUserId, companyId);
       const attempt = findOpenDeliveryAttempt(db, id);
@@ -617,6 +682,12 @@ export function confirmReturn(id, companyUserId, companyId, body) {
       if (recipientTerminal) {
         recordRecipientTerminalFailureInTransaction(db, delivery, attempt.id, delivery.returnReason);
       }
+      if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM) {
+        if (!clientAddressEvidence(db, id, "closed")) {
+          throw deliveryError("O fechamento exige evidência terminal de endereço íntegra.");
+        }
+        recordClientAddressFailureInTransaction(db, delivery);
+      }
       if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.CONFIRMATION_FAILED
         && !hasConfirmationFailureEvidence(db, id, true)) {
         throw deliveryError("O fechamento exige reconciliação da evidência terminal.");
@@ -640,6 +711,11 @@ export function cancelClientDelivery(id, clientId, body) {
       event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_BEFORE_PICKUP);
       recordClientCancellationBeforePickupInTransaction(db, delivery);
     } else if ([DELIVERY_STATES.IN_TRANSIT, DELIVERY_STATES.AWAITING_CONFIRMATION].includes(delivery.status)) {
+      if (db.prepare(`SELECT 1 FROM delivery_occurrences oc JOIN delivery_attempts a
+        ON a.id = oc.delivery_attempt_id WHERE a.delivery_id = ?
+        AND a.status = 'active' AND oc.type = 'address_problem' LIMIT 1`).get(id)) {
+        throw deliveryError("O problema de endereço exige decisão empresarial antes do cancelamento.");
+      }
       markOpenDeliveryAttemptReturningInTransaction(db, id);
       db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
         .run(DELIVERY_STATES.RETURNING, "client_cancelled_after_pickup", id);
