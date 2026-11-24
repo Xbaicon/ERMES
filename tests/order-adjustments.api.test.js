@@ -215,6 +215,158 @@ test("ajustes comerciais antes da coleta", async (context) => {
     assert.equal((await request(clientPath(delivery) + "/adjustment", client)).body.adjustment.state, "pending");
   });
 
+  await context.test("aceite e pagamento recusam composição proposta persistida incoerente", async () => {
+    const item = (productId, quantity = 1, unitPriceCents = 100, unitWeightKg = 1) => ({
+      productId, name: db.prepare("SELECT name FROM products WHERE id = ?").get(productId)?.name
+        ?? "Produto inexistente", quantity, unitPriceCents, unitWeightKg,
+    });
+    const persist = (delivery, proposedItems, proposedSubtotal = 100, proposedWeight = 1) =>
+      insertId(`INSERT INTO order_adjustments
+        (order_id, delivery_id, company_id, proposed_by, base_version, original_items,
+         proposed_items, original_subtotal, proposed_subtotal, original_weight, proposed_weight,
+         original_freight, proposed_freight)
+        VALUES (?, ?, ?, ?, 4, ?, ?, 100, ?, 1, ?, NULL, NULL)`,
+      delivery.orderId, delivery.deliveryId, company, owner.id,
+      JSON.stringify([item(original)]), JSON.stringify(proposedItems), proposedSubtotal, proposedWeight);
+    const snapshot = (delivery, adjustmentId) => ({
+      state: stored(delivery), ledger: ledger(delivery), history: history(delivery),
+      adjustment: db.prepare("SELECT * FROM order_adjustments WHERE id = ?").get(adjustmentId),
+    });
+    const invalid = [
+      ["vazia", [], 0, 1],
+      ["outra empresa", [item(foreign)], 100, 1],
+      ["produto inexistente", [item(999999)], 100, 1],
+      ["quantidade inválida", [item(equal, 0)], 0, 1],
+      ["subtotal divergente", [item(equal)], 101, 1],
+      ["peso divergente", [item(equal)], 100, 2],
+      ["peso acima de 12 kg", [item(heavy, 2, 100, 8)], 200, 12],
+      ["preço histórico adulterado", [item(original, 2, 101)], 202, 2],
+      ["peso histórico adulterado", [item(original, 2, 100, 2)], 200, 4],
+      ["produto duplicado", [item(equal), item(equal)], 200, 2],
+      ["campo adicional", [{ ...item(equal), extra: true }], 100, 1],
+    ];
+    for (const [label, items, subtotal, weight] of invalid) {
+      const delivery = fixture();
+      const id = persist(delivery, items, subtotal, weight);
+      assert.equal(db.prepare("SELECT 1 FROM order_adjustment_validations WHERE adjustment_id = ?")
+        .get(id), undefined, label);
+      const before = snapshot(delivery, id);
+      assert.equal((await decision(delivery, id, "accept")).status, 409, label);
+      assert.deepEqual(snapshot(delivery, id), before, label);
+      assert.equal(before.adjustment.state, "pending", label);
+      assert.equal(events(delivery, "order_adjustment_accepted").length, 0, label);
+      assert.equal(events(delivery, "order_adjustment_applied").length, 0, label);
+    }
+
+    const payment = fixture();
+    const paymentId = persist(payment, [item(more, 1, 102)], 102, 1);
+    db.prepare(`UPDATE order_adjustments SET state = 'awaiting_payment',
+      decided_by = ?, decided_at = CURRENT_TIMESTAMP WHERE id = ?`).run(client.id, paymentId);
+    const beforePayment = snapshot(payment, paymentId);
+    assert.equal((await decision(payment, paymentId, "pay")).status, 409);
+    assert.deepEqual(snapshot(payment, paymentId), beforePayment);
+    assert.equal(events(payment, "order_adjustment_paid").length, 0);
+
+    const forged = fixture();
+    const forgedId = persist(forged, [item(more, 1, 102)], 102, 1);
+    const copiedSeal = db.prepare("SELECT seal FROM order_adjustment_validations LIMIT 1").get().seal;
+    db.prepare("UPDATE products SET price_cents = 102 WHERE id = ?").run(more);
+    try {
+      db.prepare(`INSERT INTO order_adjustment_validations
+        (adjustment_id, order_id, company_id, proposed_items, proposed_subtotal, proposed_weight, seal)
+        SELECT id, order_id, company_id, proposed_items, proposed_subtotal, proposed_weight, ?
+          FROM order_adjustments WHERE id = ?`).run(copiedSeal, forgedId);
+      const beforeForged = snapshot(forged, forgedId);
+      assert.equal((await decision(forged, forgedId, "accept")).status, 409);
+      assert.deepEqual(snapshot(forged, forgedId), beforeForged);
+      assert.equal(events(forged, "order_adjustment_applied").length, 0);
+    } finally {
+      db.prepare("UPDATE products SET price_cents = 101 WHERE id = ?").run(more);
+    }
+
+    const normal = fixture();
+    const proposal = await propose(normal, equal);
+    assert.equal((await decision(normal, proposal.id, "accept")).status, 200);
+    assert.equal(db.prepare("SELECT state FROM order_adjustments WHERE id = ?")
+      .get(proposal.id).state, "applied");
+  });
+
+  await context.test("snapshot validado sobrevive a mudanças posteriores do catálogo", async () => {
+    const priceCase = fixture();
+    const expensive = await propose(priceCase, more);
+    const evidence = db.prepare("SELECT * FROM order_adjustment_validations WHERE adjustment_id = ?")
+      .get(expensive.id);
+    assert.equal(evidence.proposed_items,
+      db.prepare("SELECT proposed_items FROM order_adjustments WHERE id = ?").get(expensive.id).proposed_items);
+    assert.equal((await decision(priceCase, expensive.id, "accept")).status, 200);
+    db.prepare("UPDATE products SET price_cents = 102 WHERE id = ?").run(more);
+    try {
+      assert.equal((await decision(priceCase, expensive.id, "pay")).status, 200);
+      assert.equal((await decision(priceCase, expensive.id, "pay")).status, 200);
+      assert.equal(db.prepare("SELECT state FROM order_adjustments WHERE id = ?").get(expensive.id).state,
+        "applied");
+      assert.equal(stored(priceCase).items[0].unit_price_cents, 101);
+      assert.equal(stored(priceCase).order.items_total_cents, 101);
+      assert.equal(stored(priceCase).order.version, 5);
+      assert.equal(db.prepare("SELECT price_cents FROM products WHERE id = ?").get(more).price_cents, 102);
+      assert.deepEqual(ledger(priceCase).filter(({ reason }) => reason === "order_adjustment")
+        .map(({ type, amount }) => [type, amount]), [["payment", 1]]);
+      assert.equal(events(priceCase, "order_adjustment_paid").length, 1);
+    } finally {
+      db.prepare("UPDATE products SET price_cents = 101 WHERE id = ?").run(more);
+    }
+
+    const weightCase = fixture();
+    const equalWeight = await propose(weightCase, equal);
+    db.prepare("UPDATE products SET unit_weight_kg = 2 WHERE id = ?").run(equal);
+    try {
+      assert.equal((await decision(weightCase, equalWeight.id, "accept")).status, 200);
+      assert.equal(stored(weightCase).items[0].unit_weight_kg, 1);
+      assert.equal(db.prepare("SELECT unit_weight_kg FROM products WHERE id = ?").get(equal).unit_weight_kg, 2);
+      assert.equal(events(weightCase, "order_adjustment_applied").length, 1);
+    } finally {
+      db.prepare("UPDATE products SET unit_weight_kg = 1 WHERE id = ?").run(equal);
+    }
+
+    const availabilityCase = fixture();
+    const available = await propose(availabilityCase, equal);
+    db.prepare("UPDATE products SET is_available = 0 WHERE id = ?").run(equal);
+    try {
+      assert.equal((await decision(availabilityCase, available.id, "accept")).status, 200);
+      assert.equal(stored(availabilityCase).items[0].product_id, equal);
+      assert.equal(db.prepare("SELECT is_available FROM products WHERE id = ?").get(equal).is_available, 0);
+    } finally {
+      db.prepare("UPDATE products SET is_available = 1 WHERE id = ?").run(equal);
+    }
+
+    assert.throws(() => db.prepare(`UPDATE order_adjustment_validations SET seal = ?
+      WHERE adjustment_id = ?`).run("0".repeat(64), expensive.id), /immutable/);
+    assert.throws(() => db.prepare("DELETE FROM order_adjustment_validations WHERE adjustment_id = ?")
+      .run(expensive.id), /immutable/);
+    assert.throws(() => db.prepare("UPDATE order_adjustments SET proposed_subtotal = 102 WHERE id = ?")
+      .run(expensive.id), /invalid adjustment transition/);
+    assert.throws(() => db.prepare(`UPDATE order_adjustments
+      SET proposed_items = json_set(proposed_items, '$[0].unitPriceCents', 102)
+      WHERE id = ?`).run(expensive.id), /invalid adjustment transition/);
+    assert.throws(() => db.prepare("UPDATE order_adjustments SET proposed_weight = 2 WHERE id = ?")
+      .run(expensive.id), /invalid adjustment transition/);
+
+    const failedCreation = fixture();
+    const before = { state: stored(failedCreation), ledger: ledger(failedCreation),
+      history: history(failedCreation) };
+    db.exec(`CREATE TRIGGER deny_adjustment_validation BEFORE INSERT ON order_adjustment_validations
+      BEGIN SELECT RAISE(ABORT, 'forced validation failure'); END`);
+    try {
+      assert.equal((await proposal(failedCreation, equal)).status, 500);
+      assert.deepEqual({ state: stored(failedCreation), ledger: ledger(failedCreation),
+        history: history(failedCreation) }, before);
+      assert.equal(db.prepare("SELECT 1 FROM order_adjustments WHERE delivery_id = ?")
+        .get(failedCreation.deliveryId), undefined);
+    } finally {
+      db.exec("DROP TRIGGER deny_adjustment_validation");
+    }
+  });
+
   await context.test("coleta e tentativa anteriores são incompatíveis", async () => {
     const delivery = fixture();
     await assign(delivery);
@@ -772,7 +924,14 @@ test("ajustes comerciais antes da coleta", async (context) => {
     assert.equal((await request(companyPath(delivery, "confirm-return"), owner, {})).status, 200);
   });
 
-  await context.test("bootstrap repetido preserva ajustes e verifica chaves estrangeiras", () => {
+  await context.test("bootstrap repetido preserva ajustes e verifica chaves estrangeiras", async () => {
+    const pending = fixture();
+    const proposal = await propose(pending, equal);
+    const withoutValidation = () => db.prepare(`SELECT COUNT(*) AS count FROM order_adjustments a
+      WHERE NOT EXISTS (SELECT 1 FROM order_adjustment_validations v WHERE v.adjustment_id = a.id)`)
+      .get().count;
+    const legacyCount = withoutValidation();
+    assert.ok(legacyCount > 0);
     const statements = `import assert from 'node:assert/strict';
       import { db } from './src/database.js';
       assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
@@ -781,5 +940,7 @@ test("ajustes comerciais antes da coleta", async (context) => {
     for (let run = 0; run < 2; run++) {
       execFileSync(process.execPath, ["--input-type=module", "-e", statements], { stdio: "pipe" });
     }
+    assert.equal(withoutValidation(), legacyCount);
+    assert.equal((await decision(pending, proposal.id, "accept")).status, 200);
   });
 });

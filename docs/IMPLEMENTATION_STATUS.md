@@ -7,7 +7,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Marco | Estado | Observação |
 | --- | --- | --- |
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
-| Baseline 0.2 | Em implementação incremental | `TentativaEntrega`, ocorrências/responsabilidade, impedimento externo e erro de apresentação do endereço pelo ERMES possuem incrementos funcionais; demais cenários e financeiro completo continuam pendentes |
+| Baseline 0.2 | Em implementação incremental | `TentativaEntrega`, ocorrências/responsabilidade, impedimento externo, erro de apresentação do endereço pelo ERMES e produto indisponível/ajuste excepcional possuem incrementos funcionais; demais cenários e financeiro completo continuam pendentes |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
 | Incremento atual | Produto indisponível antes da coleta e ajuste excepcional — IMPLEMENTADO | Proposta versionada, decisão explícita, diferença simulada, bloqueio da coleta e encerramento por indisponibilidade |
 | Próximo passo técnico | Implementação incremental | Continuar os incrementos funcionais da Baseline 0.2 sobre SQLite, preservando as pendências registradas abaixo |
@@ -36,7 +36,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Cancelamento pré-coleta | IMPLEMENTADO | Estados available/heading_to_pickup/awaiting_pickup; pending sem refund, paid com refund integral acumulado; liberação do motoboy e projeções CANCELADA/CANCELADO; coleta/tentativa anterior exige reconciliação |
 | Financeiro do cliente em `confirmation_failed` | IMPLEMENTADO | Refund acumulado de produtos nas quatro responsabilidades; frete reembolsado em MOTOBOY/SISTEMA/INDEFINIDO e preservado em CLIENTE; gatilho atômico na classificação, sem distribuição interna |
 | Endereço incorreto do cliente / erro do ERMES | OPERACIONAL E FINANCEIRO IMPLEMENTADOS | `address_problem` preserva endereço original/apresentado sem inferir culpa. CLIENTE mantém retorno terminal, products refund e freight 70/25/5. SISTEMA permite conclusão normal ou retorno recuperável; corrected redisponibiliza e persistent projeta `NAO_REALIZADA/ENCERRADO`, reembolsa products+freight e bloqueia o endereço canônico |
-| Produto indisponível e ajuste excepcional do Pedido na 0.2 | PENDENTE | Falta o fluxo de produto/serviço indisponível com proposta de ajuste excepcional, concordância explícita do cliente, acerto da diferença de preço e efeitos financeiros correspondentes quando aplicáveis. O cancelamento legado, o reembolso já existente e o financeiro implementado da 0.1 não representam a conclusão desse fluxo da 0.2 |
+| Produto indisponível e ajuste excepcional do Pedido na 0.2 | IMPLEMENTADO | Antes da coleta, a empresa pode propor composição completa e o cliente decide explicitamente; diferença a maior exige pagamento, diferença a menor gera refund e ausência de acordo encerra a operação por responsabilidade EMPRESA. RF-025 permanece PARCIAL pela falta de distância/tempo operacionais autoritativos para recálculo do frete |
 | Estados completos de Pedido e Entrega da 0.2 | PARCIAL | `officialStatus` é projeção derivada, sem coluna duplicada. `awaiting_revalidation` é novo estado operacional; `returned` com ausência/recusa explícita projeta `NAO_REALIZADA/ENCERRADO`, enquanto retorno ambíguo continua `null`. Demais regras terminais e financeiro completo continuam pendentes |
 | Contador de códigos inválidos por tentativa | IMPLEMENTADO | `delivery_attempts.invalid_code_attempts` é a única fonte operacional, inicia em zero e aceita de zero a três. A coluna da Entrega é legado físico não sincronizado |
 | Sanção temporal de cancelamento | REMOVIDA | A 0.2 não aplica tolerância fixa de três minutos nem bloqueio automático de duas horas; `order_blocked_until` é legado físico não autoritativo |
@@ -118,7 +118,7 @@ permanece pendente.
 - Chat permanece aberto, mas nenhuma mensagem autoriza liberação. Falta de tentativa, ocorrência inequívoca ou retorno comprovado exige reconciliação explícita, sem backfill.
 - O fechamento por ausência/recusa não cria nova tentativa ou revalidação nem presume responsabilidade. Completa o reembolso acumulado de produtos efetivamente pagos, preserva a cobrança de frete e divide frete reconciliado 70/25/5 pelo maior resto. Refund anterior parcial reduz o saldo; integral não duplica; over-refund é bloqueado. O motoboy vem da TentativaEntrega terminal, confrontada com coleta, ocorrência e retorno do ciclo; identidade contraditória exige reconciliação. Refund anterior positivo de frete também exige reconciliação. Chaves idempotentes, ledger append-only e transação única garantem rollback do fechamento em falha financeira.
 - Frete `NULL` sem pagamento de frete gera `freight_amount_unavailable` sem distribuição; frete conhecido sem pagamento coerente ou frete `NULL` com pagamento exige `FINANCIAL_RECONCILIATION_REQUIRED`. Não há backfill automático heurístico de consequências de retornos históricos.
-- Cancelamento durante a revalidação após impedimento externo está implementado; após a liberação pela empresa, a política de cancelamento permanece pendente. Endereço classificado `CLIENTE` possui fechamento terminal e `SISTEMA` possui conclusão segura ou resolução corrigível/persistente após retorno. Produto indisponível/ajuste 0.2 e perfis RESPONSAVEL/ATENDENTE permanecem para incrementos próprios. As consequências financeiras do cliente em `confirmation_failed` estão implementadas na classificação; distribuição/custo interno continua futuro.
+- Cancelamento durante a revalidação após impedimento externo está implementado; após a liberação pela empresa, a política de cancelamento permanece pendente. Endereço classificado `CLIENTE` possui fechamento terminal e `SISTEMA` possui conclusão segura ou resolução corrigível/persistente após retorno. Produto indisponível/ajuste 0.2 está implementado; perfis RESPONSAVEL/ATENDENTE permanecem para incremento próprio. As consequências financeiras do cliente em `confirmation_failed` estão implementadas na classificação; distribuição/custo interno continua futuro.
 
 
 ## Incremento terminal de três códigos inválidos
@@ -190,7 +190,8 @@ permanece pendente.
   append-only e demais proteções. Bootstrap legado continua coberto. Autorização,
   concorrência, pós-coleta 50/50 e `confirmation_failed` permanecem preservados.
 - Este incremento anterior não concluiu a Baseline 0.2; o fluxo de erro do ERMES
-  está implementado no incremento atual. Produto indisponível 0.2 e MySQL permanecem fora do escopo.
+  e produto indisponível/ajuste 0.2 foram implementados em incrementos posteriores.
+  MySQL permanece fora do escopo funcional atual.
 
 ## Cancelamento após impedimento externo — incremento atual
 
