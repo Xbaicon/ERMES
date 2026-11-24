@@ -12,6 +12,9 @@ import {
 import { evolveRevalidationSchema } from "./revalidation-schema.js";
 import { migrateLegacyInvalidCodeAttempts } from "./delivery-attempts.js";
 import { CLIENT_ADDRESS_CLOSED_SQL } from "./client-address-evidence.js";
+import {
+  canonicalSystemAddress, evolveSystemAddressSchema, SYSTEM_ADDRESS_PERSISTENT_SQL,
+} from "./system-address-evidence.js";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databasePath = process.env.ERMES_DB_PATH || resolve(projectRoot, "data", "ermes.sqlite");
@@ -21,6 +24,7 @@ export const db = new DatabaseSync(databasePath);
 db.function("is_canonical_timestamp", { deterministic: true }, (value) => (
   isCanonicalTimestamp(value) ? 1 : 0
 ));
+db.function("canonical_system_address_json", { deterministic: true }, canonicalSystemAddress);
 db.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
 // A conversão inicial para WAL pode retornar BUSY ao disputar a promoção de lock,
 // mesmo com busy_timeout. Aguarda o escritor pelo lock nativo e verifica o modo
@@ -72,6 +76,10 @@ const financialEntryKindTrigger = `
           OR (NEW.reason = 'address_problem' AND NEW.component = 'products'
             AND EXISTS (${CLIENT_ADDRESS_CLOSED_SQL}
               AND d.id = NEW.delivery_id AND o.id = NEW.order_id AND o.payment_status = 'paid'))
+          OR (NEW.reason = 'system_address_persistent'
+            AND NEW.component IN ('products', 'freight')
+            AND EXISTS (${SYSTEM_ADDRESS_PERSISTENT_SQL}
+              AND d.id = NEW.delivery_id AND o.id = NEW.order_id AND o.payment_status = 'paid'))
           OR (NEW.reason = 'confirmation_failed' AND EXISTS (
             SELECT 1 FROM deliveries d
             JOIN delivery_attempts a ON a.delivery_id = d.id
@@ -88,7 +96,13 @@ const financialEntryKindTrigger = `
                 WHERE evidence.delivery_id = d.id AND evidence.type = 'confirmation_failed') = 1
               AND NOT EXISTS (SELECT 1 FROM delivery_occurrences conflict
                 WHERE conflict.delivery_attempt_id = a.id
-                  AND conflict.type IN ('recipient_absent', 'recipient_refused', 'address_problem'))
+                  AND (conflict.type IN ('recipient_absent', 'recipient_refused')
+                    OR (conflict.type = 'address_problem' AND NOT (
+                      conflict.responsibility = 'SISTEMA'
+                      AND EXISTS (SELECT 1 FROM users address_classifier
+                        WHERE address_classifier.id = conflict.classified_by_user_id
+                          AND address_classifier.role = 'company'
+                          AND address_classifier.company_id = owner.company_id)))))
               AND a.attempt_number = (SELECT MAX(latest.attempt_number)
                 FROM delivery_attempts latest WHERE latest.delivery_id = d.id)
               AND is_canonical_timestamp(oc.classified_at) = 1
@@ -541,6 +555,7 @@ transaction(() => {
   );
 `);
   evolveRevalidationSchema(db, { inTransaction: true });
+  evolveSystemAddressSchema(db);
   db.exec(financialEntryKindTrigger);
 });
 

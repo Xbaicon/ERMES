@@ -68,6 +68,10 @@ test("centraliza eventos operacionais e a classificação de ocorrência da Base
     "temporary_external_obstruction",
     "delivery_awaiting_revalidation",
     "delivery_revalidated",
+    "system_address_return_started",
+    "system_address_awaiting_resolution",
+    "system_address_corrected",
+    "system_address_persistent",
   ]);
   assert.equal(INITIAL_DELIVERY_EVENT_TYPE, DELIVERY_EVENT_TYPES.CREATED);
   assert.equal(Object.isFrozen(DELIVERY_EVENT_TYPES), true);

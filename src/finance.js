@@ -1,5 +1,6 @@
 import { splitNormalFreight } from "./freight.js";
 import { clientAddressEvidence } from "./client-address-evidence.js";
+import { systemAddressEvidence } from "./system-address-evidence.js";
 
 export const FINANCIAL_ENTRY_TYPES = Object.freeze({
   PAYMENT: "payment",
@@ -772,10 +773,68 @@ export function recordProductUnavailableInTransaction(database, delivery, occurr
   }
 }
 
+export function recordPersistentSystemAddressFailureInTransaction(database, delivery, resolutionId) {
+  const evidence = systemAddressEvidence(database, delivery.id, "persistent");
+  if (!evidence || evidence.resolution.id !== resolutionId) {
+    throw financialError("O erro persistente de endereço exige evidência operacional íntegra.");
+  }
+  if (delivery.paymentStatus !== "paid" || !isCanonicalTimestamp(delivery.paymentPaidAt)) {
+    throw financialError("O pagamento exige reconciliação financeira.");
+  }
+  const entries = database.prepare(`SELECT order_id AS orderId, delivery_id AS deliveryId,
+      entry_type AS entryType, component, party_type AS partyType,
+      party_user_id AS partyUserId, party_company_id AS partyCompanyId,
+      amount_cents AS amountCents, reason, idempotency_key AS idempotencyKey
+    FROM financial_entries WHERE order_id = ? ORDER BY id`).all(delivery.orderId);
+  if (entries.some((entry) => entry.entryType === "distribution"
+    && entry.deliveryId === delivery.id)) {
+    throw financialError("A Entrega possui distribuição incompatível com o erro persistente do ERMES.");
+  }
+  const payments = new Map();
+  for (const entry of entries.filter(({ entryType }) => entryType === "payment")) {
+    if (entry.partyType !== "client" || entry.partyUserId !== delivery.clientId
+      || entry.partyCompanyId !== null || entry.reason !== "simulated_payment"
+      || payments.has(entry.component)) {
+      throw financialError("O pagamento persistido exige reconciliação.");
+    }
+    payments.set(entry.component, requireCents(entry.amountCents, "O pagamento persistido"));
+  }
+  if (payments.get("products") !== delivery.itemsTotalCents
+    || (delivery.freightTotalCents === null
+      ? payments.has("freight") : payments.get("freight") !== delivery.freightTotalCents)) {
+    throw financialError("Os pagamentos divergem dos snapshots do Pedido.");
+  }
+  const base = entryBase(delivery, "system_address_persistent", evidence.resolution.resolved_at);
+  for (const component of ["products", "freight"]) {
+    const paid = payments.get(component) ?? 0;
+    const key = `delivery:${delivery.id}:system-address-persistent:refund-${component}`;
+    const refunds = entries.filter((entry) => entry.entryType === "refund"
+      && entry.component === component);
+    const own = refunds.find((entry) => entry.idempotencyKey === key);
+    const refundedByOthers = sumFinancialAmounts(refunds
+      .filter((entry) => entry.idempotencyKey !== key).map((entry) => entry.amountCents));
+    if (refundedByOthers > paid) {
+      throw financialError(`O Pedido ${delivery.orderId} possui reembolso excessivo de ${component}.`);
+    }
+    const amountCents = paid - refundedByOthers;
+    const expected = {
+      ...base, entryType: FINANCIAL_ENTRY_TYPES.REFUND, component,
+      partyType: FINANCIAL_PARTIES.CLIENT, partyId: delivery.clientId,
+      amountCents, idempotencyKey: key,
+    };
+    if (own) {
+      if (amountCents === 0) throw financialError("Chave de reembolso existente sem saldo compatível.");
+      assertSameSemanticEntry(findEntryByIdempotencyKey(database, key), normalizeEntry(expected));
+    } else if (amountCents > 0) {
+      insertFinancialEntryInTransaction(database, expected);
+    }
+  }
+}
+
 const CONFIRMATION_FAILURE_RESPONSIBILITIES = new Set(["CLIENTE", "MOTOBOY", "SISTEMA", "INDEFINIDO"]);
 const FINAL_DISTRIBUTION_REASONS = new Set([
   "confirmation_failed", "delivery_completed", "recipient_absent", "recipient_refused",
-  "client_cancelled_after_pickup",
+  "client_cancelled_after_pickup", "system_address_persistent",
 ]);
 
 function confirmationFailureClassification(database, occurrenceId, responsibility) {
@@ -799,7 +858,13 @@ function confirmationFailureClassification(database, occurrenceId, responsibilit
         WHERE evidence.delivery_id = d.id AND evidence.type = 'confirmation_failed') = 1
       AND NOT EXISTS (SELECT 1 FROM delivery_occurrences conflict
         WHERE conflict.delivery_attempt_id = a.id
-          AND conflict.type IN ('recipient_absent', 'recipient_refused', 'address_problem'))
+          AND (conflict.type IN ('recipient_absent', 'recipient_refused')
+            OR (conflict.type = 'address_problem' AND NOT (
+              conflict.responsibility = 'SISTEMA'
+              AND EXISTS (SELECT 1 FROM users address_classifier
+                WHERE address_classifier.id = conflict.classified_by_user_id
+                  AND address_classifier.role = 'company'
+                  AND address_classifier.company_id = o.company_id)))))
       AND a.attempt_number = (SELECT MAX(latest.attempt_number)
         FROM delivery_attempts latest WHERE latest.delivery_id = d.id)
       AND is_canonical_timestamp(oc.classified_at) = 1
@@ -970,7 +1035,35 @@ function pendingFinancialEffects(database, delivery, entries) {
     }
     if (delivery.freightTotalCents === null && !paidFreight) pending.push("freight_amount_unavailable");
   }
-  if (RECIPIENT_TERMINAL_REASONS.has(delivery.returnReason) && delivery.status === "returned") {
+  const persistentSystemAddress = delivery.returnReason === "address_problem"
+    && delivery.status === "returned" && systemAddressEvidence(database, delivery.id, "persistent");
+  if (persistentSystemAddress) {
+    const payments = paidComponents(database, delivery.orderId, delivery.clientId);
+    const paidProductsCents = payments.get(FINANCIAL_COMPONENTS.PRODUCTS);
+    const paidFreightCents = payments.get(FINANCIAL_COMPONENTS.FREIGHT);
+    if (paidProductsCents !== delivery.itemsTotalCents
+      || (delivery.freightTotalCents === null
+        ? paidFreightCents !== undefined : paidFreightCents !== delivery.freightTotalCents)) {
+      throw financialError("Os pagamentos do erro persistente do ERMES exigem reconciliação.");
+    }
+    for (const [component, paid] of [
+      [FINANCIAL_COMPONENTS.PRODUCTS, paidProductsCents],
+      [FINANCIAL_COMPONENTS.FREIGHT, paidFreightCents],
+    ]) {
+      const refunded = sumFinancialAmounts(entries.filter((entry) =>
+        entry.entryType === FINANCIAL_ENTRY_TYPES.REFUND && entry.component === component)
+        .map((entry) => entry.amountCents));
+      if (refunded !== (paid ?? 0)) {
+        throw financialError(`O reembolso de ${component} do erro persistente exige reconciliação.`);
+      }
+    }
+    if (entries.some((entry) => entry.deliveryId === delivery.id
+      && entry.entryType === FINANCIAL_ENTRY_TYPES.DISTRIBUTION)) {
+      throw financialError("O erro persistente do ERMES não admite distribuição.");
+    }
+    if (paidFreightCents === undefined) pending.push("freight_amount_unavailable");
+  } else if (RECIPIENT_TERMINAL_REASONS.has(delivery.returnReason)
+    && delivery.status === "returned") {
     if (delivery.returnReason === "address_problem"
       && !clientAddressEvidence(database, delivery.id, "closed")) {
       throw financialError("O histórico de endereço atribuído ao cliente exige reconciliação.");

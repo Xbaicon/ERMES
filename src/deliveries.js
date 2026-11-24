@@ -37,6 +37,10 @@ export const DELIVERY_EVENT_TYPES = Object.freeze({
   EXTERNAL_OBSTRUCTION: "temporary_external_obstruction",
   AWAITING_REVALIDATION: "delivery_awaiting_revalidation",
   REVALIDATED: "delivery_revalidated",
+  SYSTEM_ADDRESS_RETURN_STARTED: "system_address_return_started",
+  SYSTEM_ADDRESS_AWAITING_RESOLUTION: "system_address_awaiting_resolution",
+  SYSTEM_ADDRESS_CORRECTED: "system_address_corrected",
+  SYSTEM_ADDRESS_PERSISTENT: "system_address_persistent",
 });
 
 export const INITIAL_DELIVERY_STATE = DELIVERY_STATES.AVAILABLE;

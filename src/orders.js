@@ -4,6 +4,7 @@ import { MAX_ORDER_WEIGHT_KG } from "./freight.js";
 import { createDeliveryForEligibleOrderInTransaction } from "./delivery-creation.js";
 import { normalizeAddress } from "./address.js";
 import { orderRefundSummary, recordPaymentInTransaction } from "./finance.js";
+import { isSystemAddressBlocked } from "./system-address-evidence.js";
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -207,6 +208,12 @@ function destinationSnapshot(value) {
     return JSON.parse(value);
   } catch {
     throw orderError("O endereço preservado do pedido é inválido.", 500);
+  }
+}
+
+function requireProcessableSystemAddress(snapshot) {
+  if (isSystemAddressBlocked(db, snapshot)) {
+    throw orderError("O ERMES ainda não pode processar este endereço com segurança.", 409);
   }
 }
 
@@ -550,6 +557,7 @@ export function confirmSimulatedPayment(clientId, orderId, body) {
       throw orderError("Este pedido n\u00e3o est\u00e1 confirmado comercialmente.", 409);
     }
     const snapshot = paymentSnapshot(order);
+    requireProcessableSystemAddress(snapshot.snapshot);
     if (order.paymentStatus === "paid") {
       const ensured = createDeliveryForEligibleOrderInTransaction(order.id);
       recordPaymentInTransaction(db, {
@@ -589,7 +597,9 @@ export function confirmCompanyDraftOrder(companyId, orderId, body) {
       if (order.version !== input.version) {
         throw orderError("A vers\u00e3o analisada n\u00e3o corresponde \u00e0 vers\u00e3o confirmada do pedido.", 409);
       }
-      return mapConfirmedCompanyOrder(order, confirmationSnapshot(order));
+      const confirmation = confirmationSnapshot(order);
+      requireProcessableSystemAddress(confirmation.snapshot);
+      return mapConfirmedCompanyOrder(order, confirmation);
     }
     if (order.status !== "draft") {
       throw orderError("Este pedido n\u00e3o pode ser confirmado no estado atual.", 409);
@@ -598,6 +608,7 @@ export function confirmCompanyDraftOrder(companyId, orderId, body) {
       throw orderError("O pedido foi alterado pelo cliente. Recarregue a vers\u00e3o atual antes de confirmar.", 409);
     }
     const confirmation = confirmationSnapshot(order);
+    requireProcessableSystemAddress(confirmation.snapshot);
     const update = db.prepare(`UPDATE orders
                                SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP,
                                    updated_at = CURRENT_TIMESTAMP

@@ -4,6 +4,7 @@ import { officialDeliveryStatus, terminalDeliveryEvent } from "./official-status
 import {
   decryptConfirmationCode, encryptConfirmationCode, hashConfirmationCode, newConfirmationCode,
 } from "./security.js";
+import { isSystemAddressBlocked } from "./system-address-evidence.js";
 
 const requiredDestinationFields = Object.freeze([
   "postalCode",
@@ -114,7 +115,10 @@ export function createDeliveryForEligibleOrderInTransaction(orderId) {
     if (order.paymentStatus !== "paid") {
       throw deliveryCreationError("O pagamento do pedido ainda não está confirmado.");
     }
-    requireValidDestinationSnapshot(order.destinationSnapshotJson);
+    const destination = requireValidDestinationSnapshot(order.destinationSnapshotJson);
+    if (isSystemAddressBlocked(db, destination)) {
+      throw deliveryCreationError("O ERMES ainda não pode processar este endereço com segurança.");
+    }
     requireValidRecipientSnapshot(order.recipientSnapshotJson);
 
     const confirmationCode = newConfirmationCode();

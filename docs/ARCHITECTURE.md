@@ -6,8 +6,9 @@ O checkpoint `baseline-0.1` permanece congelado. O desenvolvimento da Baseline
 0.2 avança incrementalmente sobre SQLite após a conclusão da auditoria técnica
 0.1 → 0.2. Este documento inclui os incrementos de `TentativaEntrega` e da
 fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade,
-o fluxo de impedimento externo com revalidação pela empresa e o fechamento
-operacional terminal por ausência, recusa do destinatário e três códigos inválidos.
+o fluxo de impedimento externo com revalidação pela empresa, o erro de apresentação
+de endereço atribuído ao ERMES e o fechamento operacional terminal por ausência,
+recusa do destinatário e três códigos inválidos.
 Isso não declara implementado o ciclo completo da 0.2 nem altera a baseline
 normativa. MySQL permanece uma etapa técnica posterior e não é gate para as
 funcionalidades da 0.2.
@@ -41,7 +42,7 @@ Não há dependências npm externas nesta etapa.
 - A confirmação da coleta executa em um único `BEGIN IMMEDIATE`: valida a Entrega atribuída em `awaiting_pickup`, verifica a ausência de tentativa aberta, calcula `MAX(attempt_number) + 1`, insere a tentativa, muda a Entrega para `in_transit`, grava `collected_at` e registra `order_collected`. Qualquer falha desfaz todos esses efeitos.
 - `UNIQUE(delivery_id, attempt_number)` protege a sequência. O índice parcial único `one_open_attempt_per_delivery`, para `active` e `returning`, protege no banco a regra de uma tentativa aberta por Entrega; a aplicação também verifica a regra dentro da transação. Uma futura mudança de banco deverá reproduzir essa invariante com mecanismo equivalente.
 - Código válido muda a tentativa ativa para `completed` e grava `ended_at` na mesma transação que conclui a Entrega, registra o evento e executa o financeiro existente. O código de confirmação, seu hash e sua representação cifrada continuam exclusivamente em `deliveries`.
-- Os fluxos de retorno mudam a tentativa aberta para `returning` e a encerram somente na confirmação física do retorno: `recoverable` para falha do motoboy após coleta e `terminal` para ausência, recusa, terceira validação inválida, cancelamento pós-coleta e endereço atribuído ao cliente. `address_problem` registra evidência imutável sem iniciar retorno nem inferir responsabilidade. A classificação explícita `CLIENTE` inicia retorno; o recebimento físico fecha a tentativa e executa refund de products e distribuição de freight 70/25/5. O helper de evidência do endereço é compartilhado entre operação, projeção e financeiro; o trigger exige a cadeia terminal. Demais responsabilidades aguardam incrementos próprios.
+- Os fluxos de retorno mudam a tentativa aberta para `returning` e a encerram somente na confirmação física do retorno: `recoverable` para falha do motoboy após coleta, impedimento externo e erro de endereço `SISTEMA`; `terminal` para ausência, recusa, terceira validação inválida, cancelamento pós-coleta e endereço atribuído ao cliente. `address_problem` registra evidência imutável sem iniciar retorno nem inferir responsabilidade. `CLIENTE` inicia seu retorno na classificação e aplica products refund mais freight 70/25/5 no fechamento. `SISTEMA` permite conclusão normal ou início explícito de retorno, seguido por resolução auditada corrigível/persistente. Helpers distintos preservam as duas responsabilidades e seus triggers exigem as respectivas cadeias.
 - A criação da tentativa valida, por consultas portáveis, número inteiro positivo gerado internamente, papel `courier`, empresa da Entrega e atribuição atual. A aplicação não oferece alteração genérica de identidade, número, motoboy ou início da tentativa.
 - Os detalhes de Entrega projetam o histórico `attempts` de forma aditiva. Listagens, rotas e interface visual permanecem inalteradas.
 - `src/finance.js` concentra as regras e o livro-razão financeiro. `financial_entries` registra lançamentos append-only de pagamento, reembolso e distribuição por componente (`products` ou `freight`), parte relacionada, motivo, Pedido, Entrega, horário e chave idempotente única. Triggers rejeitam UPDATE, DELETE, over-refund, valores fora do inteiro seguro, relações divergentes e combinações incompatíveis de tipo, componente e beneficiário. Colisões de chave comparam o conteúdo financeiro relevante e exigem reconciliação quando divergentes. As transições operacionais chamam essas regras dentro da mesma transação SQLite; falha financeira desfaz também estado e evento.
@@ -99,7 +100,7 @@ aplicação para MySQL agora.
 
 ## Próxima etapa técnica
 
-1. Evoluir em incremento separado os cenários de erro do ERMES e as demais consequências financeiras da 0.2. A revalidação de impedimento externo já está descrita abaixo; endereço atribuído ao cliente possui fluxo terminal próprio.
+1. Evoluir em incrementos separados os demais cenários e consequências financeiras ainda pendentes da 0.2, preservando os fluxos de endereço já implementados.
 2. Definir, se necessária, estratégia auditável de reconciliação de Entregas legadas pós-coleta sem `TentativaEntrega`, sem backfill heurístico.
 3. Após regressão funcional completa da 0.2, migrar SQLite → MySQL como etapa técnica isolada em ambiente apropriado, com plano próprio para integridade, transações e concorrência; repetir regressão automatizada e smoke completo.
 
@@ -154,7 +155,7 @@ financeiras.
 
 `src/revalidation-schema.js` amplia o CHECK de tipos de ocorrência via reconstrução transacional: cria tabela temporária, copia dados mantendo IDs, remove a anterior, renomeia e recria os índices/triggers preservados. FKs ficam ligadas; `foreign_key_check` é obrigatório antes do commit. O teste usa `tests/fixtures/revalidation-legacy.sql`, snapshot relevante do schema real da PR #22, e induz falha após cópia/DROP/RENAME, prova rollback integral e repete a evolução no mesmo banco. A reconstrução só é feita para o CHECK anterior conhecido; não há backfill de ocorrências, tentativas ou revalidações.
 
-O painel mostra a espera sem oferecer aceite/cancelamento incompatível. A revalidação e o registro específico têm API, sem formulário completo. O erro corrigível do ERMES ainda exige decisão operacional sobre correção e disponibilidade do cliente; o endereço original e apresentado já são preservados na ocorrência `address_problem`. O cancelamento durante a espera pelo impedimento externo é descrito abaixo; nenhum legado é convertido automaticamente.
+O painel mostra a espera sem oferecer aceite/cancelamento incompatível. A revalidação externa e a resolução específica do erro do ERMES têm API, sem formulário completo. O endereço original e apresentado são preservados na ocorrência `address_problem`. O cancelamento durante a espera pelo impedimento externo é descrito abaixo; nenhum legado é convertido automaticamente.
 
 
 ### Fechamento de `confirmation_failed`
@@ -317,3 +318,36 @@ e não há backfill de refunds de cancelamentos legados. `financial.pending` usa
 tentativa malsucedida. Durante a espera não há refund devido; após cancelamento
 e reembolso integral, não há pendência de valor ao cliente. A tentativa não
 gera outra cobrança de frete nem remuneração automática.
+
+## Erro de apresentação do endereço atribuído ao ERMES
+
+Foi escolhida persistência dedicada, sem generalizar `delivery_revalidations`:
+`system_address_resolutions` registra tentativa, ocorrência, recebimento físico,
+responsabilidade, resolução, atores, horários, verificação e disponibilidade do
+cliente; `system_address_blocks` registra o endereço canônico bloqueado e vincula
+o impedimento ao incidente persistente. Essa separação mantém inalteradas as
+invariantes de `temporary_external_obstruction` e evita cruzamento de ciclos.
+
+`systemAddressEvidence` valida a tentativa mais recente e a cadeia coleta →
+chegada → ocorrência → classificação SISTEMA → início do retorno → relato →
+recebimento → resolução. A mesma definição sustenta operações, projeções e a
+consulta SQL do trigger financeiro. O helper `clientAddressEvidence` permanece
+específico de CLIENTE. A classificação SISTEMA deixa a tentativa ativa para
+permitir confirmação normal; o retorno só começa pela ação explícita do motoboy.
+No recebimento físico, a tentativa fecha como recuperável e não é reescrita se a
+resolução posterior for persistente.
+
+`corrected` consome atomicamente o ciclo pendente e redisponibiliza a mesma
+Entrega, sem nova tentativa, novo código ou financeiro. `persistent` registra o
+evento terminal, muda a Entrega para `returned`, cria o bloqueio canônico e
+completa os refunds acumulados de products/freight na mesma transação. Uma falha
+no segundo refund desfaz também primeiro refund, bloco, evento, estado e resolução.
+O trigger permite somente refund ao cliente com cadeia completa e proíbe toda
+distribution de `system_address_persistent`.
+
+A chave de bloqueio tem escopo global no ERMES e igualdade estrutural dos sete
+campos normalizados já suportados, sem geocodificação ou equivalência semântica.
+Confirmação comercial, pagamento e criação da Entrega validam novamente o bloco;
+portanto draft anterior não o contorna. Não há endpoint de desbloqueio neste
+incremento. O bootstrap cria estruturas e triggers de modo repetível, sem inferir
+responsabilidade, resolução, refunds ou bloqueios para históricos.

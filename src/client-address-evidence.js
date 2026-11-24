@@ -46,7 +46,7 @@ const addressShape = (path) => `json_type(oc.evidence_json, '${path}') = 'object
     AND json_extract(oc.evidence_json, '${path}.${field}') = trim(json_extract(oc.evidence_json, '${path}.${field}'))`).join(" AND ")}
   AND json_type(oc.evidence_json, '${path}.complement') = 'text'
   AND json_extract(oc.evidence_json, '${path}.complement') = trim(json_extract(oc.evidence_json, '${path}.complement'))`;
-const SQL_ADDRESS_EVIDENCE = `CASE WHEN json_valid(o.destination_snapshot_json) = 1
+export const SQL_ADDRESS_EVIDENCE = `CASE WHEN json_valid(o.destination_snapshot_json) = 1
   AND json_valid(oc.evidence_json) = 1 THEN
   json_type(o.destination_snapshot_json) = 'object'
   AND (SELECT COUNT(*) FROM json_each(o.destination_snapshot_json)) = 7
