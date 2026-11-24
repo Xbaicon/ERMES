@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import { isCanonicalTimestamp } from "../src/finance.js";
+import { canonicalSystemAddress, isSystemAddressBlocked } from "../src/system-address-evidence.js";
 
 const triggerName = "financial_entry_payment_state_insert";
 const expectedTrigger = `CREATE TRIGGER financial_entry_payment_state_insert
@@ -71,6 +72,7 @@ function inspect(databasePath) {
   const db = new DatabaseSync(databasePath);
   db.exec("PRAGMA foreign_keys = ON");
   db.function("is_canonical_timestamp", { deterministic: true }, (value) => isCanonicalTimestamp(value) ? 1 : 0);
+  db.function("canonical_system_address_json", { deterministic: true }, canonicalSystemAddress);
   return db;
 }
 
@@ -87,8 +89,12 @@ function data(db) {
 
 function assertInitialized(db) {
   for (const table of ["companies", "users", "orders", "order_items", "deliveries", "delivery_attempts",
-    "delivery_events", "delivery_occurrences", "delivery_revalidations", "financial_entries", "sessions"]) {
+    "delivery_events", "delivery_occurrences", "delivery_revalidations", "system_address_resolutions",
+    "system_address_blocks", "financial_entries", "sessions"]) {
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table);
+  }
+  for (const table of ["system_address_resolutions", "system_address_blocks"]) {
+    assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get().total, 0);
   }
   const triggers = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").all(triggerName);
   assert.equal(triggers.length, 1);
@@ -99,6 +105,15 @@ function assertInitialized(db) {
     assert.match(sql, /recipient_absent/);
     assert.match(sql, /recipient_refused/);
   }
+  for (const name of ["system_address_block_insert", "system_address_block_order_confirmation",
+    "system_address_block_order_payment", "system_address_block_delivery_insert"]) {
+    const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+      .get(name)?.sql;
+    assert.match(sql, /json_extract/);
+    assert.doesNotMatch(sql, /canonical_address_json\s*=\s*\w+\.destination_snapshot_json/);
+  }
+  assert.match(db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'trigger'
+    AND name = 'system_address_block_insert'`).get().sql, /canonical_system_address_json/);
   assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
 }
 
@@ -156,6 +171,17 @@ test("inicialização concorrente substitui trigger legado sem perder schema ou 
         db.exec(`DROP TRIGGER ${name}; CREATE TRIGGER ${name} BEFORE INSERT ON financial_entries
           BEGIN SELECT RAISE(ABORT, 'legacy financial rule'); END;`);
       }
+      for (const [name, table, operation] of [
+        ["system_address_block_insert", "system_address_blocks", "INSERT"],
+        ["system_address_block_order_confirmation", "orders", "UPDATE OF status"],
+        ["system_address_block_order_payment", "orders", "UPDATE OF payment_status"],
+        ["system_address_block_delivery_insert", "deliveries", "INSERT"],
+      ]) {
+        db.exec(`DROP TRIGGER ${name}; CREATE TRIGGER ${name} BEFORE ${operation} ON ${table}
+          WHEN EXISTS (SELECT 1 FROM system_address_blocks block WHERE
+            block.canonical_address_json = NEW.destination_snapshot_json)
+          BEGIN SELECT RAISE(ABORT, 'legacy raw address comparison'); END;`);
+      }
     } finally { db.close(); }
     await initialize(path, 4);
     const after = inspect(path);
@@ -189,6 +215,84 @@ test("três inicializações sequenciais no mesmo banco preservam schema, trigge
         assert.deepEqual(data(reopened), beforeData);
       } finally { reopened.close(); }
     }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("blocos persistem apenas JSON canônico e bootstrap exige reconciliação de legado inválido", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ermes-system-address-block-"));
+  const path = join(directory, "blocks.sqlite");
+  const address = {
+    postalCode: "01001000", state: "SP", city: "São Paulo", neighborhood: "Sé",
+    street: "Praça da Sé", number: "1", complement: "",
+  };
+  const canonical = JSON.stringify(address);
+  const reordered = JSON.stringify(Object.fromEntries(Object.entries(address).reverse()));
+  const unicodeWhitespace = JSON.stringify({ ...address, city: "São Paulo\u00a0" });
+  try {
+    await initialize(path, 1);
+    const db = inspect(path);
+    try {
+      db.exec(`INSERT INTO companies(id,name,cnpj,email)
+        VALUES (1,'Empresa','11222333000181','empresa@teste.local');
+        INSERT INTO users(id,role,full_name,email,password_hash)
+        VALUES (1,'client','Cliente','cliente@teste.local','hash');
+        INSERT INTO users(id,company_id,role,full_name,email,password_hash)
+        VALUES (2,1,'company','Empresa','usuario@teste.local','hash'),
+          (3,1,'courier','Motoboy','motoboy@teste.local','hash');`);
+      for (const [id, snapshot] of [[1, canonical], [2, reordered], [3, unicodeWhitespace]]) {
+        db.prepare(`INSERT INTO orders(id,client_id,company_id,status,destination_snapshot_json)
+          VALUES (?,1,1,'confirmed',?)`).run(id, snapshot);
+        db.prepare(`INSERT INTO deliveries(id,order_id,status,return_reason,
+          return_reported_at,returned_at)
+          VALUES (?,?,'awaiting_revalidation','address_problem',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+          .run(id, id);
+        db.prepare(`INSERT INTO delivery_attempts(id,delivery_id,attempt_number,courier_id,
+          status,ended_at,end_reason,end_nature)
+          VALUES (?,?,1,3,'closed_unsuccessfully',CURRENT_TIMESTAMP,'address_problem','recoverable')`)
+          .run(id, id);
+        db.prepare(`INSERT INTO delivery_occurrences(id,delivery_id,delivery_attempt_id,type,
+          reported_by_user_id,responsibility,classified_by_user_id,classified_at)
+          VALUES (?,?,?,'address_problem',3,'SISTEMA',2,CURRENT_TIMESTAMP)`).run(id, id, id);
+        db.prepare(`INSERT INTO system_address_resolutions(id,delivery_id,
+          delivery_attempt_id,occurrence_id,received_by_user_id)
+          VALUES (?,?,?,?,2)`).run(id, id, id, id);
+        db.prepare(`UPDATE system_address_resolutions SET resolution='persistent',
+          resolved_by_user_id=2,resolved_at=CURRENT_TIMESTAMP,verification_result='Persistente'
+          WHERE id=?`).run(id);
+        db.prepare("UPDATE deliveries SET status='returned' WHERE id=?").run(id);
+      }
+      const insert = db.prepare(`INSERT INTO system_address_blocks
+        (source_resolution_id,canonical_address_json) VALUES (?,?)`);
+      assert.equal(canonicalSystemAddress(reordered), canonical);
+      assert.equal(canonicalSystemAddress(unicodeWhitespace), null);
+      for (const [id, value] of [[1, reordered], [1, "{invalid"], [3, unicodeWhitespace]]) {
+        assert.throws(() => insert.run(id, value), /invalid persistent system address block/);
+      }
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM system_address_blocks").get().n, 0);
+      insert.run(1, canonical);
+      insert.run(2, canonical);
+      assert.deepEqual(db.prepare(`SELECT canonical_address_json AS value
+        FROM system_address_blocks ORDER BY source_resolution_id`).all().map(({ value }) => value),
+      [canonical, canonical]);
+      assert.equal(isSystemAddressBlocked(db, reordered), true);
+      assert.equal(isSystemAddressBlocked(db, JSON.stringify({ ...address, number: "2" })), false);
+      assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+    } finally { db.close(); }
+    await initialize(path, 1);
+    const existing = inspect(path);
+    try {
+      assert.equal(existing.prepare("SELECT COUNT(*) AS n FROM system_address_blocks").get().n, 2);
+      assert.deepEqual(existing.prepare("PRAGMA foreign_key_check").all(), []);
+      existing.exec("DROP TRIGGER system_address_block_insert");
+      existing.prepare(`INSERT INTO system_address_blocks
+        (source_resolution_id,canonical_address_json) VALUES (3,?)`).run(unicodeWhitespace);
+    } finally { existing.close(); }
+    await assert.rejects(initialize(path, 1), /requires reconciliation/);
+    const unreconciled = inspect(path);
+    try {
+      assert.equal(unreconciled.prepare("SELECT COUNT(*) AS n FROM system_address_blocks").get().n, 3);
+      assert.deepEqual(unreconciled.prepare("PRAGMA foreign_key_check").all(), []);
+    } finally { unreconciled.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

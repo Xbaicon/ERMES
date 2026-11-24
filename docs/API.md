@@ -3,8 +3,9 @@
 > **Estado documental:** este contrato parte do checkpoint `baseline-0.1` e
 > inclui os incrementos funcionais da Baseline 0.2 para `TentativaEntrega` e a
 > fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade,
-> impedimento externo/revalidação e fechamento operacional terminal por ausência
-> ou recusa do destinatário e três validações inválidas do código.
+> impedimento externo/revalidação, erro de apresentação de endereço atribuído ao
+> ERMES e fechamento operacional terminal por ausência ou recusa do destinatário
+> e três validações inválidas do código.
 
 Base local: `http://localhost:3000/api`
 
@@ -41,6 +42,7 @@ O e-mail de acesso é normalizado e único em `users.email`, independentemente d
 | POST | `/company/delivery-occurrences/:occurrenceId/classify` | Classificar definitivamente a responsabilidade de uma ocorrência |
 | POST | `/company/deliveries/:deliveryId/product-unavailable` | Cancelar antes da coleta por produto indisponível |
 | POST | `/company/deliveries/:deliveryId/confirm-return` | Confirmar recebimento físico do retorno |
+| POST | `/company/deliveries/:deliveryId/system-address-resolution` | Resolver erro de apresentação do endereço atribuído ao ERMES |
 | POST | `/freight/quote` | Exercitar tecnicamente a fórmula com entradas de teste |
 
 ### Valores numéricos dos produtos
@@ -498,6 +500,7 @@ a conversa selecionada por polling HTTP a cada cinco segundos.
 | POST | `/courier/deliveries/:id/confirm` | Validar código e concluir |
 | POST | `/courier/deliveries/:id/fail` | Registrar falha com motivo |
 | POST | `/courier/deliveries/:id/occurrences` | Registrar ausência, recusa ou problema de endereço no destino |
+| POST | `/courier/deliveries/:id/system-address-return` | Iniciar retorno explícito após `address_problem/SISTEMA` |
 | POST | `/courier/deliveries/:id/report-return` | Registrar devolução física à empresa |
 
 ### Operação e autorização de Entregas
@@ -599,10 +602,11 @@ físico confirmado e evidência terminal coerente: durante `returning`, durante
 mutação. A restrição temporal é exclusiva de `confirmation_failed`.
 
 A classificação genérica não altera o estado da Entrega nem o ciclo da tentativa.
-Para `address_problem`, somente `CLIENTE` inicia o retorno após validar a evidência,
-na mesma transação do evento. `SISTEMA`, `EMPRESA`, `MOTOBOY` e `INDEFINIDO`
-apenas registram classificação; seus desfechos ainda não estão implementados.
-`SISTEMA` será tratado no incremento de erro do ERMES.
+Para `address_problem`, `CLIENTE` inicia o retorno após validar a evidência, na
+mesma transação do evento. `SISTEMA` apenas registra a classificação nesse ponto:
+a tentativa continua ativa para conclusão segura ou para a ação explícita de
+retorno documentada abaixo. `EMPRESA`, `MOTOBOY` e `INDEFINIDO` continuam sem
+desfecho operacional inventado.
 Exclusivamente para `confirmation_failed`, aplica as consequências financeiras
 do cliente na mesma transação, conforme a seção financeira abaixo. As demais
 ocorrências mantêm a classificação sem efeitos financeiros. Não há nova interface visual.
@@ -680,6 +684,65 @@ exigindo reconciliação explícita; nenhuma tentativa é criada por inferência
 estado atual.
 
 Não há dependência de GPS, mapa, geocodificação, rota, distância ou tempo.
+
+## Erro do ERMES na apresentação do endereço (0.2)
+
+`address_problem` continua preservando `originalAddress` e `presentedAddress` e
+nasce com responsabilidade `null`. A classificação explícita `SISTEMA` pela
+empresa não muda estado, tentativa ou ledger. Enquanto a tentativa atual está
+ativa em `awaiting_confirmation`, o código válido pode concluir normalmente a
+mesma Entrega; nesse caminho há somente o financeiro normal, sem retorno,
+revalidação ou refund especial. Três códigos inválidos substituem esse caminho
+pela causa terminal `confirmation_failed`, sem duplo fechamento.
+
+Quando a entrega segura não é possível, o motoboy atribuído usa
+`POST /api/courier/deliveries/:id/system-address-return` com `{}`. A ação exige
+a ocorrência da tentativa atual classificada como `SISTEMA`, registra
+`system_address_return_started` e muda tentativa/Entrega para retorno. Repetição
+retorna `409`. Em seguida, `report-return` e `confirm-return` existentes comprovam
+o retorno físico. A tentativa encerra como recuperável, o motoboy é liberado e a
+Entrega entra em `awaiting_revalidation`/`AGUARDANDO_REVALIDACAO`, sem lançamento
+financeiro ou nova tentativa.
+
+`POST /api/company/deliveries/:id/system-address-resolution` aceita corpo estrito.
+Para correção:
+
+```json
+{
+  "resolution": "corrected",
+  "clientAvailable": true,
+  "verificationResult": "A apresentação foi corrigida e o cliente está disponível."
+}
+```
+
+`clientAvailable` deve ser literalmente `true`. A resolução auditada volta a
+mesma Entrega para `available`, preserva Pedido, snapshots e código e não cria
+refund. A tentativa seguinte nasce somente na próxima coleta, numerada em
+sequência e com contador de códigos inválidos igual a zero.
+
+Para persistência:
+
+```json
+{
+  "resolution": "persistent",
+  "verificationResult": "Não existe correção confiável em prazo previsível."
+}
+```
+
+A operação atômica projeta Entrega `NAO_REALIZADA` e Pedido `ENCERRADO`, completa
+os refunds acumulados de products e freight efetivamente pagos e não cria
+distribution. Frete `NULL` sem payment não inventa valor; pagamentos, refunds ou
+distribuições incompatíveis exigem reconciliação. As chaves são
+`delivery:<id>:system-address-persistent:refund-products` e
+`delivery:<id>:system-address-persistent:refund-freight`.
+
+O endereço de sete campos do snapshot é normalizado e bloqueado globalmente
+enquanto ativo em `system_address_blocks`, vinculado à resolução persistente.
+Drafts antigos com o mesmo endereço não podem ser confirmados nem pagos, e a
+criação de Entrega repete a defesa. Endereços diferentes continuam permitidos.
+Não há endpoint público de desbloqueio, geocodificação, sanção ao cliente ou
+remuneração interna inventada. O detalhe empresarial inclui o histórico
+estruturado em `systemAddressResolutions`.
 
 ## Observação sobre frete
 
@@ -780,8 +843,8 @@ exige reconciliação. Classificação posterior não altera o ledger.
 Em retorno terminal histórico com lançamentos incompletos, a projeção
 financeira exige reconciliação em vez de informar distribuição concluída.
 
-Endereço incorreto/erro do ERMES e produto indisponível no modelo 0.2
-permanecem para incrementos próprios. As consequências financeiras do cliente
+Produto indisponível no modelo 0.2 permanece para incremento próprio. Endereço
+incorreto do cliente e erro do ERMES seguem os fluxos documentados. As consequências financeiras do cliente
 em `confirmation_failed` são aplicadas na classificação, conforme seção abaixo;
 a distribuição interna/custo operacional continua futura.
 

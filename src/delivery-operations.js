@@ -2,6 +2,9 @@ import { db, transaction } from "./database.js";
 import { normalizeAddress } from "./address.js";
 import { clientAddressEvidence, validAddressEvidence } from "./client-address-evidence.js";
 import {
+  canonicalSystemAddress, systemAddressEvidence,
+} from "./system-address-evidence.js";
+import {
   closeDeliveryAttemptWithoutSuccessInTransaction,
   completeDeliveryAttemptInTransaction,
   createDeliveryAttemptInTransaction,
@@ -27,6 +30,7 @@ import {
   recordProductUnavailableInTransaction, recordRecipientTerminalFailureInTransaction,
   recordClientAddressFailureInTransaction,
   externalObstructionCycle, recordClientCancellationAfterExternalObstructionInTransaction,
+  recordPersistentSystemAddressFailureInTransaction,
 } from "./finance.js";
 
 const TERMINAL_STATES = Object.freeze([
@@ -201,6 +205,16 @@ const companyView = (row) => ({
     JOIN users receiver ON receiver.id = r.received_by_user_id
     LEFT JOIN users verifier ON verifier.id = r.verified_by_user_id
     WHERE r.delivery_id = ? ORDER BY r.id`).all(row.id),
+  systemAddressResolutions: db.prepare(`SELECT r.id,
+    r.delivery_attempt_id AS deliveryAttemptId, r.occurrence_id AS occurrenceId,
+    r.received_at AS receivedAt, receiver.full_name AS receiverName,
+    r.resolution, r.resolved_at AS resolvedAt, resolver.full_name AS resolverName,
+    r.verification_result AS verificationResult,
+    CASE WHEN r.client_available IS NULL THEN NULL ELSE 1 END AS clientAvailable
+    FROM system_address_resolutions r
+    JOIN users receiver ON receiver.id = r.received_by_user_id
+    LEFT JOIN users resolver ON resolver.id = r.resolved_by_user_id
+    WHERE r.delivery_id = ? ORDER BY r.id`).all(row.id),
 });
 
 function event(deliveryId, actorUserId, eventType, details = {}) {
@@ -357,8 +371,9 @@ export function confirmDelivery(id, courierId, companyId, body) {
       );
     }
     if (db.prepare(`SELECT 1 FROM delivery_occurrences WHERE delivery_attempt_id = ?
-      AND type = 'address_problem' LIMIT 1`).get(activeAttempt.id)) {
-      throw deliveryError("O problema de endereço exige decisão empresarial antes da confirmação.");
+      AND type = 'address_problem' LIMIT 1`).get(activeAttempt.id)
+      && !systemAddressEvidence(db, id, "classified")) {
+      throw deliveryError("O problema de endereço exige classificação SISTEMA coerente antes da confirmação.");
     }
     if (activeAttempt.invalidCodeAttempts >= 3) {
       throw deliveryError("O limite de três validações inválidas foi atingido.");
@@ -520,14 +535,42 @@ export function reportDeliveryOccurrence(id, courierId, companyId, body) {
   });
 }
 
+export function startSystemAddressReturn(id, courierId, companyId, body) {
+  requireEmptyDeliveryBody(body);
+  return transaction(() => {
+    const delivery = requireCourierDelivery(id, courierId, companyId);
+    if (delivery.status !== DELIVERY_STATES.AWAITING_CONFIRMATION) {
+      throw deliveryError("A entrega não está aguardando decisão no destino.");
+    }
+    const evidence = systemAddressEvidence(db, id, "classified");
+    if (!evidence || evidence.courierId !== courierId) {
+      throw deliveryError("O retorno exige endereço classificado como SISTEMA e ciclo coerente.");
+    }
+    markOpenDeliveryAttemptReturningInTransaction(db, id);
+    const update = db.prepare(`UPDATE deliveries SET status = ?, return_reason = ?,
+      return_reported_at = NULL, returned_at = NULL WHERE id = ? AND status = ? AND courier_id = ?`)
+      .run(DELIVERY_STATES.RETURNING, DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM,
+        id, DELIVERY_STATES.AWAITING_CONFIRMATION, courierId);
+    if (Number(update.changes) !== 1) throw deliveryError("A entrega foi alterada.");
+    event(id, courierId, DELIVERY_EVENT_TYPES.SYSTEM_ADDRESS_RETURN_STARTED,
+      { occurrenceId: evidence.occurrenceId });
+    if (!systemAddressEvidence(db, id, "returning")) {
+      throw deliveryError("Não foi possível reconciliar o início do retorno por erro do sistema.");
+    }
+    return courierView(requireDelivery(id));
+  });
+}
+
 export function reportReturn(id, courierId, companyId, body) {
   return courierTransition(id, courierId, companyId, body, DELIVERY_STATES.RETURNING,
     DELIVERY_STATES.AWAITING_RETURN_CONFIRMATION, DELIVERY_EVENT_TYPES.RETURN_REPORTED,
     "return_reported_at", (delivery) => {
       if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM) {
-        const evidence = clientAddressEvidence(db, id, "returning");
-        if (!evidence || evidence.courierId !== courierId) {
-          throw deliveryError("O retorno de endereço exige classificação CLIENTE e tentativa coerente.");
+        const clientEvidence = clientAddressEvidence(db, id, "returning");
+        const systemEvidence = systemAddressEvidence(db, id, "returning");
+        const evidence = clientEvidence || systemEvidence;
+        if (!evidence || evidence.courierId !== courierId || Boolean(clientEvidence) === Boolean(systemEvidence)) {
+          throw deliveryError("O retorno de endereço exige responsabilidade e tentativa coerentes.");
         }
       }
     });
@@ -616,6 +659,63 @@ export function revalidateDelivery(id, companyUserId, companyId, body) {
   });
 }
 
+export function resolveSystemAddress(id, companyUserId, companyId, body) {
+  requireObject(body, ["resolution", "clientAvailable", "verificationResult"]);
+  if (!["corrected", "persistent"].includes(body.resolution)
+    || typeof body.verificationResult !== "string" || !body.verificationResult.trim()
+    || body.verificationResult.trim().length > 2000
+    || (body.resolution === "corrected" && body.clientAvailable !== true)
+    || (body.resolution === "persistent" && Object.hasOwn(body, "clientAvailable"))) {
+    throw deliveryError("Informe resolução válida, resultado da verificação e disponibilidade literal do cliente quando corrigido.", 400);
+  }
+  return transaction(() => {
+    const delivery = requireDelivery(id);
+    if (delivery.companyId !== companyId) throw deliveryError("Entrega não encontrada.", 404);
+    requireCompanyParticipant(companyUserId, companyId);
+    const evidence = systemAddressEvidence(db, id, "received");
+    if (!evidence) {
+      throw deliveryError("O erro de endereço não possui retorno físico e ciclo pendente coerentes.");
+    }
+    const resolution = db.prepare(`UPDATE system_address_resolutions
+      SET resolution = ?, resolved_by_user_id = ?, resolved_at = CURRENT_TIMESTAMP,
+        verification_result = ?, client_available = ?
+      WHERE id = ? AND resolution = 'pending'`).run(
+      body.resolution, companyUserId, body.verificationResult.trim(),
+      body.resolution === "corrected" ? 1 : null, evidence.resolution.id,
+    );
+    if (Number(resolution.changes) !== 1) throw deliveryError("A resolução já foi registrada.");
+
+    if (body.resolution === "corrected") {
+      const update = db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL,
+        accepted_at = NULL, collected_at = NULL, return_reason = NULL,
+        return_reported_at = NULL, returned_at = NULL
+        WHERE id = ? AND status = ? AND courier_id IS NULL`)
+        .run(DELIVERY_STATES.AVAILABLE, id, DELIVERY_STATES.AWAITING_REVALIDATION);
+      if (Number(update.changes) !== 1) throw deliveryError("A entrega foi alterada.");
+      event(id, companyUserId, DELIVERY_EVENT_TYPES.SYSTEM_ADDRESS_CORRECTED,
+        { resolutionId: evidence.resolution.id, occurrenceId: evidence.occurrenceId,
+          clientAvailable: true });
+      if (!systemAddressEvidence(db, id, "corrected")) {
+        throw deliveryError("A correção do erro de endereço exige reconciliação.");
+      }
+    } else {
+      const update = db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL
+        WHERE id = ? AND status = ? AND courier_id IS NULL`)
+        .run(DELIVERY_STATES.RETURNED, id, DELIVERY_STATES.AWAITING_REVALIDATION);
+      if (Number(update.changes) !== 1) throw deliveryError("A entrega foi alterada.");
+      event(id, companyUserId, DELIVERY_EVENT_TYPES.SYSTEM_ADDRESS_PERSISTENT,
+        { resolutionId: evidence.resolution.id, occurrenceId: evidence.occurrenceId });
+      const canonicalAddress = canonicalSystemAddress(delivery.destinationSnapshotJson);
+      if (!canonicalAddress) throw deliveryError("O endereço canônico exige reconciliação.");
+      db.prepare(`INSERT INTO system_address_blocks
+        (source_resolution_id, canonical_address_json) VALUES (?, ?)`)
+        .run(evidence.resolution.id, canonicalAddress);
+      recordPersistentSystemAddressFailureInTransaction(db, delivery, evidence.resolution.id);
+    }
+    return companyView(requireDelivery(id));
+  });
+}
+
 export function confirmReturn(id, companyUserId, companyId, body) {
   requireEmptyDeliveryBody(body);
   return transaction(() => {
@@ -632,8 +732,35 @@ export function confirmReturn(id, companyUserId, companyId, body) {
     }
     if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM) {
       requireCompanyParticipant(companyUserId, companyId);
-      if (!clientAddressEvidence(db, id, "reported")) {
+      const clientEvidence = clientAddressEvidence(db, id, "reported");
+      const systemEvidence = systemAddressEvidence(db, id, "reported");
+      if (!clientEvidence && !systemEvidence) {
         throw deliveryError("O retorno de endereço exige reconciliação de classificação e evidências.");
+      }
+      if (clientEvidence && systemEvidence) {
+        throw deliveryError("O retorno de endereço possui responsabilidade ambígua.");
+      }
+      if (systemEvidence) {
+        closeDeliveryAttemptWithoutSuccessInTransaction(db, id, delivery.returnReason,
+          DELIVERY_ATTEMPT_END_NATURES.RECOVERABLE);
+        const update = db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL,
+          returned_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`)
+          .run(DELIVERY_STATES.AWAITING_REVALIDATION, id,
+            DELIVERY_STATES.AWAITING_RETURN_CONFIRMATION);
+        if (Number(update.changes) !== 1) throw deliveryError("A entrega foi alterada.");
+        event(id, companyUserId, DELIVERY_EVENT_TYPES.RETURN_CONFIRMED,
+          { reason: "address_problem", responsibility: "SISTEMA" });
+        const cycle = db.prepare(`INSERT INTO system_address_resolutions
+          (delivery_id, delivery_attempt_id, occurrence_id, received_by_user_id)
+          VALUES (?, ?, ?, ?)`).run(id, systemEvidence.attemptId,
+          systemEvidence.occurrenceId, companyUserId);
+        const resolutionId = Number(cycle.lastInsertRowid);
+        event(id, companyUserId, DELIVERY_EVENT_TYPES.SYSTEM_ADDRESS_AWAITING_RESOLUTION,
+          { resolutionId, occurrenceId: systemEvidence.occurrenceId });
+        if (!systemAddressEvidence(db, id, "received")) {
+          throw deliveryError("O recebimento do retorno por erro do sistema exige reconciliação.");
+        }
+        return companyView(requireDelivery(id));
       }
     }
     if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.EXTERNAL_OBSTRUCTION) {
@@ -722,6 +849,10 @@ export function cancelClientDelivery(id, clientId, body) {
       event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_AFTER_PICKUP);
       recordClientCancellationAfterPickupInTransaction(db, delivery);
     } else if (delivery.status === DELIVERY_STATES.AWAITING_REVALIDATION) {
+      if (db.prepare(`SELECT 1 FROM system_address_resolutions
+        WHERE delivery_id = ? AND resolution = 'pending'`).get(id)) {
+        throw deliveryError("O erro do sistema aguarda resolução empresarial específica.");
+      }
       const cycle = externalObstructionCycle(db, id);
       const update = db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL,
         cancelled_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ? AND courier_id IS NULL`)

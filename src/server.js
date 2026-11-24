@@ -19,6 +19,7 @@ import {
   getClientDelivery, getCompanyDelivery, getCourierCurrentDelivery, listAvailableDeliveries,
   listClientDeliveries, listCompanyDeliveries, parseDeliveryId, reportCourierFailure,
   reportDeliveryOccurrence, reportReturn, reportExternalObstruction, revalidateDelivery,
+  resolveSystemAddress, startSystemAddressReturn,
 } from "./delivery-operations.js";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -421,6 +422,15 @@ async function api(request, response, url) {
       user.id, user.companyId, await readJson(request));
     return json(response, 200, { delivery });
   }
+  const companySystemAddressResolutionMatch = pathname.match(
+    /^\/api\/company\/deliveries\/([^/]+)\/system-address-resolution$/,
+  );
+  if (request.method === "POST" && companySystemAddressResolutionMatch) {
+    const user = requireUser(request, ["company"]);
+    const delivery = resolveSystemAddress(parseDeliveryId(companySystemAddressResolutionMatch[1]),
+      user.id, user.companyId, await readJson(request));
+    return json(response, 200, { delivery });
+  }
   const companyReturnMatch = pathname.match(/^\/api\/company\/deliveries\/([^/]+)\/confirm-return$/);
   if (request.method === "POST" && companyReturnMatch) {
     const user = requireUser(request, ["company"]);
@@ -530,7 +540,7 @@ async function api(request, response, url) {
     const user = requireUser(request, ["courier"]);
     return json(response, 200, listCourierFinancialEntries(db, user.id, user.companyId));
   }
-  const courierActionMatch = pathname.match(/^\/api\/courier\/deliveries\/([^/]+)\/(accept|arrive-pickup|collect|arrive-destination|confirm|fail|occurrences|report-return|external-obstruction)$/);
+  const courierActionMatch = pathname.match(/^\/api\/courier\/deliveries\/([^/]+)\/(accept|arrive-pickup|collect|arrive-destination|confirm|fail|occurrences|report-return|external-obstruction|system-address-return)$/);
   if (request.method === "POST" && courierActionMatch) {
     const user = requireUser(request, ["courier"]);
     const id = parseDeliveryId(courierActionMatch[1]);
@@ -544,6 +554,7 @@ async function api(request, response, url) {
       occurrences: reportDeliveryOccurrence,
       "report-return": reportReturn,
       "external-obstruction": reportExternalObstruction,
+      "system-address-return": startSystemAddressReturn,
     };
     if (courierActionMatch[2] === "confirm") {
       const result = confirmDelivery(id, user.id, user.companyId, body);

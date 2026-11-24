@@ -1,5 +1,6 @@
 import { isCanonicalTimestamp } from "./finance.js";
 import { clientAddressEvidence } from "./client-address-evidence.js";
+import { systemAddressEvidence } from "./system-address-evidence.js";
 
 // Projeções derivadas: status legado continua sendo a única fonte persistida.
 export const ORDER_OFFICIAL_STATUSES = Object.freeze([
@@ -19,7 +20,8 @@ const deliveryStatuses = Object.freeze({
   awaiting_revalidation: "AGUARDANDO_REVALIDACAO", completed: "FINALIZADA", cancelled: "CANCELADA",
 });
 const cancelledReturnEvents = new Set(["client_cancelled_after_pickup"]);
-const unsuccessfulReturnEvents = new Set(["recipient_absent", "recipient_refused", "confirmation_failed", "address_problem"]);
+const unsuccessfulReturnEvents = new Set(["recipient_absent", "recipient_refused", "confirmation_failed",
+  "address_problem", "system_address_persistent"]);
 
 // Somente evidência persistida coerente autoriza a projeção de falha de código.
 // O mesmo critério protege o fechamento e todos os consumidores de projeções.
@@ -94,6 +96,12 @@ export function hasConfirmationFailureEvidence(database, deliveryId, closed = fa
 }
 
 export function terminalDeliveryEvent(database, deliveryId) {
+  if (systemAddressEvidence(database, deliveryId, "persistent")) {
+    return "system_address_persistent";
+  }
+  if (hasConfirmationFailureEvidence(database, deliveryId, true)) {
+    return "confirmation_failed";
+  }
   const events = database.prepare(`SELECT DISTINCT event_type AS type FROM delivery_events
     WHERE delivery_id = ? AND event_type IN ('client_cancelled_before_pickup',
       'client_cancelled_after_pickup', 'client_cancelled_after_external_obstruction',

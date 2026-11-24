@@ -3,6 +3,7 @@ import { DELIVERY_EVENT_TYPES } from "./deliveries.js";
 import { hasConfirmationFailureEvidence } from "./official-statuses.js";
 import { recordConfirmationFailureFinancialConsequencesInTransaction } from "./finance.js";
 import { clientAddressEvidence, validAddressEvidence } from "./client-address-evidence.js";
+import { systemAddressEvidence } from "./system-address-evidence.js";
 
 export const DELIVERY_OCCURRENCE_TYPES = Object.freeze({
   COURIER_FAILURE_BEFORE_PICKUP: "courier_failure_before_pickup",
@@ -167,6 +168,12 @@ export function classifyDeliveryOccurrence(occurrenceId, classifierUserId, compa
       if (!hasConfirmationFailureEvidence(db, occurrence.deliveryId, true)) {
         throw occurrenceError("A ocorrência só pode ser classificada após retorno físico confirmado e evidência coerente; reconcilie o ciclo.");
       }
+      const address = db.prepare(`SELECT 1 FROM delivery_occurrences
+        WHERE delivery_attempt_id = ? AND type = 'address_problem' LIMIT 1`)
+        .get(occurrence.deliveryAttemptId);
+      if (address && !systemAddressEvidence(db, occurrence.deliveryId, "superseded")) {
+        throw occurrenceError("A falha de confirmação conflita com a evidência de endereço do ciclo.");
+      }
     }
 
     if (occurrence.type === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM
@@ -174,6 +181,13 @@ export function classifyDeliveryOccurrence(occurrenceId, classifierUserId, compa
       const evidence = clientAddressEvidence(db, occurrence.deliveryId, "unclassified");
       if (!evidence || evidence.occurrenceId !== occurrenceId) {
         throw occurrenceError("A ocorrência de endereço exige reconciliação antes do retorno.");
+      }
+    }
+    if (occurrence.type === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM
+      && classification.responsibility === "SISTEMA") {
+      const evidence = systemAddressEvidence(db, occurrence.deliveryId, "unclassified");
+      if (!evidence || evidence.occurrenceId !== occurrenceId) {
+        throw occurrenceError("A ocorrência de endereço exige reconciliação antes da classificação SISTEMA.");
       }
     }
 
@@ -204,6 +218,11 @@ export function classifyDeliveryOccurrence(occurrenceId, classifierUserId, compa
       if (Number(attempt.changes) !== 1 || Number(delivery.changes) !== 1) {
         throw occurrenceError("Não foi possível iniciar o retorno da mercadoria.");
       }
+    }
+    if (occurrence.type === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM
+      && classification.responsibility === "SISTEMA"
+      && !systemAddressEvidence(db, occurrence.deliveryId, "classified")) {
+      throw occurrenceError("A classificação SISTEMA exige evidência operacional coerente.");
     }
     if (occurrence.type === DELIVERY_OCCURRENCE_TYPES.CONFIRMATION_FAILED) {
       recordConfirmationFailureFinancialConsequencesInTransaction(
