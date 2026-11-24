@@ -1,3 +1,4 @@
+import { PRODUCT_UNAVAILABLE_EVIDENCE } from "./order-adjustment-schema.js";
 import { isCanonicalTimestamp } from "./finance.js";
 import { clientAddressEvidence } from "./client-address-evidence.js";
 import { systemAddressEvidence } from "./system-address-evidence.js";
@@ -96,6 +97,9 @@ export function hasConfirmationFailureEvidence(database, deliveryId, closed = fa
 }
 
 export function terminalDeliveryEvent(database, deliveryId) {
+  if (database.prepare(`SELECT ${PRODUCT_UNAVAILABLE_EVIDENCE} AS present`).get(deliveryId).present) {
+    return "product_unavailable";
+  }
   if (systemAddressEvidence(database, deliveryId, "persistent")) {
     return "system_address_persistent";
   }
@@ -124,6 +128,7 @@ export function officialOrderStatus(status, deliveryStatus = null, terminalEvent
   if (status === "draft") return "EM_MONTAGEM";
   if (status !== "confirmed") return null;
   if (deliveryStatus === "completed") return "CONCLUIDO";
+  if (deliveryStatus === "cancelled" && terminalEvent === "product_unavailable") return "ENCERRADO";
   if ((deliveryStatus === "cancelled" && ["client_cancelled_before_pickup",
     "client_cancelled_after_external_obstruction"].includes(terminalEvent))
     || (deliveryStatus === "returned" && cancelledReturnEvents.has(terminalEvent))) return "CANCELADO";

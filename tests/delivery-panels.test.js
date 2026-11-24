@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { setupDeliveryPanel } from "../public/js/delivery-panels.js";
+import { formatMoney, setupDeliveryPanel } from "../public/js/delivery-panels.js";
 
 function element() {
   const listeners = new Map();
@@ -80,9 +80,12 @@ test("ações são isoladas por papel em todos os estados operacionais", async (
     for (const role of ["client", "company", "courier"]) {
       const expected = role === "courier" ? expectedCourier
         : role === "client" ? (["available", "heading_to_pickup", "awaiting_pickup", "in_transit", "awaiting_confirmation"].includes(status) ? ["cancel"] : [])
-          : ["available", "heading_to_pickup", "awaiting_pickup"].includes(status) ? ["product-unavailable"]
+          : ["available", "heading_to_pickup", "awaiting_pickup"].includes(status) ? ["adjustment-edit", "product-unavailable"]
             : status === "awaiting_return_confirmation" ? ["confirm-return"] : [];
-      const html = await renderedDelivery(role, { ...delivery, status });
+      const eligible = ["available", "heading_to_pickup", "awaiting_pickup"].includes(status);
+      const html = await renderedDelivery(role, {
+        ...delivery, status, canPropose: eligible, canCloseUnavailable: eligible,
+      });
       assert.deepEqual([...html.matchAll(/data-delivery-action="([^"]+)"/g)].map((match) => match[1]), expected, `${role}: ${status}`);
     }
   }
@@ -124,7 +127,7 @@ test("cliente recupera e visualiza o código ao reabrir o detalhe da entrega", a
     assert.match(elements.get("[data-delivery-detail]").innerHTML, /Código de confirmação/);
     assert.match(elements.get("[data-delivery-detail]").innerHTML, /042731/);
     assert.match(elements.get("[data-delivery-detail]").innerHTML, /Total reembolsado/);
-    assert.match(elements.get("[data-delivery-detail]").innerHTML, /R\$ 25\.01/);
+    assert.match(elements.get("[data-delivery-detail]").innerHTML, /R\$\u00a025,01/);
   } finally {
     globalThis.document = originalDocument;
   }
@@ -225,7 +228,7 @@ test("falha da projeção financeira não bloqueia painel do motoboy e é escapa
     });
     assert.match(elements.get("[data-delivery-list]").innerHTML, /Entrega #8/);
     const financial = elements.get("[data-courier-financial]").innerHTML;
-    assert.match(financial, /R\$ 0\.00/);
+    assert.match(financial, /R\$\u00a00,00/);
     assert.match(financial, /&lt;falha financeira&gt;/);
     assert.doesNotMatch(financial, /<falha financeira>/);
   } finally {
@@ -258,7 +261,7 @@ test("empresa visualiza projeção vazia e pendência financeira escapada", asyn
     await new Promise((resolve) => setImmediate(resolve));
     const html = elements.get("[data-delivery-detail]").innerHTML;
     assert.match(html, /Nenhuma parcela registrada/);
-    assert.match(html, /R\$ 0\.00/);
+    assert.match(html, /R\$\u00a00,00/);
     assert.match(html, /&lt;pendente&gt;/);
     assert.doesNotMatch(html, /<pendente>/);
   } finally {
@@ -305,4 +308,73 @@ test('painéis representam espera de revalidação sem ações incompatíveis', 
     assert.match(html, /Aguardando revalidação pela empresa/);
     assert.doesNotMatch(html, /data-delivery-action=/);
   }
+});
+
+
+test("painéis do ajuste mostram ações comerciais apenas ao cliente e bloqueio ao motoboy", async () => {
+  const snapshot = { subtotalCents: 100, freightTotalCents: null, weightKg: 1,
+    items: [{ name: "<Produto>", quantity: 1, unitPriceCents: 100 }] };
+  const selected = { ...delivery, status: "awaiting_pickup", collectionBlocked: true,
+    adjustment: { id: 9, state: "pending", differenceCents: 1, requiresPayment: false,
+      original: snapshot, proposed: { ...snapshot, subtotalCents: 101 } } };
+  const company = await renderedDelivery("company", selected);
+  assert.match(company, /Aguardando decisão do cliente/);
+  assert.doesNotMatch(company, /data-delivery-action=/);
+  const client = await renderedDelivery("client", selected);
+  assert.match(client, /Composição original/);
+  assert.match(client, /Composição proposta/);
+  assert.match(client, /&lt;Produto&gt;/);
+  assert.match(client, /adjustment-accept/);
+  assert.match(client, /adjustment-reject/);
+  assert.match(client, /data-delivery-action="cancel"/);
+  const payment = await renderedDelivery("client", { ...selected,
+    adjustment: { ...selected.adjustment, state: "awaiting_payment", requiresPayment: true } });
+  assert.match(payment, /adjustment-pay/);
+  assert.doesNotMatch(payment, /adjustment-accept|adjustment-reject/);
+  assert.match(payment, /data-delivery-action="cancel"/);
+  const courier = await renderedDelivery("courier", selected);
+  assert.match(courier, /Coleta bloqueada/);
+  assert.doesNotMatch(courier, /data-delivery-action=|Produto|Composição/);
+});
+
+test("o painel preserva os centavos em valores comuns, negativos e no limite seguro", async () => {
+  for (const [cents, expected] of [
+    [0, "R$ 0,00"], [1, "R$ 0,01"], [-1, "-R$ 0,01"], [123456, "R$ 1.234,56"],
+    [-123456, "-R$ 1.234,56"], [Number.MAX_SAFE_INTEGER, "R$ 90.071.992.547.409,91"],
+  ]) {
+    assert.equal(formatMoney(cents).replaceAll("\u00a0", " "), expected);
+  }
+  const snapshot = { subtotalCents: Number.MAX_SAFE_INTEGER, weightKg: 1, freightTotalCents: null,
+    items: [{ name: "Produto", quantity: 1, unitPriceCents: Number.MAX_SAFE_INTEGER }] };
+  for (const differenceCents of [Number.MAX_SAFE_INTEGER, -Number.MAX_SAFE_INTEGER]) {
+    const html = await renderedDelivery("client", { ...delivery, collectionBlocked: true,
+      adjustment: { state: "pending", differenceCents, original: snapshot, proposed: snapshot } });
+    assert.match(html, /Subtotal R\$\u00a090\.071\.992\.547\.409,91/);
+    assert.match(html, new RegExp(differenceCents > 0 ? "Acréscimo de " : "Reembolso de "));
+    const label = differenceCents > 0 ? "Acréscimo" : "Reembolso";
+    assert.ok(html.includes(`${label} de R$\u00a090.071.992.547.409,91`));
+  }
+});
+
+test("empresa usa elegibilidade do backend mesmo quando a Entrega voltou a disponível", async () => {
+  for (const status of ["available", "in_transit"]) {
+    const html = await renderedDelivery("company", {
+      ...delivery, status, canPropose: false, canCloseUnavailable: false,
+    });
+    assert.doesNotMatch(html, /data-delivery-action="(?:adjustment-edit|product-unavailable)"/);
+  }
+  const unpaid = await renderedDelivery("company", {
+    ...delivery, canPropose: false, canCloseUnavailable: true,
+  });
+  assert.match(unpaid, /product-unavailable/);
+  assert.doesNotMatch(unpaid, /data-delivery-action="adjustment-edit"/);
+});
+
+test("proposta aceita e depois cancelada preserva a decisão no painel", async () => {
+  const snapshot = { subtotalCents: 100, weightKg: 1, freightTotalCents: null, items: [] };
+  const html = await renderedDelivery("client", { ...delivery, status: "cancelled",
+    adjustment: { state: "cancelled", decision: "accepted", requiresPayment: false,
+      differenceCents: 1, original: snapshot, proposed: snapshot } });
+  assert.match(html, /Encerrada pelo cancelamento voluntário do pedido após aceite/);
+  assert.doesNotMatch(html, /data-delivery-action=/);
 });

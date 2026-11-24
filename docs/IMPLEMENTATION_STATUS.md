@@ -9,7 +9,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
 | Baseline 0.2 | Em implementação incremental | `TentativaEntrega`, ocorrências/responsabilidade, impedimento externo e erro de apresentação do endereço pelo ERMES possuem incrementos funcionais; demais cenários e financeiro completo continuam pendentes |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
-| Incremento atual | Erro do ERMES na apresentação do endereço — IMPLEMENTADO | `address_problem/SISTEMA` permite conclusão normal ou retorno, resolução corrigível/persistente, refund integral persistente e bloqueio canônico do endereço |
+| Incremento atual | Produto indisponível antes da coleta e ajuste excepcional — IMPLEMENTADO | Proposta versionada, decisão explícita, diferença simulada, bloqueio da coleta e encerramento por indisponibilidade |
 | Próximo passo técnico | Implementação incremental | Continuar os incrementos funcionais da Baseline 0.2 sobre SQLite, preservando as pendências registradas abaixo |
 | Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
 | Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |
@@ -18,6 +18,10 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 
 | Regra | Estado | Observação |
 | --- | --- | --- |
+| RN-021 / RF-023 / RF-024 | IMPLEMENTADO | Empresa propõe composição completa e cliente decide explicitamente; o ajuste preserva snapshots históricos, Entrega e código |
+| RN-022 / RF-026 | IMPLEMENTADO | Diferença a maior exige pagamento explícito e a menor gera refund. O total bruto pago é validado antes do aceite e do pagamento adicional |
+| RF-025 | PARCIAL | Subtotal dos produtos e peso são recalculados. Frete `NULL` permanece `NULL`. Frete conhecido é preservado com parâmetros relevantes iguais. Mudança de peso com frete conhecido exige reconciliação enquanto faltarem dados autoritativos |
+| RN-023 | IMPLEMENTADO | Sem acordo, Entrega CANCELADA, Pedido ENCERRADO, responsabilidade EMPRESA, devolução do saldo pago e motoboy liberado sem tentativa ou distribuição |
 | Entidade persistente `TentativaEntrega` | PARCIAL | `delivery_attempts` preserva identidade, sequência por Entrega, motoboy, status, início e dados de encerramento |
 | Fronteira da coleta | IMPLEMENTADO | Aceite, deslocamento, chegada à coleta e falha pré-coleta não criam tentativa; a confirmação da coleta cria a tentativa na mesma transação da Entrega e do histórico |
 | Numeração e tentativa aberta | IMPLEMENTADO | A numeração usa `MAX(attempt_number) + 1` dentro de `BEGIN IMMEDIATE`; unicidade por Entrega e índice de tentativa aberta protegem concorrência e repetição |
@@ -64,7 +68,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Geocodificação, rotas e mapas | Opcional/futuro — não bloqueador | Não selecionar nem implementar provedor externo, API de rotas ou solução substituta sem decisão explícita |
 | Pagamento e financeiro | Implementado para regras definidas da 0.1 | Pagamento simulado garante atomicamente a Entrega e lançamentos dos componentes conhecidos; `payment_status` permanece `pending|paid`, `refundStatus` é derivado e o livro-razão append-only protege idempotência semântica, valores seguros e over-refund |
 | Divisão 70/25/5 | Implementado | Conclusão normal usa aritmética inteira e maior resto, com desempate motoboy → empresa → ERMES e soma exata |
-| Reembolsos e exceções financeiras | Implementado para regras definidas da 0.1 | Cancelamento pós-coleta usa `ceil/floor` no 50/50, favorecendo o cliente no centavo ímpar; produto indisponível devolve somente componentes efetivamente pagos; regras pendentes não recebem distribuição inferida |
+| Reembolsos e exceções financeiras | Implementado para regras definidas da 0.1 | Cancelamento pós-coleta usa `ceil/floor` no 50/50, favorecendo o cliente no centavo ímpar; indisponibilidade pré-coleta devolve o saldo de cada componente efetivamente pago; regras pendentes não recebem distribuição inferida |
 | Aceite concorrente da entrega | Implementado | Mesmo estabelecimento, motoboy online, uma entrega ativa por motoboy e aceite único protegidos por transação e índices |
 | Acompanhamento operacional da entrega | Implementado para regras definidas da 0.1 | Nascimento, fluxo normal, histórico, consultas isoladas, falhas, cancelamentos, ocorrências e retorno com dupla verificação; sem GPS ou mapa |
 | Código de confirmação | Implementado | Código de seis dígitos disponível ao cliente durante a operação, validado por hash `scrypt`, cifrado para recuperação autorizada, oculto do motoboy e limitado a três erros |
