@@ -365,6 +365,21 @@ da decisão comercial já tomada. A transação `BEGIN IMMEDIATE` serializa prop
 coleta e encerramento. A coleta usa a versão comercial após aplicação para
 recusar comandos montados antes do ajuste.
 
+Na criação, a aplicação valida produtos e snapshots contra o catálogo e grava
+`order_adjustment_validations` na mesma transação. A linha imutável conserva a
+composição e os totais, vinculados ao ajuste, Pedido e empresa por um selo HMAC
+com a chave local persistida dos códigos de confirmação e domínio separado.
+Aceite e pagamento exigem selo íntegro e recalculam subtotal e peso a partir dos
+snapshots, sem consultar preços, pesos ou disponibilidade atuais do catálogo.
+Linhas históricas sem selo permanecem fechadas para aplicação; a inicialização
+não inventa evidência retroativa.
+O banco e a chave local precisam ser preservados juntos. Antes das migrações, o
+bootstrap verifica códigos de confirmação cifrados e evidências HMAC de qualquer
+estado. Se a chave estiver ausente e houver algum desses dados, a inicialização
+falha explicitamente para restauração ou reconciliação; não cria outra chave nem
+regrava selos. Banco novo ou existente sem dados dependentes pode gerar uma chave
+no primeiro uso criptográfico.
+
 A aplicação troca os itens e incrementa a versão do Pedido, preservando o
 destino, o destinatário, a Entrega e o código. O cálculo decimal do peso usa
 a mesma regra dos rascunhos. Frete conhecido com mudança de peso exige

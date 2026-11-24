@@ -1,5 +1,6 @@
 import { db, transaction } from "./database.js";
 import { calculateDraftTotals, loadStoredItems, parseDraftItemsUpdate } from "./orders.js";
+import { sealAdjustmentSnapshot, verifyAdjustmentSnapshot } from "./security.js";
 import {
   adjustmentAvailableBalance, insertFinancialEntryInTransaction, recordProductUnavailableInTransaction,
 } from "./finance.js";
@@ -145,6 +146,66 @@ function requestComposition(items) {
   return items.map(({ productId, quantity }) => ({ productId, quantity }));
 }
 
+function validatedProposedComposition(row, original, proposedItemsJson, persisted = null) {
+  let items;
+  try { items = JSON.parse(proposedItemsJson); } catch { throw problem("A composição proposta exige reconciliação."); }
+  if (!Array.isArray(items) || items.length === 0) {
+    throw problem("A composição proposta exige reconciliação.");
+  }
+  const originalByProduct = new Map(original.items.map((item) => [item.productId, item]));
+  const product = db.prepare(`SELECT id, company_id AS companyId, name,
+    CAST(price_cents AS TEXT) AS unitPriceCents, unit_weight_kg AS unitWeightKg,
+    is_available AS isAvailable FROM products WHERE id = ?`);
+  const seen = new Set();
+  for (const item of items) {
+    if (!item || Array.isArray(item) || typeof item !== "object"
+      || Object.keys(item).length !== 5
+      || !["productId", "name", "quantity", "unitPriceCents", "unitWeightKg"]
+        .every((field) => Object.hasOwn(item, field))
+      || !Number.isSafeInteger(item.productId) || item.productId <= 0
+      || !Number.isSafeInteger(item.quantity) || item.quantity <= 0
+      || !Number.isSafeInteger(item.unitPriceCents) || item.unitPriceCents < 0
+      || typeof item.unitWeightKg !== "number" || !Number.isFinite(item.unitWeightKg)
+      || item.unitWeightKg <= 0 || typeof item.name !== "string" || !item.name.trim()
+      || seen.has(item.productId)) throw problem("A composição proposta exige reconciliação.");
+    seen.add(item.productId);
+    if (!persisted) {
+      const existing = originalByProduct.get(item.productId);
+      const catalog = product.get(item.productId);
+      const source = existing ?? catalog;
+      if (!catalog || catalog.companyId !== row.companyId
+        || (!existing && catalog.isAvailable !== 1)
+        || BigInt(item.unitPriceCents) !== BigInt(source.unitPriceCents)
+        || item.unitWeightKg !== source.unitWeightKg || item.name !== source.name) {
+        throw problem("Os snapshots da proposta exigem reconciliação.");
+      }
+    }
+  }
+  const requested = requestComposition(items).sort((a, b) => a.productId - b.productId);
+  if (JSON.stringify(requestComposition(original.items)) === JSON.stringify(requested)) {
+    throw problem("A proposta deve alterar a composição.");
+  }
+  let totals;
+  try {
+    totals = calculateDraftTotals(items.map((item) => ({
+      ...item, unitPriceCents: BigInt(item.unitPriceCents),
+    })), { includeExactWeight: true });
+  } catch (error) {
+    if (!persisted) throw error;
+    throw problem("A composição proposta excede seus limites ou exige reconciliação.");
+  }
+  if (row.freightTotalCents !== null && original.totals.exactWeight !== totals.exactWeight) {
+    throw problem("Frete conhecido exige reconciliação: faltam distância e tempo autoritativos.");
+  }
+  if (persisted && (persisted.proposed_subtotal !== totals.itemsTotalCents
+    || persisted.proposed_weight !== totals.weightKg
+    || persisted.original_weight !== original.totals.weightKg
+    || persisted.proposed_freight !== row.freightTotalCents)) {
+    throw problem("Os totais da composição proposta exigem reconciliação.");
+  }
+  return { items, totals };
+}
+
 export function proposeAdjustment(deliveryId, companyId, actorId, body) {
   const { version, items } = body ?? {};
   if (!body || Object.keys(body).some((key) => !["version", "items"].includes(key))
@@ -178,18 +239,23 @@ export function proposeAdjustment(deliveryId, companyId, actorId, body) {
     if (JSON.stringify(requestComposition(original.items)) === JSON.stringify(requested)) {
       throw problem("A proposta deve alterar a composição.", 400);
     }
-    const totals = calculateDraftTotals(proposed, { includeExactWeight: true });
-    if (row.freightTotalCents !== null && original.totals.exactWeight !== totals.exactWeight) {
-      throw problem("Frete conhecido exige reconciliação: faltam distância e tempo autoritativos.");
-    }
+    const proposedItemsJson = serialize(proposed);
+    const { totals } = validatedProposedComposition(row, original, proposedItemsJson);
     const timestamp = now();
     const { lastInsertRowid } = db.prepare(`INSERT INTO order_adjustments
       (order_id, delivery_id, company_id, proposed_by, base_version, original_items, proposed_items,
        original_subtotal, proposed_subtotal, original_weight, proposed_weight, original_freight,
        proposed_freight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(row.orderId, deliveryId, companyId, actorId, version, serialize(original.items), serialize(proposed),
+      .run(row.orderId, deliveryId, companyId, actorId, version, serialize(original.items), proposedItemsJson,
         row.itemsTotalCents, totals.itemsTotalCents, original.totals.weightKg, totals.weightKg,
         row.freightTotalCents, row.freightTotalCents, timestamp);
+    const adjustment = db.prepare("SELECT * FROM order_adjustments WHERE id = ?")
+      .get(Number(lastInsertRowid));
+    db.prepare(`INSERT INTO order_adjustment_validations
+      (adjustment_id, order_id, company_id, proposed_items, proposed_subtotal, proposed_weight, seal)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(Number(lastInsertRowid), row.orderId, companyId, proposedItemsJson,
+        totals.itemsTotalCents, totals.weightKg, sealAdjustmentSnapshot(adjustment));
     audit(deliveryId, actorId, "order_adjustment_proposed", timestamp, { adjustmentId: Number(lastInsertRowid) });
     return adjustmentDetails(deliveryId);
   });
@@ -204,6 +270,7 @@ function verifyVersion(row, adjustment) {
       !== JSON.stringify(commercialSnapshot(JSON.parse(adjustment.original_items)))) {
     throw problem("A versão ou composição comercial exige reconciliação.");
   }
+  return stored;
 }
 
 function close(row, actorId, timestamp, adjustmentId = null) {
@@ -246,7 +313,7 @@ function validateAdditionalPayment(row, adjustment) {
   }
 }
 
-function apply(row, adjustment, actorId, timestamp, paying) {
+function apply(row, adjustment, proposedItems, actorId, timestamp, paying) {
   const difference = adjustment.proposed_subtotal - adjustment.original_subtotal;
   const balance = paying ? validateAdditionalPayment(row, adjustment) : adjustmentAvailableBalance(db, row);
   if (difference < 0 && balance.products < -difference) {
@@ -255,7 +322,7 @@ function apply(row, adjustment, actorId, timestamp, paying) {
   db.prepare("DELETE FROM order_items WHERE order_id = ?").run(row.orderId);
   const insert = db.prepare(`INSERT INTO order_items
     (order_id, product_id, quantity, unit_price_cents, unit_weight_kg) VALUES (?, ?, ?, ?, ?)`);
-  for (const item of JSON.parse(adjustment.proposed_items)) {
+  for (const item of proposedItems) {
     insert.run(row.orderId, item.productId, item.quantity, item.unitPriceCents, item.unitWeightKg);
   }
   const updated = db.prepare(`UPDATE orders SET items_total_cents = ?, freight_total_cents = ?,
@@ -299,7 +366,17 @@ export function decideAdjustment(deliveryId, adjustmentId, clientId, action) {
       throw problem("A proposta já foi decidida ou a ação não é compatível.");
     }
     requireBeforePickup(row);
-    verifyVersion(row, adjustment);
+    const original = verifyVersion(row, adjustment);
+    const validation = action === "reject" ? null : db.prepare(`SELECT seal FROM order_adjustment_validations
+      WHERE adjustment_id = ? AND order_id = ? AND company_id = ?
+        AND proposed_items = ? AND proposed_subtotal = ? AND proposed_weight = ?`)
+      .get(adjustmentId, row.orderId, row.companyId, adjustment.proposed_items,
+        adjustment.proposed_subtotal, adjustment.proposed_weight);
+    if (action !== "reject" && (!validation || !verifyAdjustmentSnapshot(adjustment, validation.seal))) {
+      throw problem("A proposta não possui validação íntegra de seus snapshots.");
+    }
+    const proposed = action === "reject" ? null
+      : validatedProposedComposition(row, original, adjustment.proposed_items, adjustment);
     const timestamp = now();
     const details = { adjustmentId };
     if (action === "reject") {
@@ -315,10 +392,10 @@ export function decideAdjustment(deliveryId, adjustmentId, clientId, action) {
         db.prepare(`UPDATE order_adjustments SET state = 'awaiting_payment', decided_by = ?, decided_at = ?
           WHERE id = ?`).run(clientId, timestamp, adjustmentId);
       } else {
-        apply(row, adjustment, clientId, timestamp, false);
+        apply(row, adjustment, proposed.items, clientId, timestamp, false);
       }
     } else {
-      apply(row, adjustment, clientId, timestamp, true);
+      apply(row, adjustment, proposed.items, clientId, timestamp, true);
     }
     return adjustmentDetails(deliveryId);
   });

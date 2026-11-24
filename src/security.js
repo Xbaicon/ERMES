@@ -1,5 +1,6 @@
 import {
-  createCipheriv, createDecipheriv, createHash, randomBytes, randomInt, scryptSync, timingSafeEqual,
+  createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, scryptSync,
+  timingSafeEqual,
 } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -37,12 +38,35 @@ export const hashConfirmationCode = hashPassword;
 export const verifyConfirmationCode = verifyPassword;
 
 let cachedConfirmationKey;
+let protectedDataCheck;
+
+function missingProtectedKey() {
+  return new Error("Chave criptográfica local ausente para dados persistidos; restauração ou reconciliação necessária.");
+}
 
 function confirmationKeyPath() {
   if (process.env.ERMES_CONFIRMATION_KEY_PATH) return resolve(process.env.ERMES_CONFIRMATION_KEY_PATH);
   const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const databasePath = process.env.ERMES_DB_PATH || resolve(projectRoot, "data", "ermes.sqlite");
   return `${databasePath}.confirmation-key`;
+}
+
+// O banco registra a consulta antes de qualquer migração ou operação que use a chave.
+// Ler a chave existente não cria um substituto quando há dados dependentes dela.
+export function checkConfirmationKeyAvailability(hasProtectedData) {
+  protectedDataCheck = hasProtectedData;
+  if (process.env.ERMES_CONFIRMATION_CODE_KEY) {
+    const configured = Buffer.from(process.env.ERMES_CONFIRMATION_CODE_KEY, "base64url");
+    if (configured.length !== 32) throw new Error("ERMES_CONFIRMATION_CODE_KEY deve conter 32 bytes em base64url.");
+    return;
+  }
+  try {
+    const existing = readFileSync(confirmationKeyPath());
+    if (existing.length !== 32) throw new Error("A chave local dos códigos de confirmação é inválida.");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    if (hasProtectedData()) throw missingProtectedKey();
+  }
 }
 
 function confirmationEncryptionKey() {
@@ -59,6 +83,7 @@ function confirmationEncryptionKey() {
     cachedConfirmationKey = readFileSync(keyPath);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
+    if (!protectedDataCheck || protectedDataCheck()) throw missingProtectedKey();
     const generated = randomBytes(32);
     try {
       writeFileSync(keyPath, generated, { flag: "wx", mode: 0o600 });
@@ -71,6 +96,28 @@ function confirmationEncryptionKey() {
   if (cachedConfirmationKey.length !== 32) throw new Error("A chave local dos códigos de confirmação é inválida.");
   chmodSync(keyPath, 0o600);
   return cachedConfirmationKey;
+}
+
+function adjustmentSnapshotPayload(adjustment) {
+  return JSON.stringify([
+    adjustment.id, adjustment.order_id, adjustment.delivery_id, adjustment.company_id,
+    adjustment.proposed_by, adjustment.base_version, adjustment.original_items,
+    adjustment.proposed_items, adjustment.original_subtotal, adjustment.proposed_subtotal,
+    adjustment.original_weight, adjustment.proposed_weight, adjustment.original_freight,
+    adjustment.proposed_freight,
+  ]);
+}
+
+export function sealAdjustmentSnapshot(adjustment) {
+  return createHmac("sha256", confirmationEncryptionKey())
+    .update("ermes:adjustment-snapshot:v1\0")
+    .update(adjustmentSnapshotPayload(adjustment)).digest("hex");
+}
+
+export function verifyAdjustmentSnapshot(adjustment, seal) {
+  if (typeof seal !== "string" || !/^[0-9a-f]{64}$/.test(seal)) return false;
+  const expected = Buffer.from(sealAdjustmentSnapshot(adjustment), "hex");
+  return timingSafeEqual(expected, Buffer.from(seal, "hex"));
 }
 
 export function encryptConfirmationCode(code) {

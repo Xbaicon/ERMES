@@ -67,6 +67,33 @@ export function evolveOrderAdjustmentSchema(database) {
 }
 
 const adjustmentConstraints = `
+  CREATE TABLE IF NOT EXISTS order_adjustment_validations (
+    adjustment_id INTEGER PRIMARY KEY REFERENCES order_adjustments(id),
+    order_id INTEGER NOT NULL REFERENCES orders(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    proposed_items TEXT NOT NULL CHECK(json_valid(proposed_items)),
+    proposed_subtotal INTEGER NOT NULL,
+    proposed_weight REAL NOT NULL,
+    seal TEXT NOT NULL CHECK(length(seal) = 64)
+  );
+  DROP TRIGGER IF EXISTS adjustment_validation_insert;
+  CREATE TRIGGER adjustment_validation_insert BEFORE INSERT ON order_adjustment_validations
+    WHEN NOT EXISTS (
+      SELECT 1 FROM order_adjustments a
+      WHERE a.id = NEW.adjustment_id AND a.order_id = NEW.order_id
+        AND a.company_id = NEW.company_id AND a.state = 'pending'
+        AND a.proposed_items = NEW.proposed_items
+        AND a.proposed_subtotal = NEW.proposed_subtotal
+        AND a.proposed_weight = NEW.proposed_weight
+    )
+    BEGIN SELECT RAISE(ABORT, 'invalid adjustment validation'); END;
+  CREATE TRIGGER IF NOT EXISTS adjustment_validation_no_update
+    BEFORE UPDATE ON order_adjustment_validations
+    BEGIN SELECT RAISE(ABORT, 'adjustment validation is immutable'); END;
+  CREATE TRIGGER IF NOT EXISTS adjustment_validation_no_delete
+    BEFORE DELETE ON order_adjustment_validations
+    BEGIN SELECT RAISE(ABORT, 'adjustment validation is immutable'); END;
+
   DROP INDEX IF EXISTS order_adjustments_open;
   CREATE UNIQUE INDEX order_adjustments_open
     ON order_adjustments(delivery_id) WHERE state IN ('pending', 'awaiting_payment') AND cancelled_at IS NULL;

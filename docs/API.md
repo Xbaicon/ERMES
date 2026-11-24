@@ -64,7 +64,12 @@ introduzidos devem estar disponíveis no catálogo da mesma empresa. Itens
 preservados mantêm preço e peso históricos. O servidor valida o limite de 12 kg
 e os limites de valores inteiros. Frete `null` permanece `null`. Frete conhecido
 com mudança de peso exige reconciliação enquanto faltarem dados autoritativos
-para recálculo.
+para recálculo. Após a proposta ser validada, seus snapshots persistidos são
+preservados: mudanças posteriores de preço, peso ou disponibilidade no catálogo
+não alteram o valor aceito nem o pagamento adicional.
+O banco e a chave criptográfica local devem ser preservados juntos: se houver
+código de confirmação cifrado ou evidência de ajuste e a chave faltar, a
+inicialização exige restauração ou reconciliação, sem gerar chave substituta.
 
 As ações do cliente recebem `{}`. A proposta contém `id`, `baseVersion`,
 `state`, `original`, `proposed`, `differenceCents`, `requiresPayment`, `decision`
@@ -911,7 +916,9 @@ exige reconciliação. Classificação posterior não altera o ledger.
 Em retorno terminal histórico com lançamentos incompletos, a projeção
 financeira exige reconciliação em vez de informar distribuição concluída.
 
-Produto indisponível no modelo 0.2 permanece para incremento próprio. Endereço
+Produto indisponível e ajuste excepcional no modelo 0.2 estão implementados
+conforme as rotas descritas acima; RF-025 permanece parcial enquanto faltam
+distância e tempo operacionais autoritativos para recálculo do frete. Endereço
 incorreto do cliente e erro do ERMES seguem os fluxos documentados. As consequências financeiras do cliente
 em `confirmation_failed` são aplicadas na classificação, conforme seção abaixo;
 a distribuição interna/custo operacional continua futura.

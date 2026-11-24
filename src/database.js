@@ -4,7 +4,8 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import {
-  encryptConfirmationCode, hashConfirmationCode, hashPassword, newConfirmationCode,
+  checkConfirmationKeyAvailability, encryptConfirmationCode, hashConfirmationCode, hashPassword,
+  newConfirmationCode,
 } from "./security.js";
 import {
   backfillFinancialEntries, isCanonicalTimestamp, CLIENT_CANCELLATION_BEFORE_PICKUP_EVIDENCE_SQL,
@@ -27,6 +28,17 @@ db.function("is_canonical_timestamp", { deterministic: true }, (value) => (
 ));
 db.function("canonical_system_address_json", { deterministic: true }, canonicalSystemAddress);
 db.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
+checkConfirmationKeyAvailability(() => {
+  const encryptedCodes = db.prepare("PRAGMA table_info(deliveries)").all()
+    .some(({ name }) => name === "confirmation_code_ciphertext")
+    && Boolean(db.prepare(`SELECT 1 FROM deliveries
+      WHERE confirmation_code_ciphertext IS NOT NULL LIMIT 1`).get());
+  const validationsTable = db.prepare(`SELECT 1 FROM sqlite_schema
+    WHERE type = 'table' AND name = 'order_adjustment_validations'`).get();
+  const signedAdjustments = Boolean(validationsTable && db.prepare(`SELECT 1
+    FROM order_adjustment_validations LIMIT 1`).get());
+  return encryptedCodes || signedAdjustments;
+});
 // A conversão inicial para WAL pode retornar BUSY ao disputar a promoção de lock,
 // mesmo com busy_timeout. Aguarda o escritor pelo lock nativo e verifica o modo
 // antes de tentar novamente; não repete nenhuma operação de domínio.
