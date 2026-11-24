@@ -1,3 +1,4 @@
+import { AUTHORIZED_ADJUSTMENT_ENTRY, evolveOrderAdjustmentSchema } from "./order-adjustment-schema.js";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -48,6 +49,7 @@ const financialEntryKindTrigger = `
     WHEN NOT (
       (NEW.entry_type = 'payment' AND NEW.party_type = 'client'
         AND NEW.reason = 'simulated_payment')
+      OR EXISTS (${AUTHORIZED_ADJUSTMENT_ENTRY.replaceAll('ENTRY.', 'NEW.')})
       OR (NEW.entry_type = 'refund' AND NEW.party_type = 'client'
         AND NEW.delivery_id IS NOT NULL
         AND (NEW.reason IN ('client_cancelled_after_pickup', 'product_unavailable')
@@ -412,9 +414,10 @@ transaction(() => {
       OR NEW.amount_cents < 0 OR NEW.amount_cents > 9007199254740991
     BEGIN SELECT RAISE(ABORT, 'financial amount must be safe integer cents'); END;
 
-  CREATE TRIGGER IF NOT EXISTS financial_entry_payment_owner_insert
+  DROP TRIGGER IF EXISTS financial_entry_payment_owner_insert;
+  CREATE TRIGGER financial_entry_payment_owner_insert
     BEFORE INSERT ON financial_entries
-    WHEN NEW.entry_type = 'payment' AND NOT EXISTS (
+    WHEN NEW.entry_type = 'payment' AND NEW.reason <> 'order_adjustment' AND NOT EXISTS (
       SELECT 1 FROM orders o JOIN users client ON client.id = o.client_id
       WHERE o.id = NEW.order_id AND client.role = 'client'
         AND NEW.party_user_id = o.client_id AND NEW.party_company_id IS NULL
@@ -434,9 +437,10 @@ transaction(() => {
     )
     BEGIN SELECT RAISE(ABORT, 'payment requires paid order with valid timestamp'); END;
 
-  CREATE TRIGGER IF NOT EXISTS financial_entry_one_payment_component_insert
+  DROP TRIGGER IF EXISTS financial_entry_one_payment_component_insert;
+  CREATE TRIGGER financial_entry_one_payment_component_insert
     BEFORE INSERT ON financial_entries
-    WHEN NEW.entry_type = 'payment' AND EXISTS (
+    WHEN NEW.entry_type = 'payment' AND NEW.reason <> 'order_adjustment' AND EXISTS (
       SELECT 1 FROM financial_entries existing
       WHERE existing.order_id = NEW.order_id AND existing.entry_type = 'payment'
         AND existing.component = NEW.component
@@ -556,6 +560,7 @@ transaction(() => {
 `);
   evolveRevalidationSchema(db, { inTransaction: true });
   evolveSystemAddressSchema(db);
+  evolveOrderAdjustmentSchema(db);
   db.exec(financialEntryKindTrigger);
 });
 

@@ -1,3 +1,4 @@
+import { AUTHORIZED_ADJUSTMENT_ENTRY, PRODUCT_UNAVAILABLE_EVIDENCE } from "./order-adjustment-schema.js";
 import { splitNormalFreight } from "./freight.js";
 import { clientAddressEvidence } from "./client-address-evidence.js";
 import { systemAddressEvidence } from "./system-address-evidence.js";
@@ -168,20 +169,119 @@ function entriesForOrder(database, orderId) {
     .map((row) => ({ ...row }));
 }
 
+function adjustmentHistory(database, orderId) {
+  return database.prepare(`SELECT id, base_version, original_subtotal, proposed_subtotal,
+      original_freight, proposed_freight, delivery_id
+    FROM order_adjustments
+    WHERE order_id = ? AND state = 'applied' ORDER BY base_version`).all(orderId);
+}
+
+function matchesAdjustmentSnapshot(database, delivery, grossProducts) {
+  if (grossProducts === undefined) return false;
+  const adjustmentRefunds = database.prepare(`SELECT amount_cents AS amount FROM financial_entries
+    WHERE order_id = ? AND entry_type = 'refund' AND reason = 'order_adjustment'`).all(delivery.orderId);
+  return grossProducts - sumFinancialAmounts(adjustmentRefunds.map(({ amount }) => amount))
+    === delivery.itemsTotalCents;
+}
+
 function paidComponents(database, orderId, clientId) {
-  const payments = database.prepare(`SELECT component, amount_cents AS amountCents
-    FROM financial_entries
-    WHERE order_id = ? AND entry_type = 'payment' AND party_type = 'client'
-      AND party_user_id = ? ORDER BY id`).all(orderId, clientId).map((row) => ({ ...row }));
-  const byComponent = new Map();
-  for (const payment of payments) {
-    requireCents(payment.amountCents, "O pagamento persistido");
-    if (byComponent.has(payment.component)) {
-      throw financialError(`O Pedido ${orderId} possui pagamentos duplicados para ${payment.component}.`);
+  const order = database.prepare(`SELECT o.items_total_cents AS subtotal, o.freight_total_cents AS freight, o.version,
+    d.id AS deliveryId FROM orders o LEFT JOIN deliveries d ON d.order_id = o.id
+    WHERE o.id = ? AND o.client_id = ?`).get(orderId, clientId);
+  const adjustments = adjustmentHistory(database, orderId);
+  const entries = database.prepare(`SELECT f.*,
+    EXISTS (${AUTHORIZED_ADJUSTMENT_ENTRY.replaceAll("ENTRY.", "f.")}) AS authorized
+    FROM financial_entries f WHERE f.order_id = ? OR f.delivery_id = ? ORDER BY f.id`)
+    .all(orderId, order?.deliveryId ?? null);
+  const original = new Map();
+  const additional = new Map();
+  for (const entry of entries) {
+    if (!Number.isSafeInteger(entry.amount_cents) || entry.amount_cents < 0) {
+      throw financialError("Valor financeiro persistido exige reconciliação.");
     }
-    byComponent.set(payment.component, payment.amountCents);
+    if (entry.order_id !== orderId || (entry.delivery_id !== null && entry.delivery_id !== order?.deliveryId)) {
+      throw financialError("Lançamento financeiro com vínculo incompatível.");
+    }
+    if (entry.entry_type === "distribution") continue;
+    if (!["payment", "refund"].includes(entry.entry_type) || !["products", "freight"].includes(entry.component)
+      || entry.party_type !== "client" || entry.party_user_id !== clientId || entry.party_company_id !== null) {
+      throw financialError("Lançamento financeiro com vínculo incompatível.");
+    }
+    if (entry.reason === "order_adjustment" || entry.idempotency_key.startsWith("order-adjustment:")) {
+      if (!entry.authorized) throw financialError("Lançamento de ajuste exige reconciliação.");
+      additional.set(entry.idempotency_key, entry.amount_cents);
+    } else if (entry.entry_type === "payment") {
+      if (original.has(entry.component) || entry.reason !== "simulated_payment") {
+        throw financialError(`O Pedido ${orderId} possui pagamentos duplicados ou incompatíveis.`);
+      }
+      if (adjustments.length && entry.idempotency_key !== `payment:${orderId}:${entry.component}`) {
+        throw financialError("O pagamento original do Pedido ajustado exige reconciliação.");
+      }
+      original.set(entry.component, entry.amount_cents);
+    }
   }
-  return byComponent;
+  const payments = new Map(original);
+  let subtotal = original.get("products");
+  let priorVersion = null;
+  for (const adjustment of adjustments) {
+    if (adjustment.original_subtotal !== subtotal || adjustment.base_version >= order.version
+      || adjustment.delivery_id !== order.deliveryId || adjustment.original_freight !== order.freight
+      || adjustment.proposed_freight !== order.freight
+      || (priorVersion !== null && adjustment.base_version !== priorVersion + 1)) {
+      throw financialError("A sequência comercial dos ajustes exige reconciliação.");
+    }
+    const delta = adjustment.proposed_subtotal - adjustment.original_subtotal;
+    if (delta !== 0) {
+      const type = delta > 0 ? "payment" : "refund";
+      const key = `order-adjustment:${adjustment.id}:${type}-products`;
+      if (additional.get(key) !== Math.abs(delta)) throw financialError("Ajuste sem lançamento compatível.");
+      additional.delete(key);
+      if (delta > 0) {
+        const gross = payments.get("products") + delta;
+        if (!Number.isSafeInteger(gross)) throw financialError("O total pago excede o limite inteiro seguro.");
+        payments.set("products", gross);
+      }
+    }
+    subtotal = adjustment.proposed_subtotal;
+    priorVersion = adjustment.base_version;
+  }
+  if (additional.size || (adjustments.length && (subtotal !== order.subtotal || priorVersion + 1 !== order.version))) {
+    throw financialError("O ledger de ajustes diverge da composição vigente.");
+  }
+  return payments;
+}
+
+export function adjustmentAvailableBalance(database, delivery, { additionalPayment } = {}) {
+  const payments = paidComponents(database, delivery.orderId, delivery.clientId);
+  const entries = entriesForOrder(database, delivery.orderId);
+  if (entries.some(({ entryType }) => entryType === "distribution")) {
+    throw financialError("Distribuição incompatível com ajuste pré-coleta.");
+  }
+  if (delivery.paymentStatus === "pending") {
+    if (entries.length || delivery.paymentPaidAt !== null) throw financialError("Pagamento pendente com lançamentos.");
+  } else {
+    if (!isCanonicalTimestamp(delivery.paymentPaidAt)
+      || !matchesAdjustmentSnapshot(database, delivery, payments.get("products"))) {
+      throw financialError("Pagamento dos produtos diverge da composição comercial.");
+    }
+    assertFreightPaymentMatchesSnapshot(delivery, payments.get("freight"));
+    if (delivery.freightTotalCents !== null && !payments.has("freight")) {
+      throw financialError("Não há evidência de pagamento do frete conhecido.");
+    }
+  }
+  const grossPaid = sumFinancialAmounts([...payments.values()], "O total pago");
+  if (additionalPayment !== undefined && (delivery.paymentStatus !== "paid"
+    || !Number.isSafeInteger(additionalPayment) || additionalPayment <= 0
+    || additionalPayment > Number.MAX_SAFE_INTEGER - grossPaid)) {
+    throw Object.assign(new Error("A diferença excede o limite seguro do total bruto pago."), { statusCode: 409 });
+  }
+  return Object.fromEntries(["products", "freight"].map((component) => {
+    const refunded = sumFinancialAmounts(entries.filter((entry) => entry.entryType === "refund"
+      && entry.component === component).map(({ amountCents }) => amountCents));
+    const paid = payments.get(component) ?? 0;
+    if (refunded > paid) throw financialError("Reembolso superior ao componente efetivamente pago.");
+    return [component, paid - refunded];
+  }));
 }
 
 function assertFreightPaymentMatchesSnapshot(delivery, freightPayment) {
@@ -192,7 +292,7 @@ function assertFreightPaymentMatchesSnapshot(delivery, freightPayment) {
   }
 }
 
-export function recordPaymentInTransaction(database, order, deliveryId = null) {
+function paymentEntries(order, deliveryId) {
   const base = {
     orderId: order.id,
     deliveryId,
@@ -202,24 +302,41 @@ export function recordPaymentInTransaction(database, order, deliveryId = null) {
     reason: "simulated_payment",
     occurredAt: order.paymentPaidAt,
   };
-  insertFinancialEntryInTransaction(database, {
+  const entries = [{
     ...base,
     component: FINANCIAL_COMPONENTS.PRODUCTS,
     amountCents: requireCents(order.itemsTotalCents, "O subtotal dos produtos"),
     idempotencyKey: `payment:${order.id}:products`,
-  });
+  }];
   if (order.freightTotalCents !== null) {
-    insertFinancialEntryInTransaction(database, {
+    entries.push({
       ...base,
       component: FINANCIAL_COMPONENTS.FREIGHT,
       amountCents: requireCents(order.freightTotalCents, "O frete"),
       idempotencyKey: `payment:${order.id}:freight`,
     });
   }
+  return entries;
+}
+
+export function recordPaymentInTransaction(database, order, deliveryId = null) {
+  const original = adjustmentHistory(database, order.id)[0];
+  if (original) {
+    paidComponents(database, order.id, order.clientId);
+    return;
+  }
+  for (const entry of paymentEntries(order, deliveryId)) {
+    insertFinancialEntryInTransaction(database, entry);
+  }
 }
 
 export function recordNormalCompletionInTransaction(database, delivery, occurredAt = null) {
   const payments = paidComponents(database, delivery.orderId, delivery.clientId);
+  const paidProducts = payments.get(FINANCIAL_COMPONENTS.PRODUCTS);
+  if (adjustmentHistory(database, delivery.orderId).length
+    && !matchesAdjustmentSnapshot(database, delivery, paidProducts)) {
+    throw financialError("O pagamento de produtos ajustados exige reconciliação.");
+  }
   const paidFreight = payments.get(FINANCIAL_COMPONENTS.FREIGHT);
   if (delivery.freightTotalCents === null) {
     assertFreightPaymentMatchesSnapshot(delivery, paidFreight);
@@ -282,7 +399,9 @@ export const CLIENT_CANCELLATION_BEFORE_PICKUP_EVIDENCE_SQL = `
     AND NOT EXISTS (SELECT 1 FROM delivery_events conflict WHERE conflict.delivery_id = d.id
       AND conflict.event_type NOT IN ('delivery_created', 'delivery_accepted',
         'courier_arrived_at_pickup', 'courier_failed_before_pickup',
-        'occurrence_classified', 'client_cancelled_before_pickup'))
+        'occurrence_classified', 'client_cancelled_before_pickup', 'order_adjustment_proposed',
+        'order_adjustment_accepted', 'order_adjustment_paid', 'order_adjustment_applied',
+        'order_adjustment_cancelled'))
     AND (SELECT COUNT(*) FROM delivery_events e WHERE e.delivery_id = d.id
       AND e.event_type = 'client_cancelled_before_pickup') = 1
     AND EXISTS (SELECT 1 FROM delivery_events e WHERE e.delivery_id = d.id
@@ -412,7 +531,7 @@ function readExternalObstructionRefundPlan(database, deliveryId) {
     amount_cents AS amountCents, reason, idempotency_key AS idempotencyKey
     FROM financial_entries WHERE order_id = ? OR delivery_id = ? ORDER BY id`)
     .all(delivery.orderId, delivery.id);
-  const payments = new Map();
+  const payments = paidComponents(database, delivery.orderId, delivery.clientId);
   const incompatible = new Set(["recipient_absent", "recipient_refused", "confirmation_failed",
     "client_cancelled_before_pickup", "client_cancelled_after_pickup", "product_unavailable",
     "address_problem", "delivery_completed"]);
@@ -426,12 +545,7 @@ function readExternalObstructionRefundPlan(database, deliveryId) {
       || entry.partyCompanyId !== null) {
       throw financialError("Ledger ou vínculo incompatível com o impedimento externo.");
     }
-    if (entry.entryType === "payment") {
-      if (payments.has(entry.component) || entry.reason !== "simulated_payment") {
-        throw financialError("Pagamento duplicado ou incompatível com o Pedido.");
-      }
-      payments.set(entry.component, entry.amountCents);
-    } else if (incompatible.has(entry.reason)) {
+    if (entry.entryType === "refund" && incompatible.has(entry.reason)) {
       throw financialError("Refund de outro desfecho exige reconciliação.");
     }
   }
@@ -452,7 +566,7 @@ function readExternalObstructionRefundPlan(database, deliveryId) {
     || subtotal !== BigInt(delivery.itemsTotalCents)
     || !isCanonicalTimestamp(delivery.paymentPaidAt)
     || delivery.paymentPaidAt > delivery.cancelledAt
-    || payments.get("products") !== delivery.itemsTotalCents
+    || !matchesAdjustmentSnapshot(database, delivery, payments.get("products"))
     || (delivery.freightTotalCents === null
       ? payments.has("freight") : payments.get("freight") !== delivery.freightTotalCents)) {
     throw financialError("Pagamentos ausentes ou divergentes dos snapshots do Pedido.");
@@ -508,7 +622,7 @@ function readClientCancellationBeforePickupRefundPlan(database, deliveryId) {
     amount_cents AS amountCents, reason, idempotency_key AS idempotencyKey
     FROM financial_entries WHERE order_id = ? OR delivery_id = ? ORDER BY id`)
     .all(delivery.orderId, delivery.id);
-  const payments = new Map();
+  const payments = paidComponents(database, delivery.orderId, delivery.clientId);
   const incompatibleRefundReasons = new Set([
     "client_cancelled_after_pickup", "product_unavailable", "confirmation_failed",
     "recipient_absent", "recipient_refused", "address_problem", "delivery_completed",
@@ -523,12 +637,7 @@ function readClientCancellationBeforePickupRefundPlan(database, deliveryId) {
       || entry.partyCompanyId !== null) {
       throw financialError("Lançamento inválido, distribuição ou vínculo financeiro incompatível com a pré-coleta.");
     }
-    if (entry.entryType === "payment") {
-      if (payments.has(entry.component) || entry.reason !== "simulated_payment") {
-        throw financialError("Pagamento duplicado ou incompatível com o Pedido.");
-      }
-      payments.set(entry.component, entry.amountCents);
-    } else if (incompatibleRefundReasons.has(entry.reason)) {
+    if (entry.entryType === "refund" && incompatibleRefundReasons.has(entry.reason)) {
       throw financialError("Refund de outro desfecho terminal exige reconciliação.");
     }
   }
@@ -550,7 +659,7 @@ function readClientCancellationBeforePickupRefundPlan(database, deliveryId) {
     if (!isCanonicalTimestamp(delivery.paymentPaidAt) || delivery.paymentPaidAt > delivery.cancelledAt
       || !items.length || !Number.isSafeInteger(delivery.itemsTotalCents)
       || subtotal !== BigInt(delivery.itemsTotalCents)
-      || payments.get("products") !== delivery.itemsTotalCents
+      || !matchesAdjustmentSnapshot(database, delivery, payments.get("products"))
       || (delivery.freightTotalCents === null
         ? payments.has("freight") : payments.get("freight") !== delivery.freightTotalCents)) {
       throw financialError("Pagamentos ausentes ou divergentes dos snapshots do Pedido.");
@@ -597,8 +706,13 @@ export function recordClientCancellationAfterPickupInTransaction(database, deliv
     throw financialError(`O Pedido ${delivery.orderId} não possui evidência do pagamento dos produtos.`);
   }
   const base = entryBase(delivery, "client_cancelled_after_pickup", occurredAt);
-  insertRefund(database, delivery, base, FINANCIAL_COMPONENTS.PRODUCTS, paidProducts,
-    `delivery:${delivery.id}:client-cancelled:refund-products`);
+  const key = `delivery:${delivery.id}:client-cancelled:refund-products`;
+  const prior = database.prepare(`SELECT amount_cents AS amount FROM financial_entries
+    WHERE order_id = ? AND component = 'products' AND entry_type = 'refund' AND idempotency_key <> ?`)
+    .all(delivery.orderId, key);
+  const remaining = paidProducts - sumFinancialAmounts(prior.map(({ amount }) => amount));
+  if (remaining < 0) throw financialError("Reembolso superior ao componente efetivamente pago.");
+  insertRefund(database, delivery, base, FINANCIAL_COMPONENTS.PRODUCTS, remaining, key);
 
   const paidFreight = payments.get(FINANCIAL_COMPONENTS.FREIGHT);
   if (paidFreight !== undefined) {
@@ -699,7 +813,7 @@ export function recordRecipientTerminalFailureInTransaction(database, delivery, 
   }
   const payments = paidComponents(database, delivery.orderId, delivery.clientId);
   const paidProducts = payments.get(FINANCIAL_COMPONENTS.PRODUCTS);
-  if (paidProducts === undefined || paidProducts !== delivery.itemsTotalCents) {
+  if (!matchesAdjustmentSnapshot(database, delivery, paidProducts)) {
     throw financialError(`O pagamento de produtos do Pedido ${delivery.orderId} exige reconciliação.`);
   }
   const paidFreight = payments.get(FINANCIAL_COMPONENTS.FREIGHT);
@@ -761,7 +875,20 @@ export function recordClientAddressFailureInTransaction(database, delivery) {
   recordRecipientTerminalFailureInTransaction(database, delivery, evidence.attemptId, "address_problem");
 }
 
+function productUnavailableRefundKey(deliveryId, component) {
+  return `delivery:${deliveryId}:product-unavailable:refund-${component}`;
+}
+
 export function recordProductUnavailableInTransaction(database, delivery, occurredAt = null) {
+  if (database.prepare(`SELECT ${PRODUCT_UNAVAILABLE_EVIDENCE} AS present`).get(delivery.id).present) {
+    const remaining = adjustmentAvailableBalance(database, delivery);
+    const base = entryBase(delivery, "product_unavailable", occurredAt);
+    for (const [component, amount] of Object.entries(remaining)) {
+      insertRefund(database, delivery, base, component, amount,
+        productUnavailableRefundKey(delivery.id, component));
+    }
+    return;
+  }
   const payments = paidComponents(database, delivery.orderId, delivery.clientId);
   if (!payments.size) {
     throw financialError(`O Pedido ${delivery.orderId} não possui evidência de valores efetivamente pagos.`);
@@ -769,7 +896,7 @@ export function recordProductUnavailableInTransaction(database, delivery, occurr
   const base = entryBase(delivery, "product_unavailable", occurredAt);
   for (const [component, amountCents] of payments) {
     insertRefund(database, delivery, base, component, amountCents,
-      `delivery:${delivery.id}:product-unavailable:refund-${component}`);
+      productUnavailableRefundKey(delivery.id, component));
   }
 }
 
@@ -790,16 +917,8 @@ export function recordPersistentSystemAddressFailureInTransaction(database, deli
     && entry.deliveryId === delivery.id)) {
     throw financialError("A Entrega possui distribuição incompatível com o erro persistente do ERMES.");
   }
-  const payments = new Map();
-  for (const entry of entries.filter(({ entryType }) => entryType === "payment")) {
-    if (entry.partyType !== "client" || entry.partyUserId !== delivery.clientId
-      || entry.partyCompanyId !== null || entry.reason !== "simulated_payment"
-      || payments.has(entry.component)) {
-      throw financialError("O pagamento persistido exige reconciliação.");
-    }
-    payments.set(entry.component, requireCents(entry.amountCents, "O pagamento persistido"));
-  }
-  if (payments.get("products") !== delivery.itemsTotalCents
+  const payments = paidComponents(database, delivery.orderId, delivery.clientId);
+  if (!matchesAdjustmentSnapshot(database, delivery, payments.get("products"))
     || (delivery.freightTotalCents === null
       ? payments.has("freight") : payments.get("freight") !== delivery.freightTotalCents)) {
     throw financialError("Os pagamentos divergem dos snapshots do Pedido.");
@@ -888,7 +1007,7 @@ function confirmationFailureRefundPlan(database, delivery, responsibility) {
     party_user_id AS partyUserId, party_company_id AS partyCompanyId,
     amount_cents AS amountCents, reason, idempotency_key AS idempotencyKey
     FROM financial_entries WHERE order_id = ? ORDER BY id`).all(delivery.orderId);
-  const payments = new Map();
+  const payments = paidComponents(database, delivery.orderId, delivery.clientId);
   for (const entry of entries) {
     if (!Number.isSafeInteger(entry.amountCents) || entry.amountCents < 0
       || !["products", "freight"].includes(entry.component)
@@ -909,14 +1028,9 @@ function confirmationFailureRefundPlan(database, delivery, responsibility) {
       || entry.partyCompanyId !== null) {
       throw financialError("O componente financeiro não pertence ao cliente do Pedido.");
     }
-    if (entry.entryType === "payment") {
-      if (payments.has(entry.component) || entry.reason !== "simulated_payment") {
-        throw financialError("Pagamento duplicado ou incompatível.");
-      }
-      payments.set(entry.component, entry.amountCents);
-    }
+
   }
-  if (payments.get("products") !== delivery.itemsTotalCents
+  if (!matchesAdjustmentSnapshot(database, delivery, payments.get("products"))
     || (delivery.freightTotalCents === null
       ? payments.has("freight") : payments.get("freight") !== delivery.freightTotalCents)) {
     throw financialError("Pagamentos ausentes ou divergentes dos snapshots do Pedido.");
@@ -964,6 +1078,7 @@ export function orderRefundSummary(database, orderId, clientId = null) {
   const entries = entriesForOrder(database, orderId)
     .filter((entry) => clientId === null || (entry.partyType === FINANCIAL_PARTIES.CLIENT
       && entry.partyUserId === clientId));
+  if (clientId !== null) paidComponents(database, orderId, clientId);
   const totalPaidCents = sumFinancialAmounts(entries
     .filter((entry) => entry.entryType === FINANCIAL_ENTRY_TYPES.PAYMENT)
     .map((entry) => entry.amountCents), "O total pago");
@@ -990,7 +1105,8 @@ function hasAuthorizedProductUnavailableEvent(database, delivery) {
       AND actor.company_id = o.company_id AND o.company_id = ?
       AND persisted.return_reason IS NULL AND persisted.collected_at IS NULL
     `).all(delivery.id, delivery.companyId);
-  return candidates.some(({ occurredAt, cancelledAt }) => sameTimestamp(occurredAt, cancelledAt));
+  return Boolean(database.prepare(`SELECT ${PRODUCT_UNAVAILABLE_EVIDENCE} AS present`).get(delivery.id).present)
+    || candidates.some(({ occurredAt, cancelledAt }) => sameTimestamp(occurredAt, cancelledAt));
 }
 
 function pendingFinancialEffects(database, delivery, entries) {
@@ -1041,7 +1157,7 @@ function pendingFinancialEffects(database, delivery, entries) {
     const payments = paidComponents(database, delivery.orderId, delivery.clientId);
     const paidProductsCents = payments.get(FINANCIAL_COMPONENTS.PRODUCTS);
     const paidFreightCents = payments.get(FINANCIAL_COMPONENTS.FREIGHT);
-    if (paidProductsCents !== delivery.itemsTotalCents
+    if (!matchesAdjustmentSnapshot(database, delivery, paidProductsCents)
       || (delivery.freightTotalCents === null
         ? paidFreightCents !== undefined : paidFreightCents !== delivery.freightTotalCents)) {
       throw financialError("Os pagamentos do erro persistente do ERMES exigem reconciliação.");
@@ -1074,7 +1190,7 @@ function pendingFinancialEffects(database, delivery, entries) {
     const refundedProductsCents = sumFinancialAmounts(entries.filter((entry) =>
       entry.entryType === FINANCIAL_ENTRY_TYPES.REFUND
         && entry.component === FINANCIAL_COMPONENTS.PRODUCTS).map((entry) => entry.amountCents));
-    if (paidProductsCents === undefined || paidProductsCents !== delivery.itemsTotalCents
+    if (paidProductsCents === undefined || !matchesAdjustmentSnapshot(database, delivery, paidProductsCents)
       || refundedProductsCents !== paidProductsCents) {
       throw financialError(`Os produtos do Pedido ${delivery.orderId} exigem reconciliação.`);
     }
@@ -1108,6 +1224,12 @@ function pendingFinancialEffects(database, delivery, entries) {
       }
     }
   }
+  if (database.prepare(`SELECT ${PRODUCT_UNAVAILABLE_EVIDENCE} AS present`).get(delivery.id).present) {
+    const remaining = adjustmentAvailableBalance(database, delivery);
+    if (remaining.products !== 0 || remaining.freight !== 0) {
+      throw financialError("O reembolso por indisponibilidade exige reconciliação.");
+    }
+  }
   const productUnavailable = entries.some((entry) => entry.reason === "product_unavailable")
     || hasAuthorizedProductUnavailableEvent(database, delivery);
   const clientCancellation = database.prepare(`SELECT 1 FROM delivery_events
@@ -1132,14 +1254,15 @@ export function clientFinancialSummary(database, delivery) {
     && entry.partyType === FINANCIAL_PARTIES.CLIENT && entry.partyUserId === delivery.clientId);
   const refunds = entries.filter((entry) => entry.entryType === FINANCIAL_ENTRY_TYPES.REFUND
     && entry.partyType === FINANCIAL_PARTIES.CLIENT && entry.partyUserId === delivery.clientId);
-  const paidProducts = payments.find((entry) => entry.component === FINANCIAL_COMPONENTS.PRODUCTS);
+  const paidProducts = sumFinancialAmounts(payments.filter(({ component }) => component === "products")
+    .map(({ amountCents }) => amountCents));
   const paidFreight = payments.find((entry) => entry.component === FINANCIAL_COMPONENTS.FREIGHT);
   const refund = orderRefundSummary(database, delivery.orderId, delivery.clientId);
   return {
     paymentStatus: delivery.paymentStatus,
     refundStatus: refund.refundStatus,
     paidAt: delivery.paymentPaidAt,
-    paidItemsCents: paidProducts?.amountCents ?? null,
+    paidItemsCents: payments.some(({ component }) => component === "products") ? paidProducts : null,
     paidFreightCents: paidFreight?.amountCents ?? null,
     paidTotalCents: payments.length ? refund.totalPaidCents : null,
     refunds: refunds.map(publicEntry),
@@ -1423,24 +1546,79 @@ function cancellationEvidence(database, outcome, order) {
 
 function productUnavailableEvidence(database, outcome, order) {
   if (outcome.courierId !== null || outcome.returnReason !== null || outcome.collectedAt !== null
-    || !validTimestamp(outcome.cancelledAt)) return null;
+    || outcome.completedAt !== null || outcome.returnReportedAt !== null || outcome.returnedAt !== null
+    || !validTimestamp(outcome.cancelledAt)
+    || database.prepare("SELECT 1 FROM delivery_attempts WHERE delivery_id = ?").get(outcome.id)) return null;
   const events = deliveryEvents(database, outcome.id);
   const unavailable = singleEvent(events, "product_unavailable");
   if (!companyEvent(unavailable, order.companyId)
     || events.at(-1)?.id !== unavailable.id
-    || events.some((event) => event.eventType === "order_collected")
+    || events.some(({ eventType }) => !["delivery_created", "delivery_accepted", "courier_arrived_at_pickup",
+      "courier_failed_before_pickup", "occurrence_classified", "product_unavailable"].includes(eventType))
     || !chronological([order.createdEventAt, unavailable.occurredAt])
     || !sameTimestamp(outcome.cancelledAt, unavailable.occurredAt)) return null;
   return unavailable;
+}
+
+function legacyProductUnavailableLedgerMatches(database, order, outcome) {
+  if ((order.freightTotalCents ?? 0) > Number.MAX_SAFE_INTEGER - order.itemsTotalCents) return false;
+  const payments = paymentEntries(order, outcome.id);
+  const refunds = payments.filter(({ amountCents }) => amountCents > 0).map((payment) => ({
+    ...payment, entryType: FINANCIAL_ENTRY_TYPES.REFUND, reason: "product_unavailable",
+    idempotencyKey: productUnavailableRefundKey(outcome.id, payment.component),
+  }));
+  const expected = new Map([...payments, ...refunds].map((entry) => [entry.idempotencyKey, normalizeEntry(entry)]));
+  const keys = Array.from(expected.keys());
+  const persisted = database.prepare(`SELECT order_id AS orderId, delivery_id AS deliveryId,
+    entry_type AS entryType, component, party_type AS partyType, party_user_id AS partyUserId,
+    party_company_id AS partyCompanyId,
+    CASE WHEN typeof(amount_cents) = 'integer' AND amount_cents BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}
+      THEN amount_cents END AS amountCents,
+    reason, idempotency_key AS idempotencyKey
+    FROM financial_entries WHERE order_id = ? OR delivery_id = ?
+      OR idempotency_key IN (${keys.map(() => "?").join(", ")})`).all(order.id, outcome.id, ...keys);
+  const recordedPayments = new Set(persisted.filter(({ entryType }) => entryType === FINANCIAL_ENTRY_TYPES.PAYMENT)
+    .map(({ component }) => component));
+  return persisted.every((entry) => {
+    const planned = expected.get(entry.idempotencyKey);
+    return planned && semanticEntryFields.every((field) => entry[field] === planned[field])
+      && (entry.entryType !== FINANCIAL_ENTRY_TYPES.REFUND || recordedPayments.has(entry.component));
+  });
 }
 
 export function backfillFinancialEntries(database) {
   const eligibleOrders = new Map();
   const candidates = database.prepare(`SELECT id FROM orders
     WHERE payment_status = 'paid' AND payment_paid_at IS NOT NULL`).all();
+  const legacyUnavailable = database.prepare(`SELECT d.id, d.courier_id AS courierId,
+    d.collected_at AS collectedAt, d.completed_at AS completedAt, d.cancelled_at AS cancelledAt,
+    d.return_reason AS returnReason, d.return_reported_at AS returnReportedAt, d.returned_at AS returnedAt
+    FROM deliveries d WHERE d.id = ? AND d.status = 'cancelled' AND (
+      EXISTS (SELECT 1 FROM delivery_events e WHERE e.delivery_id = d.id AND e.event_type = 'product_unavailable')
+      OR EXISTS (SELECT 1 FROM financial_entries f WHERE (f.order_id = d.order_id OR f.delivery_id = d.id)
+        AND f.reason = 'product_unavailable'))`);
   for (const { id } of candidates) {
+    if (adjustmentHistory(database, id).length) continue;
     const order = paidOrderEvidence(database, id);
     if (!order) continue;
+    // Esses encerramentos já têm uma decisão financeira própria, fora do backfill legado.
+    if (database.prepare(`SELECT ${PRODUCT_UNAVAILABLE_EVIDENCE} OR EXISTS (
+      SELECT 1 FROM deliveries d JOIN delivery_events e ON e.delivery_id = d.id
+      WHERE d.id = ? AND (d.status = 'cancelled' AND e.event_type IN (
+        'client_cancelled_before_pickup', 'client_cancelled_after_external_obstruction')
+        OR d.status = 'returned' AND d.return_reason = e.event_type
+          AND e.event_type IN ('recipient_absent', 'recipient_refused', 'address_problem', 'confirmation_failed'))
+      ) AS terminal`).get(order.deliveryId, order.deliveryId).terminal) continue;
+    const unavailable = legacyUnavailable.get(order.deliveryId);
+    if (unavailable) {
+      const evidence = productUnavailableEvidence(database, unavailable, order);
+      if (!evidence || !legacyProductUnavailableLedgerMatches(database, order, unavailable)) continue;
+      recordPaymentInTransaction(database, order, unavailable.id);
+      recordProductUnavailableInTransaction(database, {
+        id: unavailable.id, orderId: order.id, clientId: order.clientId,
+      }, evidence.occurredAt);
+      continue;
+    }
     recordPaymentInTransaction(database, order, order.deliveryId);
     eligibleOrders.set(id, order);
   }
@@ -1475,20 +1653,6 @@ export function backfillFinancialEntries(database) {
     recordClientCancellationAfterPickupInTransaction(database, {
       ...outcome, ...order, id: outcome.id, orderId: outcome.orderId,
       courierId: evidence.courierId,
-    }, evidence.occurredAt);
-  }
-
-  const unavailable = database.prepare(`SELECT d.id, d.order_id AS orderId,
-    d.courier_id AS courierId, d.collected_at AS collectedAt,
-    d.cancelled_at AS cancelledAt, d.return_reason AS returnReason
-    FROM deliveries d WHERE d.status = 'cancelled'`).all();
-  for (const outcome of unavailable) {
-    const order = eligibleOrders.get(outcome.orderId);
-    if (!order) continue;
-    const evidence = productUnavailableEvidence(database, outcome, order);
-    if (!evidence) continue;
-    recordProductUnavailableInTransaction(database, {
-      ...outcome, ...order, id: outcome.id, orderId: outcome.orderId,
     }, evidence.occurredAt);
   }
 }

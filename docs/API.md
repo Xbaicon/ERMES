@@ -40,10 +40,78 @@ O e-mail de acesso é normalizado e único em `users.email`, independentemente d
 | GET | `/company/deliveries/:deliveryId` | Consultar Entrega e histórico da própria empresa |
 | GET | `/company/delivery-occurrences` | Listar ocorrências das Entregas da própria empresa |
 | POST | `/company/delivery-occurrences/:occurrenceId/classify` | Classificar definitivamente a responsabilidade de uma ocorrência |
-| POST | `/company/deliveries/:deliveryId/product-unavailable` | Cancelar antes da coleta por produto indisponível |
+| GET/POST | `/company/deliveries/:deliveryId/adjustment` | Consultar ou propor um ajuste excepcional da composição antes da coleta |
+| POST | `/company/deliveries/:deliveryId/product-unavailable` | Encerrar antes da coleta quando não há ajuste viável |
 | POST | `/company/deliveries/:deliveryId/confirm-return` | Confirmar recebimento físico do retorno |
 | POST | `/company/deliveries/:deliveryId/system-address-resolution` | Resolver erro de apresentação do endereço atribuído ao ERMES |
 | POST | `/freight/quote` | Exercitar tecnicamente a fórmula com entradas de teste |
+
+### Ajuste excepcional por indisponibilidade antes da coleta
+
+As rotas usam a Entrega e a sessão para localizar o Pedido e validar seu proprietário. Uma tentativa anterior, coleta ou histórico operacional incompatível bloqueia o fluxo. A proposta exige Pedido confirmado e pagamento original registrado.
+
+| Método | Rota do cliente | Finalidade |
+| --- | --- | --- |
+| GET | `/client/deliveries/:deliveryId/adjustment` | Consultar a proposta mais recente |
+| POST | `/client/deliveries/:deliveryId/adjustment/:adjustmentId/accept` | Registrar aceite explícito |
+| POST | `/client/deliveries/:deliveryId/adjustment/:adjustmentId/reject` | Rejeitar proposta pendente e encerrar |
+| POST | `/client/deliveries/:deliveryId/adjustment/:adjustmentId/pay` | Confirmar pagamento simulado da diferença aceita |
+
+A empresa lê `orderVersion` e `currentItems` em `GET .../adjustment`. Para propor,
+envia `{"version":4,"items":[{"productId":8,"quantity":2}]}`. A lista representa a
+composição final, sem IDs duplicados. A omissão de um item o remove. Produtos
+introduzidos devem estar disponíveis no catálogo da mesma empresa. Itens
+preservados mantêm preço e peso históricos. O servidor valida o limite de 12 kg
+e os limites de valores inteiros. Frete `null` permanece `null`. Frete conhecido
+com mudança de peso exige reconciliação enquanto faltarem dados autoritativos
+para recálculo.
+
+As ações do cliente recebem `{}`. A proposta contém `id`, `baseVersion`,
+`state`, `original`, `proposed`, `differenceCents`, `requiresPayment`, `decision`
+e timestamps de criação, decisão, pagamento, aplicação e cancelamento voluntário. Cada composição
+contém itens, subtotal, peso e frete. O aceite leva a `applied` ou, quando há
+acréscimo, a `awaiting_payment`. O estado inicial é `pending`. Ambos os
+estados abertos bloqueiam a logística e preservam o motoboy atribuído. A
+rejeição de `pending` leva a `rejected` e encerra a operação. Uma decisão já
+registrada permite repetição do mesmo comando sem repetir seus efeitos enquanto
+o Pedido não tiver sido cancelado voluntariamente. Antes do aceite com acréscimo
+e no pagamento da diferença, a API valida a coerência do ledger e o limite
+seguro do total bruto. Uma diferença inviável retorna `409` sem alterar a proposta.
+
+O cliente ainda pode usar `POST /client/deliveries/:deliveryId/cancel` antes da
+primeira coleta, inclusive com ajuste aberto. A transação encerra o ajuste
+(`state: "cancelled"`, `cancelledAt`) e preserva a decisão anterior em
+`decision`. O Pedido projeta `CANCELADO`, com reembolso do saldo pago e sem
+registro de indisponibilidade ou atribuição de responsabilidade à empresa.
+
+
+A empresa pode enviar `{}` a `product-unavailable` quando não há ajuste aberto.
+Se a Entrega já passou por um ajuste aplicado, deve enviar a versão comercial
+vigente, como `{"version":5}`. A versão evita que um encerramento solicitado
+sobre uma composição antiga avance após o aceite. A repetição do
+encerramento retorna `409` sem duplicar efeitos. Sem acordo, a resposta projeta
+Entrega `CANCELADA` e Pedido `ENCERRADO`, com `unavailability` indicando motivo
+`PRODUTO_INDISPONIVEL`, responsabilidade `EMPRESA` e origem `company_no_adjustment`
+ou `client_rejected`. Os valores efetivamente pagos ainda em saldo são
+devolvidos. Pedido pago com frete conhecido e pagamento de frete ausente ou
+divergente exige reconciliação antes do encerramento. A atribuição termina
+sem nova tentativa ou distribuição.
+
+A consulta da empresa indica `canPropose` e `canCloseUnavailable` com as
+mesmas evidências pré-coleta usadas nas operações de escrita. Uma Entrega
+redisponibilizada após tentativa anterior permanece inelegível.
+
+O detalhe da Entrega disponibiliza `adjustment`, `unavailability` e
+`collectionBlocked` aos titulares. O detalhe do Pedido confirmado do cliente
+também inclui `adjustment`. Ao motoboy a API expõe o bloqueio operacional e a
+`pickupVersion` no detalhe. Após ajuste aplicado, envie
+`{"pickupVersion":5}` no comando `collect`, usando o valor recém-consultado.
+Entregas sem ajuste aplicado continuam usando `{}`.
+
+Recursos de outro titular retornam `404`. Validação de entrada retorna `400`.
+Versão obsoleta, estado incompatível e bloqueio operacional retornam `409`.
+Inconsistência financeira exige reconciliação com reversão integral da
+transação.
 
 ### Valores numéricos dos produtos
 

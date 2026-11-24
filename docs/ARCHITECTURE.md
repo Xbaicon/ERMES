@@ -351,3 +351,45 @@ Confirmação comercial, pagamento e criação da Entrega validam novamente o bl
 portanto draft anterior não o contorna. Não há endpoint de desbloqueio neste
 incremento. O bootstrap cria estruturas e triggers de modo repetível, sem inferir
 responsabilidade, resolução, refunds ou bloqueios para históricos.
+
+### Ajuste excepcional de Pedido antes da coleta
+
+`order_adjustments` preserva o Pedido, a Entrega, a empresa, o proponente,
+a versão comercial e as composições completa original e proposta. Os snapshots
+guardam preço e peso unitários, quantidade, subtotal, peso total e frete. O
+estado e os timestamps registram a decisão única do cliente, a confirmação
+simulada do acréscimo e a aplicação. O índice parcial permite uma única proposta
+aberta por Entrega. O cancelamento voluntário grava `cancelled_at` e evento
+próprio na mesma transação do cancelamento e reembolso, preservando o estado
+da decisão comercial já tomada. A transação `BEGIN IMMEDIATE` serializa propostas, decisões,
+coleta e encerramento. A coleta usa a versão comercial após aplicação para
+recusar comandos montados antes do ajuste.
+
+A aplicação troca os itens e incrementa a versão do Pedido, preservando o
+destino, o destinatário, a Entrega e o código. O cálculo decimal do peso usa
+a mesma regra dos rascunhos. Frete conhecido com mudança de peso exige
+reconciliação até que exista entrada operacional autoritativa. A operação
+preserva frete `NULL` e frete conhecido quando o peso permanece idêntico.
+
+O ledger append-only preserva o pagamento original. Para delta não nulo,
+`order-adjustment:<id>:payment-products` ou
+`order-adjustment:<id>:refund-products` vincula o lançamento ao ajuste
+aplicado. O leitor verifica a sequência de versões e os eventos de aceite,
+pagamento e aplicação pertinentes. Para reconciliar o subtotal comercial,
+subtrai os refunds de ajuste do total bruto pago em produtos. Para reembolso
+terminal, subtrai todos os refunds anteriores do total pago por componente.
+Falhas no ledger revertem também os itens, a decisão e os eventos da mesma
+transação. O bootstrap mantém os lançamentos de ajustes e não recalcula o
+pagamento original a partir da composição nova. O acréscimo é validado
+contra o total bruto seguro antes do aceite e novamente antes do pagamento.
+A repetição do pagamento de Pedido terminal e o bootstrap de encerramentos
+com decisão financeira própria preservam o ledger existente. O backfill
+legado continua aplicável aos fluxos com evidência reconhecida.
+
+`product_unavailability_closures` registra causa e responsabilidade
+`EMPRESA`, ator, timestamp e origem do encerramento. Uma rejeição referencia
+a proposta decidida. A marcação empresarial sem proposta tem registro próprio.
+A projeção distingue `ENCERRADO` do cancelamento voluntário `CANCELADO`.
+O encerramento libera o motoboy e só é válido sem tentativa e sem evidência
+de coleta. O bootstrap mantém ocorrências legadas de produto indisponível
+como histórico.

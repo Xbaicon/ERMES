@@ -1,3 +1,8 @@
+import {
+  adjustmentAvailability, adjustmentBlocksDelivery, adjustmentDetails,
+  cancelOpenAdjustmentInTransaction, closeUnavailableDelivery,
+  productUnavailability, requireAdjustmentUnblocked,
+} from "./order-adjustments.js";
 import { db, transaction } from "./database.js";
 import { normalizeAddress } from "./address.js";
 import { clientAddressEvidence, validAddressEvidence } from "./client-address-evidence.js";
@@ -27,7 +32,7 @@ import {
   clientFinancialSummary, companyFinancialSummary, courierFinancialSummary,
   recordClientCancellationBeforePickupInTransaction,
   recordClientCancellationAfterPickupInTransaction, recordNormalCompletionInTransaction,
-  recordProductUnavailableInTransaction, recordRecipientTerminalFailureInTransaction,
+  recordRecipientTerminalFailureInTransaction,
   recordClientAddressFailureInTransaction,
   externalObstructionCycle, recordClientCancellationAfterExternalObstructionInTransaction,
   recordPersistentSystemAddressFailureInTransaction,
@@ -82,7 +87,7 @@ function findDelivery(id) {
                             o.client_id AS clientId, o.company_id AS companyId,
                             o.items_total_cents AS itemsTotalCents,
                             o.freight_total_cents AS freightTotalCents,
-                            o.status AS orderStatus, o.payment_status AS paymentStatus,
+                            o.status AS orderStatus, o.version AS orderVersion, o.payment_status AS paymentStatus,
                             o.payment_paid_at AS paymentPaidAt,
                             o.destination_snapshot_json AS destinationSnapshotJson,
                             o.recipient_snapshot_json AS recipientSnapshotJson,
@@ -128,6 +133,7 @@ function publicDelivery(row, {
 } = {}) {
   const delivery = {
     id: row.id, orderId: row.orderId, status: row.status,
+    collectionBlocked: adjustmentBlocksDelivery(row.id),
     officialStatus: officialDeliveryStatus(row.status, row.terminalEvent),
     orderOfficialStatus: officialOrderStatus(row.orderStatus, row.status, row.terminalEvent),
     company: { id: row.companyId, name: row.companyName },
@@ -166,27 +172,32 @@ function history(deliveryId) {
     });
 }
 
-function withHistory(row, options) {
+function withHistory(row, options, courier = false) {
   const attempts = listDeliveryAttempts(db, row.id).map(({
     deliveryId, courierId, courierName, ...attempt
   }) => ({
     ...attempt,
     courier: { fullName: courierName },
   }));
-  return { ...publicDelivery(row, options), attempts, events: history(row.id) };
+  const events = history(row.id).filter(({ eventType }) => !courier
+    || (!eventType.startsWith("order_adjustment_") && eventType !== "product_unavailable"));
+  return { ...publicDelivery(row, options), attempts, events };
 }
 
 const courierView = (row) => ({
   ...withHistory(row, {
     includeClient: true, includeCourier: true, includeDestination: true,
     includePickupAddress: true, includeRecipient: true,
-  }),
+  }, true),
+  pickupVersion: pickupVersion(row),
   financial: courierFinancialSummary(db, row),
 });
 const clientView = (row) => ({
   ...withHistory(row, {
     includeAmounts: true, includeCourier: true, includeDestination: true, includeRecipient: true,
   }),
+  adjustment: adjustmentDetails(row.id),
+  unavailability: productUnavailability(row.id),
   financial: clientFinancialSummary(db, row),
 });
 const companyView = (row) => ({
@@ -194,6 +205,10 @@ const companyView = (row) => ({
     includeAmounts: true, includeClient: true, includeCourier: true,
     includeDestination: true, includePickupAddress: true, includeRecipient: true,
   }),
+  orderVersion: row.orderVersion,
+  ...adjustmentAvailability(row),
+  adjustment: adjustmentDetails(row.id),
+  unavailability: productUnavailability(row.id),
   financial: companyFinancialSummary(db, row),
   revalidations: db.prepare(`SELECT r.id, r.delivery_attempt_id AS deliveryAttemptId,
     r.occurrence_id AS occurrenceId, oc.type, oc.description,
@@ -299,6 +314,7 @@ export function acceptDelivery(id, courierId, companyId, body) {
     if (active) throw deliveryError("O motoboy já possui uma entrega ativa.");
     const delivery = requireDelivery(id);
     if (delivery.companyId !== companyId) throw deliveryError("Entrega não encontrada.", 404);
+    requireAdjustmentUnblocked(id);
     const update = db.prepare(`UPDATE deliveries SET courier_id = ?, status = ?, accepted_at = CURRENT_TIMESTAMP
                                WHERE id = ? AND status = ? AND courier_id IS NULL`)
       .run(courierId, DELIVERY_STATES.HEADING_TO_PICKUP, id, DELIVERY_STATES.AVAILABLE);
@@ -312,6 +328,7 @@ function courierTransition(id, courierId, companyId, body, from, to, eventType, 
   requireEmptyDeliveryBody(body);
   return transaction(() => {
     const delivery = requireCourierDelivery(id, courierId, companyId);
+    requireAdjustmentUnblocked(id);
     if (delivery.status !== from) throw deliveryError(`A entrega não pode avançar a partir de ${delivery.status}.`);
     if (validate) validate(delivery);
     const timestamp = timestampColumn ? `, ${timestampColumn} = CURRENT_TIMESTAMP` : "";
@@ -327,10 +344,23 @@ export const arriveAtPickup = (id, courierId, companyId, body) => courierTransit
   id, courierId, companyId, body, DELIVERY_STATES.HEADING_TO_PICKUP,
   DELIVERY_STATES.AWAITING_PICKUP, DELIVERY_EVENT_TYPES.ARRIVED_AT_PICKUP,
 );
+function pickupVersion(delivery) {
+  const adjusted = db.prepare("SELECT 1 FROM order_adjustments WHERE delivery_id = ? AND state = 'applied'")
+    .get(delivery.id);
+  return adjusted ? delivery.orderVersion : null;
+}
+
 export function collectDelivery(id, courierId, companyId, body) {
-  requireEmptyDeliveryBody(body);
+  requireObject(body, ["pickupVersion"]);
+  if (body.pickupVersion !== undefined && (!Number.isSafeInteger(body.pickupVersion) || body.pickupVersion < 1)) {
+    throw deliveryError("Versão da coleta inválida.", 400);
+  }
   return transaction(() => {
     const delivery = requireCourierDelivery(id, courierId, companyId);
+    requireAdjustmentUnblocked(id);
+    if (pickupVersion(delivery) !== (body.pickupVersion ?? null)) {
+      throw deliveryError("A composição da coleta mudou. Recarregue a entrega.");
+    }
     if (delivery.status !== DELIVERY_STATES.AWAITING_PICKUP) {
       throw deliveryError(`A entrega não pode avançar a partir de ${delivery.status}.`);
     }
@@ -361,6 +391,7 @@ export function confirmDelivery(id, courierId, companyId, body) {
   }
   return transaction(() => {
     const delivery = requireCourierDelivery(id, courierId, companyId);
+    requireAdjustmentUnblocked(id);
     if (delivery.status !== DELIVERY_STATES.AWAITING_CONFIRMATION) {
       throw deliveryError("A entrega não está aguardando confirmação.");
     }
@@ -416,6 +447,7 @@ export function reportCourierFailure(id, courierId, companyId, body) {
   }
   return transaction(() => {
     const delivery = requireCourierDelivery(id, courierId, companyId);
+    requireAdjustmentUnblocked(id);
     const details = { reason: body.reason.trim() };
     if ([DELIVERY_STATES.HEADING_TO_PICKUP, DELIVERY_STATES.AWAITING_PICKUP].includes(delivery.status)) {
       const occurrenceId = createDeliveryOccurrenceInTransaction(db, {
@@ -829,10 +861,12 @@ export function cancelClientDelivery(id, clientId, body) {
   return transaction(() => {
     const delivery = requireDelivery(id);
     if (delivery.clientId !== clientId) throw deliveryError("Entrega não encontrada.", 404);
+    if (!BEFORE_PICKUP.has(delivery.status)) requireAdjustmentUnblocked(id);
     if (BEFORE_PICKUP.has(delivery.status)) {
       if (db.prepare("SELECT 1 FROM delivery_revalidations WHERE delivery_id = ? LIMIT 1").get(id)) {
         throw deliveryError("Cancelamento após revalidação exige regra específica futura.");
       }
+      cancelOpenAdjustmentInTransaction(delivery, clientId);
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, cancelled_at = CURRENT_TIMESTAMP
                   WHERE id = ?`).run(DELIVERY_STATES.CANCELLED, id);
       event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_BEFORE_PICKUP);
@@ -870,17 +904,12 @@ export function cancelClientDelivery(id, clientId, body) {
 }
 
 export function cancelForUnavailableProduct(id, companyUserId, companyId, body) {
-  requireEmptyDeliveryBody(body);
-  return transaction(() => {
-    const delivery = requireDelivery(id);
-    if (delivery.companyId !== companyId) throw deliveryError("Entrega não encontrada.", 404);
-    if (!BEFORE_PICKUP.has(delivery.status)) throw deliveryError("O produto não pode ser marcado indisponível após a coleta.");
-    db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, cancelled_at = CURRENT_TIMESTAMP
-                WHERE id = ?`).run(DELIVERY_STATES.CANCELLED, id);
-    event(id, companyUserId, DELIVERY_EVENT_TYPES.PRODUCT_UNAVAILABLE);
-    recordProductUnavailableInTransaction(db, delivery);
-    return companyView(requireDelivery(id));
-  });
+  requireObject(body, ["version"]);
+  if (body.version !== undefined && (!Number.isSafeInteger(body.version) || body.version < 1)) {
+    throw deliveryError("Versão comercial inválida.", 400);
+  }
+  closeUnavailableDelivery(id, companyId, companyUserId, body.version);
+  return companyView(requireDelivery(id));
 }
 
 export { TERMINAL_STATES };

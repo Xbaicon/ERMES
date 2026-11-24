@@ -2,7 +2,7 @@ import { setupClientCatalog } from "./client-cart.js";
 import { setupClientDrafts } from "./client-drafts.js";
 import { setupClientPayments } from "./client-payments.js";
 import { setupCompanyDrafts } from "./company-drafts.js";
-import { setupDeliveryPanel } from "./delivery-panels.js";
+import { formatMoney as money, setupDeliveryPanel } from "./delivery-panels.js";
 import { setupOrderChat } from "./order-chat.js";
 
 (function () {
@@ -17,10 +17,6 @@ import { setupOrderChat } from "./order-chat.js";
       throw error;
     }
     return data;
-  }
-
-  function money(cents) {
-    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(cents) / 100);
   }
 
   function escapeHtml(value) {

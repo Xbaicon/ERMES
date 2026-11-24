@@ -1,3 +1,4 @@
+import { decideAdjustment, getAdjustment, proposeAdjustment } from "./order-adjustments.js";
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
@@ -19,7 +20,7 @@ import {
   getClientDelivery, getCompanyDelivery, getCourierCurrentDelivery, listAvailableDeliveries,
   listClientDeliveries, listCompanyDeliveries, parseDeliveryId, reportCourierFailure,
   reportDeliveryOccurrence, reportReturn, reportExternalObstruction, revalidateDelivery,
-  resolveSystemAddress, startSystemAddressReturn,
+  requireEmptyDeliveryBody, resolveSystemAddress, startSystemAddressReturn,
 } from "./delivery-operations.js";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -407,6 +408,27 @@ async function api(request, response, url) {
   if (request.method === "GET" && companyDeliveryMatch) {
     const user = requireUser(request, ["company"]);
     return json(response, 200, { delivery: getCompanyDelivery(user.companyId, parseDeliveryId(companyDeliveryMatch[1])) });
+  }
+  const adjustmentMatch = pathname.match(/^\/api\/(company|client)\/deliveries\/([^/]+)\/adjustment$/);
+  if (adjustmentMatch && request.method === "GET") {
+    const [, role, deliveryId] = adjustmentMatch;
+    const user = requireUser(request, [role]);
+    return json(response, 200, getAdjustment(parseDeliveryId(deliveryId),
+      role === "company" ? user.companyId : user.id, role));
+  }
+  if (adjustmentMatch?.[1] === "company" && request.method === "POST") {
+    const user = requireUser(request, ["company"]);
+    const adjustment = proposeAdjustment(parseDeliveryId(adjustmentMatch[2]),
+      user.companyId, user.id, await readJson(request));
+    return json(response, 200, { adjustment });
+  }
+  const adjustmentAction = pathname.match(/^\/api\/client\/deliveries\/([^/]+)\/adjustment\/([^/]+)\/(accept|reject|pay)$/);
+  if (adjustmentAction && request.method === "POST") {
+    const user = requireUser(request, ["client"]);
+    requireEmptyDeliveryBody(await readJson(request));
+    const adjustment = decideAdjustment(parseDeliveryId(adjustmentAction[1]),
+      parseDeliveryId(adjustmentAction[2]), user.id, adjustmentAction[3]);
+    return json(response, 200, { adjustment });
   }
   const companyUnavailableMatch = pathname.match(/^\/api\/company\/deliveries\/([^/]+)\/product-unavailable$/);
   if (request.method === "POST" && companyUnavailableMatch) {

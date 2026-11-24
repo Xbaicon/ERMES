@@ -689,7 +689,7 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
     assert.equal(ledger(invalidCancellation.orderId).length, 2);
     assert.equal(ledger(coherentUnavailable.orderId)
       .filter(({ entryType }) => entryType === "refund").length, 2);
-    assert.equal(ledger(invalidUnavailable.orderId).length, 2);
+    assert.deepEqual(ledger(invalidUnavailable.orderId), []);
 
     const count = db.prepare("SELECT COUNT(*) AS total FROM financial_entries").get().total;
     transaction(() => backfillFinancialEntries(db));

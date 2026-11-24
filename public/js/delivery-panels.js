@@ -1,3 +1,16 @@
+const currency = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+
+export function formatMoney(cents) {
+  const amount = Number(cents);
+  if (!Number.isSafeInteger(amount)) return currency.format(NaN);
+  const absolute = BigInt(Math.abs(amount));
+  const whole = absolute / 100n;
+  const fraction = String(absolute % 100n).padStart(2, "0");
+  const signedWhole = amount < 0 ? (whole === 0n ? -0 : -whole) : whole;
+  return currency.formatToParts(signedWhole)
+    .map((part) => part.type === "fraction" ? fraction : part.value).join("");
+}
+
 const labels = Object.freeze({
   available: "Disponível", heading_to_pickup: "A caminho da coleta",
   awaiting_pickup: "Aguardando coleta", in_transit: "Em transporte",
@@ -48,21 +61,56 @@ function financialDetails(role, financial, money, escapeHtml) {
     ${financial.pending.map((item) => `<p class="form-copy">${escapeHtml(pendingLabels[item] || item)}</p>`).join("")}</div>`;
 }
 
+const adjustmentLabels = {
+  pending: "Aguardando decisão do cliente", awaiting_payment: "Aguardando pagamento da diferença",
+  applied: "Aceita e aplicada", rejected: "Rejeitada pelo cliente",
+  cancelled: "Encerrada pelo cancelamento voluntário do pedido",
+};
+
+function adjustmentDetails(role, delivery, money, escapeHtml) {
+  if (role === "courier") return delivery.collectionBlocked
+    ? '<p class="form-copy" role="status">Coleta bloqueada enquanto o ajuste comercial está em aberto.</p>' : "";
+  const { adjustment, unavailability } = delivery;
+  const closure = unavailability
+    ? '<p class="form-copy">Pedido encerrado por indisponibilidade. Responsabilidade da empresa.</p>' : "";
+  if (!adjustment) return closure;
+  const composition = (label, snapshot) => `<h5>${label}</h5>
+    <ul>${snapshot.items.map((item) => `<li>${item.quantity} × ${escapeHtml(item.name)} · ${money(item.unitPriceCents)} por unidade</li>`).join("")}</ul>
+    <p class="form-copy">Subtotal ${money(snapshot.subtotalCents)} · ${snapshot.weightKg} kg · Frete ${snapshot.freightTotalCents === null ? "sem valor calculado" : money(snapshot.freightTotalCents)}</p>`;
+  const delta = adjustment.differenceCents;
+  const difference = delta === 0 ? "Sem diferença de preço"
+    : delta > 0 ? `Acréscimo de ${money(delta)}` : `Reembolso de ${money(-delta)}`;
+  const decisions = role !== "client" ? "" : adjustment.requiresPayment
+    ? '<button type="button" class="button button-dark button-small" data-delivery-action="adjustment-pay">Confirmar pagamento simulado da diferença</button>'
+    : adjustment.state === "pending"
+      ? '<button type="button" class="button button-dark button-small" data-delivery-action="adjustment-accept">Aceitar proposta</button>'
+        + '<button type="button" class="button button-outline button-small" data-delivery-action="adjustment-reject">Rejeitar proposta e encerrar</button>'
+      : "";
+  return `<section><h4>Ajuste por indisponibilidade</h4>
+    <p class="form-copy">${adjustmentLabels[adjustment.state]}${adjustment.state === "cancelled" && adjustment.decision === "accepted"
+      ? " após aceite da proposta" : ""} · ${difference}</p>
+    ${composition("Composição original", adjustment.original)}
+    ${composition("Composição proposta", adjustment.proposed)}
+    <div class="delivery-actions">${decisions}</div>${closure}</section>`;
+}
+
 function actions(role, delivery, courierCanAccept) {
   if (role === "client" && ["available", "heading_to_pickup", "awaiting_pickup", "in_transit", "awaiting_confirmation"].includes(delivery.status)) {
     return '<button class="button button-outline button-small" data-delivery-action="cancel">Cancelar entrega</button>';
   }
   if (role === "client") return "";
   if (role === "company") {
-    if (["available", "heading_to_pickup", "awaiting_pickup"].includes(delivery.status)) {
-      return '<button class="button button-outline button-small" data-delivery-action="product-unavailable">Produto indisponível</button>';
-    }
+    const propose = delivery.canPropose
+      ? '<button type="button" class="button button-dark button-small" data-delivery-action="adjustment-edit">Propor ajuste por indisponibilidade</button>' : "";
+    const close = delivery.canCloseUnavailable
+      ? '<button type="button" class="button button-outline button-small" data-delivery-action="product-unavailable">Encerrar por indisponibilidade</button>' : "";
+    if (propose || close) return propose + close;
     if (delivery.status === "awaiting_return_confirmation") {
       return '<button class="button button-dark button-small" data-delivery-action="confirm-return">Confirmar retorno recebido</button>';
     }
     return "";
   }
-  if (role !== "courier") return "";
+  if (role !== "courier" || delivery.collectionBlocked) return "";
   const simple = {
     available: ["accept", courierCanAccept ? "Aceitar entrega" : "Aceite indisponível"],
     heading_to_pickup: ["arrive-pickup", "Registrar chegada à coleta"],
@@ -85,7 +133,7 @@ function actions(role, delivery, courierCanAccept) {
 }
 
 export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage,
-  money = (cents) => `R$ ${(Number(cents) / 100).toFixed(2)}` }) {
+  money = formatMoney }) {
   const panel = document.querySelector(`[data-delivery-panel="${role}"]`);
   if (!panel) return;
   panel.hidden = false;
@@ -122,7 +170,9 @@ export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage,
       ${selected.courier ? `<p class="form-copy"><strong>Veículo:</strong> ${escapeHtml([selected.courier.vehicleType, selected.courier.vehicleIdentifier, selected.courier.plate].filter(Boolean).join(" · "))}</p>` : ""}
       ${selected.confirmationCode ? `<p class="confirmation-code"><strong>Código de confirmação:</strong> <code>${escapeHtml(selected.confirmationCode)}</code></p>` : ""}
       ${financialDetails(role, selected.financial, money, escapeHtml)}
+      ${adjustmentDetails(role, selected, money, escapeHtml)}
       <div class="delivery-actions">${actions(role, selected, courierCanAccept)}</div>
+      <div data-adjustment-editor></div>
       ${selected.status === "awaiting_revalidation" ? '<p class="form-copy">Retorno recebido. A empresa precisa verificar a viabilidade e autorizar a liberação.</p>' : ""}
       <h4>Histórico</h4>
       <ol class="delivery-events">${events.map((item) => `<li><strong>${escapeHtml(item.eventType)}</strong><small>${escapeHtml(item.occurredAt)}</small></li>`).join("")}</ol>`;
@@ -170,26 +220,80 @@ export async function setupDeliveryPanel({ role, api, escapeHtml, showMessage,
     const button = event.target.closest("[data-delivery-id]");
     if (button) open(Number(button.dataset.deliveryId)).catch((error) => showMessage(message, error.message));
   });
+  async function openAdjustmentEditor(deliveryId) {
+    const [{ orderVersion, currentItems, canPropose }, { products }] = await Promise.all([
+      api(`/api/company/deliveries/${deliveryId}/adjustment`), api("/api/company/products"),
+    ]);
+    if (selected?.id !== deliveryId) return;
+    if (!canPropose) throw new Error("A entrega não permite uma nova proposta.");
+    const options = new Map(products.filter(({ isAvailable }) => isAvailable)
+      .map(({ id, name }) => [id, { name, quantity: 0 }]));
+    for (const { productId, name, quantity } of currentItems) options.set(productId, { name, quantity });
+    detail.querySelector("[data-adjustment-editor]").innerHTML = `<form data-adjustment-form data-order-version="${orderVersion}">
+      <h4>Montar proposta</h4>
+      <p class="form-copy">Informe a quantidade final de cada produto. Use zero para remover ou omitir um item.</p>
+      ${Array.from(options, ([id, item]) => `<label>${escapeHtml(item.name)}
+        <input type="number" min="0" step="1" value="${item.quantity}" required data-adjustment-product="${id}">
+      </label>`).join("")}
+      <button class="button button-dark button-small">Enviar proposta</button></form>`;
+  }
+
+  detail.addEventListener("submit", async (event) => {
+    const form = event.target.closest("[data-adjustment-form]");
+    if (!form || role !== "company" || !selected) return;
+    event.preventDefault();
+    const submit = form.querySelector("button");
+    submit.disabled = true;
+    try {
+      const items = Array.from(form.querySelectorAll("[data-adjustment-product]"), (input) => ({
+        productId: Number(input.dataset.adjustmentProduct), quantity: Number(input.value),
+      })).filter(({ quantity }) => quantity !== 0);
+      await api(`/api/company/deliveries/${selected.id}/adjustment`, {
+        method: "POST", body: JSON.stringify({ version: Number(form.dataset.orderVersion), items }),
+      });
+      await load();
+      showMessage(message, "Proposta enviada ao cliente.", "success");
+    } catch (error) {
+      showMessage(message, error.message);
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
   detail.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-delivery-action]");
     if (!button || !selected) return;
     const action = button.dataset.deliveryAction;
     const prefixes = { client: "/api/client", company: "/api/company", courier: "/api/courier" };
     let body = {};
+    if (action === "product-unavailable" && selected.orderVersion != null) {
+      body = { version: selected.orderVersion };
+    }
+    if (action === "collect" && selected.pickupVersion != null) {
+      body = { pickupVersion: selected.pickupVersion };
+    }
     if (action === "confirm") body = { code: detail.querySelector("[data-delivery-code]").value };
     if (action === "fail") body = { reason: detail.querySelector("[data-delivery-failure-reason]").value };
     if (action === "occurrences") body = { type: detail.querySelector("[data-delivery-occurrence]").value };
     button.disabled = true;
     try {
-      const result = await api(`${prefixes[role]}/deliveries/${selected.id}/${action}`, {
+      if (action === "adjustment-edit") {
+        await openAdjustmentEditor(selected.id);
+        return;
+      }
+      const endpoint = action.startsWith("adjustment-")
+        ? `adjustment/${selected.adjustment.id}/${action.slice("adjustment-".length)}` : action;
+      const result = await api(`${prefixes[role]}/deliveries/${selected.id}/${endpoint}`, {
         method: "POST", body: JSON.stringify(body),
       });
-      selected = result.delivery;
-      showMessage(message, action === "confirm" ? "Entrega finalizada." : "Operação registrada.", "success");
+      selected = result.delivery ?? selected;
       await load();
+      showMessage(message, action === "confirm" ? "Entrega finalizada." : "Operação registrada.", "success");
     } catch (error) {
       await load().catch(() => {});
       showMessage(message, error.message);
+    } finally {
+      button.disabled = false;
     }
   });
   reload.addEventListener("click", () => load().catch((error) => showMessage(message, error.message)));

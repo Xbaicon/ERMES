@@ -1,3 +1,4 @@
+import { adjustmentDetails } from "./order-adjustments.js";
 import { officialOrderStatus, terminalDeliveryEvent } from "./official-statuses.js";
 import { db, transaction } from "./database.js";
 import { MAX_ORDER_WEIGHT_KG } from "./freight.js";
@@ -140,7 +141,7 @@ function decimalWeight(value) {
     : { numerator: digits * 10n ** BigInt(-places), places: 0 };
 }
 
-export function calculateDraftTotals(items) {
+export function calculateDraftTotals(items, { includeExactWeight = false } = {}) {
   let subtotal = 0n;
   let weightNumerator = 0n;
   let weightPlaces = 0;
@@ -163,9 +164,15 @@ export function calculateDraftTotals(items) {
     }
   }
   if (weightNumerator <= 0n) throw orderError("O peso total deve ser maior que zero.");
+  while (weightPlaces > 0 && weightNumerator % 10n === 0n) {
+    weightNumerator /= 10n;
+    weightPlaces--;
+  }
+  const exactWeight = `${weightNumerator}e-${weightPlaces}`;
   return {
     itemsTotalCents: Number(subtotal),
-    weightKg: Number(`${weightNumerator}e-${weightPlaces}`),
+    weightKg: Number(exactWeight),
+    ...(includeExactWeight && { exactWeight }),
   };
 }
 
@@ -190,7 +197,7 @@ function findOwnedOrder(clientId, orderId) {
   return order;
 }
 
-function loadStoredItems(orderId) {
+export function loadStoredItems(orderId) {
   return db.prepare(`SELECT oi.product_id AS productId, p.name, oi.quantity,
                             CAST(oi.unit_price_cents AS TEXT) AS unitPriceCents,
                             oi.unit_weight_kg AS unitWeightKg
@@ -512,8 +519,10 @@ function mapClientConfirmedOrder(order, snapshot, summary = false) {
       updatedAt: order.updatedAt,
     };
   }
+  const delivery = db.prepare("SELECT id FROM deliveries WHERE order_id = ?").get(order.id);
   return {
     ...common,
+    adjustment: delivery ? adjustmentDetails(delivery.id) : null,
     items: snapshot.items.map(({ productId, name, quantity, unitPriceCents, unitWeightKg }) => ({
       productId, name, quantity, unitPriceCents: Number(unitPriceCents), unitWeightKg,
     })),
@@ -560,14 +569,21 @@ export function confirmSimulatedPayment(clientId, orderId, body) {
     requireProcessableSystemAddress(snapshot.snapshot);
     if (order.paymentStatus === "paid") {
       const ensured = createDeliveryForEligibleOrderInTransaction(order.id);
-      recordPaymentInTransaction(db, {
-        ...order,
-        itemsTotalCents: snapshot.totals.itemsTotalCents,
-        freightTotalCents: snapshot.freightTotalCents,
-      }, ensured.delivery.id);
+      if (!["completed", "cancelled", "returned", "returning", "awaiting_return_confirmation",
+        "awaiting_revalidation"].includes(ensured.delivery.status)) {
+        recordPaymentInTransaction(db, {
+          ...order,
+          itemsTotalCents: snapshot.totals.itemsTotalCents,
+          freightTotalCents: snapshot.freightTotalCents,
+        }, ensured.delivery.id);
+      }
       return { order: mapClientConfirmedOrder(order, snapshot), ...ensured };
     }
 
+    const delivery = db.prepare("SELECT id, status FROM deliveries WHERE order_id = ?").get(order.id);
+    if (delivery && ["completed", "cancelled", "returned"].includes(delivery.status)) {
+      throw orderError("O pedido já foi encerrado.", 409);
+    }
     const update = db.prepare(`UPDATE orders
                                SET payment_status = 'paid', payment_paid_at = CURRENT_TIMESTAMP,
                                    updated_at = CURRENT_TIMESTAMP
