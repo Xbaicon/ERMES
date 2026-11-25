@@ -102,3 +102,4 @@
   .dashboard-user { width: 100%; }
   .cart-heading, .cart-item { align-items: flex-start; flex-direction: column; }
 }
+.dashboard-section[hidden], [data-product-form][hidden] { display: none; }

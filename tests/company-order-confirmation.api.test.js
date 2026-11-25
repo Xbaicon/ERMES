@@ -76,7 +76,7 @@ test("confirmacao comercial de pedido pela empresa", async (context) => {
     .get("empresa@ermes.local").value;
   const otherCompanyId = Number(db.prepare("INSERT INTO companies (name, cnpj, email) VALUES (?, ?, ?)")
     .run("Empresa B", "00000000000272", "empresa.b@ermes.local").lastInsertRowid);
-  db.prepare("INSERT INTO users (company_id, role, full_name, email, password_hash) VALUES (?, 'company', ?, ?, ?)")
+  db.prepare("INSERT INTO users (company_id, role, company_profile, full_name, email, password_hash) VALUES (?, 'company', 'RESPONSAVEL', ?, ?, ?)")
     .run(otherCompanyId, "Responsavel B", "empresa.b.acesso@ermes.local", passwordHash);
   const otherProductId = Number(db.prepare(`INSERT INTO products
     (company_id, name, price_cents, unit_weight_kg) VALUES (?, ?, ?, ?)`)

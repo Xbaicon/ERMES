@@ -22,6 +22,11 @@ Base local: `http://localhost:3000/api`
 
 O e-mail de acesso é normalizado e único em `users.email`, independentemente do papel. Se já existir, os dois cadastros retornam HTTP `409 Conflict` com `{ "error": "Este e-mail já está cadastrado. Use outro e-mail ou faça login." }`. No cadastro de empresa, essa regra se aplica a `accessEmail`; `companyEmail` é o contato da empresa.
 
+`/auth/register/company` cria explicitamente o primeiro usuário com `companyProfile: "RESPONSAVEL"`.
+`/auth/login` e `/auth/me` retornam `companyProfile` (`RESPONSAVEL` ou `ATENDENTE` para
+`role: "company"`; `null` para os outros papéis). A sessão usa o perfil atual
+persistido no banco, não o perfil enviado pelo navegador.
+
 ## Empresa autenticada
 
 | Método | Rota | Finalidade |
@@ -45,6 +50,28 @@ O e-mail de acesso é normalizado e único em `users.email`, independentemente d
 | POST | `/company/deliveries/:deliveryId/confirm-return` | Confirmar recebimento físico do retorno |
 | POST | `/company/deliveries/:deliveryId/system-address-resolution` | Resolver erro de apresentação do endereço atribuído ao ERMES |
 | POST | `/freight/quote` | Exercitar tecnicamente a fórmula com entradas de teste |
+| GET/POST | `/company/users` | Listar/cadastrar usuários internos da própria empresa |
+
+`GET /company/users` e `POST /company/users` exigem `RESPONSAVEL`. A listagem
+retorna `id`, `fullName`, `email`, `companyProfile`, `status`, `createdAt`; não
+expõe senha, hash ou sessão. O cadastro aceita somente `fullName`, `email`,
+`password` e `companyProfile` (`RESPONSAVEL` ou `ATENDENTE`). O servidor deriva
+`company_id` da sessão; `companyId` no corpo é rejeitado com `400`.
+E-mail duplicado retorna `409`.
+
+**Permissões:** `RESPONSAVEL` e `ATENDENTE` podem consultar produtos, calcular
+cotação técnica, operar drafts, confirmação comercial, chat, Entregas,
+ocorrências, ajuste excepcional, indisponibilidade, retorno e revalidação.
+Somente `RESPONSAVEL` pode criar produtos, mudar disponibilidade, consultar ou
+alterar parâmetros tarifários, listar/cadastrar motoboys e listar/cadastrar
+usuários internos. Sem sessão, as rotas retornam `401`; usuário autenticado sem
+permissão recebe `403`. Dados de outra empresa continuam isolados pela sessão.
+
+Confirmação comercial, criação/disponibilidade de produtos, criação de motoboy,
+alteração tarifária e criação de usuário são auditadas com o ID exato do
+UsuarioEmpresa executor. A repetição idempotente de confirmação não duplica a
+auditoria. Chat, classificação, ajustes e eventos de Entrega preservam seus
+campos de ator próprios.
 
 ### Ajuste excepcional por indisponibilidade antes da coleta
 
@@ -683,8 +710,8 @@ desfecho operacional inventado.
 Exclusivamente para `confirmation_failed`, aplica as consequências financeiras
 do cliente na mesma transação, conforme a seção financeira abaixo. As demais
 ocorrências mantêm a classificação sem efeitos financeiros. Não há nova interface visual.
-A autorização usa somente o papel técnico atual `company`;
-`RESPONSAVEL` e `ATENDENTE` ainda não foram implementados.
+A autorização empresarial preserva `role = 'company'` como categoria global e
+usa `companyProfile` para as permissões internas.
 
 ### Projeções financeiras
 

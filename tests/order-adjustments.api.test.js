@@ -31,8 +31,9 @@ test("ajustes comerciais antes da coleta", async (context) => {
   const company = companyId("empresa");
   const otherCompany = companyId("outra");
   function user(role, name, owner = null) {
-    const id = insertId(`INSERT INTO users (role, full_name, email, company_id, password_hash)
-      VALUES (?, ?, ?, ?, 'unused')`, role, name, name + "@local.test", owner);
+    const id = insertId(`INSERT INTO users (role, company_profile, full_name, email, company_id, password_hash)
+      VALUES (?, ?, ?, ?, ?, 'unused')`, role, role === "company" ? "RESPONSAVEL" : null,
+    name, name + "@local.test", owner);
     db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, datetime('now', '+1 day'))")
       .run(hashToken(name), id);
     return { id, cookie: `ermes_session=${name}` };

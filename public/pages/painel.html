@@ -27,7 +27,7 @@
         <span>Esta é uma fundação executável. Funcionalidades ainda pendentes na especificação não foram presumidas.</span>
       </div>
 
-      <section class="dashboard-section" data-company-panel hidden>
+      <section class="dashboard-section" data-company-panel data-company-admin hidden>
         <div class="section-title"><div><p class="eyebrow">FRETE</p><h2>Parâmetros tarifários</h2></div></div>
         <form class="dashboard-card form" data-freight-config-form>
           <p class="form-copy">Configure as taxas aplicadas ao peso, à distância e ao tempo estimado. O limite máximo por pedido é fixo em 12 kg.</p>
@@ -97,7 +97,7 @@
       <section class="dashboard-section" data-company-panel hidden>
         <div class="section-title"><div><p class="eyebrow">CATÁLOGO</p><h2>Produtos</h2></div></div>
         <div class="dashboard-grid two-columns">
-          <form class="dashboard-card form" data-product-form>
+          <form class="dashboard-card form" data-product-form data-company-admin>
             <h3>Novo produto</h3>
             <div class="form-field"><label for="product-name">Nome</label><input id="product-name" name="name" required /></div>
             <div class="form-field"><label for="product-description">Descrição</label><input id="product-description" name="description" /></div>
@@ -112,7 +112,7 @@
         </div>
       </section>
 
-      <section class="dashboard-section" data-company-panel hidden>
+      <section class="dashboard-section" data-company-panel data-company-admin hidden>
         <div class="section-title"><div><p class="eyebrow">EQUIPE</p><h2>Motoboys vinculados</h2></div></div>
         <div class="dashboard-grid two-columns">
           <form class="dashboard-card form" data-courier-form>
@@ -134,6 +134,22 @@
             <button class="button button-dark" type="submit">Vincular motoboy</button>
           </form>
           <div class="dashboard-card"><h3>Equipe cadastrada</h3><div class="item-list" data-couriers-list></div></div>
+        </div>
+      </section>
+
+      <section class="dashboard-section" data-company-panel data-company-admin hidden>
+        <div class="section-title"><div><p class="eyebrow">USUÁRIOS</p><h2>Equipe interna</h2></div></div>
+        <div class="dashboard-grid two-columns">
+          <form class="dashboard-card form" data-company-user-form>
+            <h3>Novo usuário</h3>
+            <div class="form-field"><label for="company-user-name">Nome completo</label><input id="company-user-name" name="fullName" required /></div>
+            <div class="form-field"><label for="company-user-email">E-mail</label><input id="company-user-email" name="email" type="email" required /></div>
+            <div class="form-field"><label for="company-user-profile">Perfil</label><select id="company-user-profile" name="companyProfile" required><option value="ATENDENTE">Atendente</option><option value="RESPONSAVEL">Responsável</option></select></div>
+            <div class="form-field"><label for="company-user-password">Senha inicial</label><input id="company-user-password" name="password" type="password" minlength="8" required /></div>
+            <div class="form-message" data-company-user-message hidden></div>
+            <button class="button button-dark" type="submit">Cadastrar usuário</button>
+          </form>
+          <div class="dashboard-card"><h3>Usuários cadastrados</h3><div class="item-list" data-company-users-list></div></div>
         </div>
       </section>
 

@@ -9,7 +9,7 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
 | Baseline 0.2 | Em implementação incremental | `TentativaEntrega`, ocorrências/responsabilidade, impedimento externo, erro de apresentação do endereço pelo ERMES e produto indisponível/ajuste excepcional possuem incrementos funcionais; demais cenários e financeiro completo continuam pendentes |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
-| Incremento atual | Produto indisponível antes da coleta e ajuste excepcional — IMPLEMENTADO | Proposta versionada, decisão explícita, diferença simulada, bloqueio da coleta e encerramento por indisponibilidade |
+| Incremento atual | RF-001/RF-002 — IMPLEMENTADOS | Perfis empresariais internos, múltiplos usuários e auditoria das ações relevantes |
 | Próximo passo técnico | Implementação incremental | Continuar os incrementos funcionais da Baseline 0.2 sobre SQLite, preservando as pendências registradas abaixo |
 | Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
 | Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |
@@ -18,6 +18,8 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 
 | Regra | Estado | Observação |
 | --- | --- | --- |
+| RF-001 | IMPLEMENTADO | Múltiplos UsuarioEmpresa por empresa; RESPONSAVEL administra cadastros e tarifas, ATENDENTE opera pedidos, chat e Entregas; perfil separado do papel técnico e protegido no SQLite |
+| RF-002 | IMPLEMENTADO | Confirmação comercial e administração de usuários, catálogo, motoboys e tarifas registram o ator exato em auditoria append-only e transacional; ações operacionais preservam seus atores nos registros de domínio |
 | RN-021 / RF-023 / RF-024 | IMPLEMENTADO | Empresa propõe composição completa e cliente decide explicitamente; o ajuste preserva snapshots históricos, Entrega e código |
 | RN-022 / RF-026 | IMPLEMENTADO | Diferença a maior exige pagamento explícito e a menor gera refund. O total bruto pago é validado antes do aceite e do pagamento adicional |
 | RF-025 | PARCIAL | Subtotal dos produtos e peso são recalculados. Frete `NULL` permanece `NULL`. Frete conhecido é preservado com parâmetros relevantes iguais. Mudança de peso com frete conhecido exige reconciliação enquanto faltarem dados autoritativos |
@@ -118,7 +120,7 @@ permanece pendente.
 - Chat permanece aberto, mas nenhuma mensagem autoriza liberação. Falta de tentativa, ocorrência inequívoca ou retorno comprovado exige reconciliação explícita, sem backfill.
 - O fechamento por ausência/recusa não cria nova tentativa ou revalidação nem presume responsabilidade. Completa o reembolso acumulado de produtos efetivamente pagos, preserva a cobrança de frete e divide frete reconciliado 70/25/5 pelo maior resto. Refund anterior parcial reduz o saldo; integral não duplica; over-refund é bloqueado. O motoboy vem da TentativaEntrega terminal, confrontada com coleta, ocorrência e retorno do ciclo; identidade contraditória exige reconciliação. Refund anterior positivo de frete também exige reconciliação. Chaves idempotentes, ledger append-only e transação única garantem rollback do fechamento em falha financeira.
 - Frete `NULL` sem pagamento de frete gera `freight_amount_unavailable` sem distribuição; frete conhecido sem pagamento coerente ou frete `NULL` com pagamento exige `FINANCIAL_RECONCILIATION_REQUIRED`. Não há backfill automático heurístico de consequências de retornos históricos.
-- Cancelamento durante a revalidação após impedimento externo está implementado; após a liberação pela empresa, a política de cancelamento permanece pendente. Endereço classificado `CLIENTE` possui fechamento terminal e `SISTEMA` possui conclusão segura ou resolução corrigível/persistente após retorno. Produto indisponível/ajuste 0.2 está implementado; perfis RESPONSAVEL/ATENDENTE permanecem para incremento próprio. As consequências financeiras do cliente em `confirmation_failed` estão implementadas na classificação; distribuição/custo interno continua futuro.
+- Cancelamento durante a revalidação após impedimento externo está implementado; após a liberação pela empresa, a política de cancelamento permanece pendente. Endereço classificado `CLIENTE` possui fechamento terminal e `SISTEMA` possui conclusão segura ou resolução corrigível/persistente após retorno. Produto indisponível/ajuste 0.2 e perfis RESPONSAVEL/ATENDENTE estão implementados. As consequências financeiras do cliente em `confirmation_failed` estão implementadas na classificação; distribuição/custo interno continua futuro.
 
 
 ## Incremento terminal de três códigos inválidos

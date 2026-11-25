@@ -159,6 +159,7 @@ transaction(() => {
     id INTEGER PRIMARY KEY,
     company_id INTEGER REFERENCES companies(id),
     role TEXT NOT NULL CHECK(role IN ('client', 'company', 'courier', 'platform_admin')),
+    company_profile TEXT,
     full_name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
     cpf TEXT UNIQUE,
@@ -168,7 +169,9 @@ transaction(() => {
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'pending', 'blocked')),
     order_blocked_until TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK(role NOT IN ('company', 'courier') OR company_id IS NOT NULL)
+    CHECK(role NOT IN ('company', 'courier') OR company_id IS NOT NULL),
+    CHECK(COALESCE((role = 'company' AND company_profile IN ('RESPONSAVEL', 'ATENDENTE'))
+      OR (role <> 'company' AND company_profile IS NULL), 0))
   );
 
   CREATE TABLE IF NOT EXISTS couriers (
@@ -570,6 +573,82 @@ transaction(() => {
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 `);
+  // Bancos anteriores recebem o perfil do usuário responsável original sem mudar sua identidade.
+  const columns = new Set(db.prepare("PRAGMA table_info(users)").all().map(({ name }) => name));
+  if (!columns.has("company_profile")) db.exec("ALTER TABLE users ADD COLUMN company_profile TEXT");
+  db.prepare(`UPDATE users SET company_profile = 'RESPONSAVEL'
+    WHERE role = 'company' AND company_profile IS NULL`).run();
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS users_company_profile_insert
+      BEFORE INSERT ON users
+      WHEN NOT COALESCE(((NEW.role = 'company' AND NEW.company_id IS NOT NULL
+        AND NEW.company_profile IN ('RESPONSAVEL', 'ATENDENTE'))
+        OR (NEW.role <> 'company' AND NEW.company_profile IS NULL)), 0)
+      BEGIN SELECT RAISE(ABORT, 'invalid company profile'); END;
+    CREATE TRIGGER IF NOT EXISTS users_company_profile_update
+      BEFORE UPDATE OF role, company_id, company_profile ON users
+      WHEN NOT COALESCE(((NEW.role = 'company' AND NEW.company_id IS NOT NULL
+        AND NEW.company_profile IN ('RESPONSAVEL', 'ATENDENTE'))
+        OR (NEW.role <> 'company' AND NEW.company_profile IS NULL)), 0)
+      BEGIN SELECT RAISE(ABORT, 'invalid company profile'); END;
+
+    CREATE TABLE IF NOT EXISTS company_audit_events (
+      id INTEGER PRIMARY KEY,
+      company_id INTEGER NOT NULL REFERENCES companies(id),
+      actor_user_id INTEGER NOT NULL REFERENCES users(id),
+      action TEXT NOT NULL CHECK(action IN ('company_user_created', 'order_confirmed',
+        'product_created', 'product_availability_changed', 'courier_created', 'freight_config_changed')),
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('user', 'order', 'product', 'freight_config')),
+      entity_id INTEGER NOT NULL,
+      details_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS company_audit_events_company_id_id
+      ON company_audit_events(company_id, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS company_audit_one_order_confirmation
+      ON company_audit_events(entity_id) WHERE action = 'order_confirmed';
+    CREATE TRIGGER IF NOT EXISTS company_audit_events_actor_insert
+      BEFORE INSERT ON company_audit_events
+      WHEN NOT EXISTS (SELECT 1 FROM users actor WHERE actor.id = NEW.actor_user_id
+        AND actor.role = 'company' AND actor.company_id = NEW.company_id
+        AND actor.company_profile IN ('RESPONSAVEL', 'ATENDENTE')
+        AND (NEW.action = 'order_confirmed' OR actor.company_profile = 'RESPONSAVEL'))
+      BEGIN SELECT RAISE(ABORT, 'invalid company audit actor'); END;
+    CREATE TRIGGER IF NOT EXISTS company_audit_events_entity_insert
+      BEFORE INSERT ON company_audit_events
+      WHEN NOT (
+        (NEW.action = 'company_user_created' AND NEW.entity_type = 'user'
+          AND EXISTS (SELECT 1 FROM users target WHERE target.id = NEW.entity_id
+            AND target.role = 'company' AND target.company_id = NEW.company_id))
+        OR (NEW.action = 'courier_created' AND NEW.entity_type = 'user'
+          AND EXISTS (SELECT 1 FROM users target JOIN couriers c ON c.user_id = target.id
+            WHERE target.id = NEW.entity_id AND target.role = 'courier'
+              AND target.company_id = NEW.company_id))
+        OR (NEW.action = 'order_confirmed' AND NEW.entity_type = 'order'
+          AND EXISTS (SELECT 1 FROM orders target WHERE target.id = NEW.entity_id
+            AND target.company_id = NEW.company_id AND target.status = 'confirmed'))
+        OR (NEW.action IN ('product_created', 'product_availability_changed')
+          AND NEW.entity_type = 'product'
+          AND EXISTS (SELECT 1 FROM products target WHERE target.id = NEW.entity_id
+            AND target.company_id = NEW.company_id))
+        OR (NEW.action = 'freight_config_changed' AND NEW.entity_type = 'freight_config'
+          AND NEW.entity_id = NEW.company_id AND EXISTS
+            (SELECT 1 FROM freight_configs target WHERE target.company_id = NEW.company_id))
+      )
+      BEGIN SELECT RAISE(ABORT, 'invalid company audit entity'); END;
+    CREATE TRIGGER IF NOT EXISTS company_audit_events_append_only_update
+      BEFORE UPDATE ON company_audit_events
+      BEGIN SELECT RAISE(ABORT, 'company audit events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS company_audit_events_append_only_delete
+      BEFORE DELETE ON company_audit_events
+      BEGIN SELECT RAISE(ABORT, 'company audit events are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS company_audit_actor_identity_update
+      BEFORE UPDATE OF role, company_id ON users
+      WHEN EXISTS (SELECT 1 FROM company_audit_events audit
+        WHERE audit.actor_user_id = OLD.id
+          AND (NEW.role <> 'company' OR NEW.company_id IS NOT audit.company_id))
+      BEGIN SELECT RAISE(ABORT, 'company audit actor identity is immutable'); END;
+  `);
   evolveRevalidationSchema(db, { inTransaction: true });
   evolveSystemAddressSchema(db);
   evolveOrderAdjustmentSchema(db);
@@ -672,6 +751,13 @@ export function transaction(work) {
   }
 }
 
+export function recordCompanyAuditInTransaction(companyId, actorUserId, action, entityType, entityId, details = {}) {
+  db.prepare(`INSERT INTO company_audit_events
+    (company_id, actor_user_id, action, entity_type, entity_id, details_json)
+    VALUES (?, ?, ?, ?, ?, ?)`).run(companyId, actorUserId, action, entityType, entityId,
+    JSON.stringify(details));
+}
+
 transaction(() => backfillFinancialEntries(db));
 
 export function seedDevelopmentData() {
@@ -682,8 +768,8 @@ export function seedDevelopmentData() {
       .run("Empresa Demonstrativa", "00000000000191", "empresa@ermes.local", "71999999999");
     const companyId = Number(company.lastInsertRowid);
     db.prepare("INSERT INTO freight_configs (company_id) VALUES (?)").run(companyId);
-    db.prepare(`INSERT INTO users (company_id, role, full_name, email, cpf, password_hash)
-                VALUES (?, 'company', ?, ?, ?, ?)`)
+    db.prepare(`INSERT INTO users (company_id, role, company_profile, full_name, email, cpf, password_hash)
+                VALUES (?, 'company', 'RESPONSAVEL', ?, ?, ?, ?)`)
       .run(companyId, "Responsável Demonstrativo", "empresa@ermes.local", "52998224725", hashPassword("Ermes123!"));
     db.prepare(`INSERT INTO products (company_id, name, description, price_cents, unit_weight_kg)
                 VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)`)

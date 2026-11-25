@@ -44,7 +44,7 @@ const fixture = `
   const id = (sql, ...args) => Number(db.prepare(sql).run(...args).lastInsertRowid);
   const company = id("INSERT INTO companies (name,email,cnpj) VALUES ('company','company@local.test','company')");
   const client = id("INSERT INTO users (role,full_name,email,password_hash) VALUES ('client','client','client@local.test','unused')");
-  const owner = id("INSERT INTO users (role,full_name,email,company_id,password_hash) VALUES ('company','owner','owner@local.test',?,'unused')", company);
+  const owner = id("INSERT INTO users (role,company_profile,full_name,email,company_id,password_hash) VALUES ('company','RESPONSAVEL','owner','owner@local.test',?,'unused')", company);
   const first = id("INSERT INTO products (company_id,name,price_cents,unit_weight_kg,is_available) VALUES (?,'first',100,1,1)", company);
   const replacement = id("INSERT INTO products (company_id,name,price_cents,unit_weight_kg,is_available) VALUES (?,'replacement',101,1,1)", company);
   const address = JSON.stringify({postalCode:'01001000',state:'SP',city:'São Paulo',neighborhood:'Centro',street:'Rua Um',number:'10'});
