@@ -4,7 +4,7 @@ import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeAddress } from "./address.js";
-import { db, seedDevelopmentData, transaction } from "./database.js";
+import { db, recordCompanyAuditInTransaction, seedDevelopmentData, transaction } from "./database.js";
 import { calculateFreight, splitNormalFreight } from "./freight.js";
 import { listCourierFinancialEntries } from "./finance.js";
 import { getOrderChat, listOrderChats, sendOrderChatMessage } from "./order-chat.js";
@@ -76,7 +76,7 @@ function sessionUser(request) {
   const token = parseCookies(request).ermes_session;
   if (!token) return null;
   return db.prepare(`SELECT u.id, u.company_id AS companyId, u.role, u.full_name AS fullName,
-                            u.email, u.status
+                            u.email, u.status, u.company_profile AS companyProfile
                      FROM sessions s JOIN users u ON u.id = s.user_id
                      WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP`)
     .get(hashToken(token)) || null;
@@ -94,8 +94,23 @@ function requireUser(request, roles = []) {
     error.statusCode = 403;
     throw error;
   }
+  if (user.role === "company" && (!Number.isSafeInteger(user.companyId) || user.companyId < 1
+    || !["RESPONSAVEL", "ATENDENTE"].includes(user.companyProfile)
+    || !db.prepare("SELECT 1 FROM companies WHERE id = ?").get(user.companyId))) {
+    throw Object.assign(new Error("Perfil empresarial inválido."), { statusCode: 403 });
+  }
   return user;
 }
+
+function requireCompanyProfile(request, allowedProfiles = ["RESPONSAVEL", "ATENDENTE"]) {
+  const user = requireUser(request, ["company"]);
+  if (!allowedProfiles.includes(user.companyProfile)) {
+    throw Object.assign(new Error("Você não possui permissão para esta ação."), { statusCode: 403 });
+  }
+  return user;
+}
+
+const requireCompanyResponsible = (request) => requireCompanyProfile(request, ["RESPONSAVEL"]);
 
 function mapProduct(row) {
   return { ...row, isAvailable: Boolean(row.isAvailable) };
@@ -209,10 +224,12 @@ async function api(request, response, url) {
         .run(String(body.companyName).trim(), onlyDigits(body.cnpj), normalizeEmail(body.companyEmail), onlyDigits(body.phone), JSON.stringify(body.address || {}));
       const companyId = Number(companyResult.lastInsertRowid);
       db.prepare("INSERT INTO freight_configs (company_id) VALUES (?)").run(companyId);
-      const userResult = db.prepare(`INSERT INTO users (company_id, role, full_name, email, cpf, phone, password_hash)
-                                     VALUES (?, 'company', ?, ?, ?, ?, ?)`)
+      const userResult = db.prepare(`INSERT INTO users (company_id, role, company_profile, full_name, email, cpf, phone, password_hash)
+                                     VALUES (?, 'company', 'RESPONSAVEL', ?, ?, ?, ?, ?)`)
         .run(companyId, String(body.responsibleName).trim(), normalizeEmail(body.accessEmail), onlyDigits(body.cpf), onlyDigits(body.phone), hashPassword(body.password));
-      return { companyId, userId: Number(userResult.lastInsertRowid) };
+      const userId = Number(userResult.lastInsertRowid);
+      recordCompanyAuditInTransaction(companyId, userId, "company_user_created", "user", userId);
+      return { companyId, userId };
     });
     return json(response, 201, { ...ids, message: "Empresa e usuário responsável cadastrados." });
   }
@@ -229,7 +246,8 @@ async function api(request, response, url) {
     db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, datetime('now', ?))")
       .run(hashToken(token), user.id, `+${days} days`);
     const cookie = `ermes_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${days * 86400}${isProduction ? "; Secure" : ""}`;
-    return json(response, 200, { user: { id: user.id, companyId: user.company_id, role: user.role, fullName: user.full_name, email: user.email } }, { "Set-Cookie": cookie });
+    return json(response, 200, { user: { id: user.id, companyId: user.company_id, role: user.role,
+      companyProfile: user.company_profile, fullName: user.full_name, email: user.email } }, { "Set-Cookie": cookie });
   }
   if (request.method === "POST" && pathname === "/api/auth/logout") {
     const token = parseCookies(request).ermes_session;
@@ -350,6 +368,39 @@ async function api(request, response, url) {
     const delivery = cancelClientDelivery(parseDeliveryId(clientDeliveryCancelMatch[1]), user.id, await readJson(request));
     return json(response, 200, { delivery });
   }
+  if (request.method === "GET" && pathname === "/api/company/users") {
+    const user = requireCompanyResponsible(request);
+    const users = db.prepare(`SELECT id, full_name AS fullName, email,
+      company_profile AS companyProfile, status, created_at AS createdAt
+      FROM users WHERE role = 'company' AND company_id = ? ORDER BY id`).all(user.companyId);
+    return json(response, 200, { users });
+  }
+  if (request.method === "POST" && pathname === "/api/company/users") {
+    const user = requireCompanyResponsible(request);
+    const body = await readJson(request);
+    if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.keys(body).some((key) => !["fullName", "email", "password", "companyProfile"].includes(key))) {
+      throw badRequest("Informe somente nome, e-mail, senha e perfil empresarial.");
+    }
+    requireFields(body, ["fullName", "email", "password", "companyProfile"]);
+    if (typeof body.fullName !== "string" || typeof body.email !== "string"
+      || typeof body.password !== "string" || typeof body.companyProfile !== "string") {
+      throw badRequest("Nome, e-mail, senha e perfil devem ser textos válidos.");
+    }
+    assertPassword(body.password);
+    if (!isEmail(body.email)) throw badRequest("E-mail inválido.");
+    if (!["RESPONSAVEL", "ATENDENTE"].includes(body.companyProfile)) throw badRequest("Perfil empresarial inválido.");
+    const id = transaction(() => {
+      const result = db.prepare(`INSERT INTO users
+        (company_id, role, company_profile, full_name, email, password_hash)
+        VALUES (?, 'company', ?, ?, ?, ?)`).run(user.companyId, body.companyProfile,
+        String(body.fullName).trim(), normalizeEmail(body.email), hashPassword(body.password));
+      const userId = Number(result.lastInsertRowid);
+      recordCompanyAuditInTransaction(user.companyId, user.id, "company_user_created", "user", userId);
+      return userId;
+    });
+    return json(response, 201, { id, message: "Usuário da empresa cadastrado." });
+  }
   if (request.method === "GET" && pathname === "/api/company/orders/drafts") {
     const user = requireUser(request, ["company"]);
     return json(response, 200, { drafts: listCompanyDraftOrders(user.companyId) });
@@ -374,7 +425,7 @@ async function api(request, response, url) {
   if (request.method === "POST" && companyOrderConfirmationMatch) {
     const user = requireUser(request, ["company"]);
     const orderId = parseOrderId(companyOrderConfirmationMatch[1]);
-    const order = confirmCompanyDraftOrder(user.companyId, orderId, await readJson(request));
+    const order = confirmCompanyDraftOrder(user.companyId, orderId, user.id, await readJson(request));
     return json(response, 200, { order });
   }
   const companyOrderMatch = pathname.match(/^\/api\/company\/orders\/([^/]+)$/);
@@ -469,45 +520,61 @@ async function api(request, response, url) {
     return json(response, 200, { products: rows });
   }
   if (request.method === "GET" && pathname === "/api/company/freight-config") {
-    const user = requireUser(request, ["company"]);
+    const user = requireCompanyResponsible(request);
     const config = db.prepare(freightConfigSelect).get(user.companyId);
     if (!config) throw Object.assign(new Error("Configuração tarifária não encontrada."), { statusCode: 404 });
     return json(response, 200, { freightConfig: mapFreightConfig(config) });
   }
   if (request.method === "PATCH" && pathname === "/api/company/freight-config") {
-    const user = requireUser(request, ["company"]);
+    const user = requireCompanyResponsible(request);
     const updates = parseFreightConfigPatch(await readJson(request));
     const setClause = updates.map(({ column }) => `${column} = ?`).join(", ");
-    const result = db.prepare(`UPDATE freight_configs SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE company_id = ?`)
-      .run(...updates.map(({ value }) => value), user.companyId);
-    if (!result.changes) throw Object.assign(new Error("Configuração tarifária não encontrada."), { statusCode: 404 });
+    transaction(() => {
+      const result = db.prepare(`UPDATE freight_configs SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE company_id = ?`)
+        .run(...updates.map(({ value }) => value), user.companyId);
+      if (!result.changes) throw Object.assign(new Error("Configuração tarifária não encontrada."), { statusCode: 404 });
+      recordCompanyAuditInTransaction(user.companyId, user.id, "freight_config_changed",
+        "freight_config", user.companyId, { fields: updates.map(({ column }) => column) });
+    });
     const config = db.prepare(freightConfigSelect).get(user.companyId);
     return json(response, 200, { freightConfig: mapFreightConfig(config) });
   }
   if (request.method === "POST" && pathname === "/api/company/products") {
-    const user = requireUser(request, ["company"]);
+    const user = requireCompanyResponsible(request);
     const body = await readJson(request);
     if (!body || Array.isArray(body) || typeof body !== "object") throw badRequest("Informe um produto válido.");
     requireFields(body, ["name", "priceCents", "unitWeightKg"]);
     if (!Number.isSafeInteger(body.priceCents) || body.priceCents < 0
       || typeof body.unitWeightKg !== "number" || !Number.isFinite(body.unitWeightKg)
       || body.unitWeightKg <= 0) throw badRequest("Preço e peso devem ser válidos: centavos inteiros seguros e peso positivo finito.");
-    const result = db.prepare(`INSERT INTO products (company_id, name, description, price_cents, unit_weight_kg)
-                               VALUES (?, ?, ?, ?, ?)`)
-      .run(user.companyId, String(body.name).trim(), String(body.description || "").trim(), body.priceCents, body.unitWeightKg);
-    return json(response, 201, { id: Number(result.lastInsertRowid), message: "Produto cadastrado." });
+    const id = transaction(() => {
+      const result = db.prepare(`INSERT INTO products (company_id, name, description, price_cents, unit_weight_kg)
+                                 VALUES (?, ?, ?, ?, ?)`)
+        .run(user.companyId, String(body.name).trim(), String(body.description || "").trim(), body.priceCents, body.unitWeightKg);
+      const productId = Number(result.lastInsertRowid);
+      recordCompanyAuditInTransaction(user.companyId, user.id, "product_created", "product", productId);
+      return productId;
+    });
+    return json(response, 201, { id, message: "Produto cadastrado." });
   }
   const productPatch = pathname.match(/^\/api\/company\/products\/(\d+)$/);
   if (request.method === "PATCH" && productPatch) {
-    const user = requireUser(request, ["company"]);
+    const user = requireCompanyResponsible(request);
     const body = await readJson(request);
-    const result = db.prepare("UPDATE products SET is_available = ? WHERE id = ? AND company_id = ?")
-      .run(body.isAvailable ? 1 : 0, Number(productPatch[1]), user.companyId);
-    if (!result.changes) throw Object.assign(new Error("Produto não encontrado."), { statusCode: 404 });
+    if (!body || Array.isArray(body) || typeof body !== "object" || typeof body.isAvailable !== "boolean") {
+      throw badRequest("Informe isAvailable como booleano.");
+    }
+    transaction(() => {
+      const result = db.prepare("UPDATE products SET is_available = ? WHERE id = ? AND company_id = ?")
+        .run(body.isAvailable ? 1 : 0, Number(productPatch[1]), user.companyId);
+      if (!result.changes) throw Object.assign(new Error("Produto não encontrado."), { statusCode: 404 });
+      recordCompanyAuditInTransaction(user.companyId, user.id, "product_availability_changed",
+        "product", Number(productPatch[1]), { isAvailable: body.isAvailable });
+    });
     return json(response, 200, { message: "Disponibilidade atualizada." });
   }
   if (request.method === "GET" && pathname === "/api/company/couriers") {
-    const user = requireUser(request, ["company"]);
+    const user = requireCompanyResponsible(request);
     const rows = db.prepare(`SELECT u.id, u.full_name AS fullName, u.email, u.cpf, u.phone, u.status,
                                     c.vehicle_type AS vehicleType, c.vehicle_identifier AS vehicleIdentifier,
                                     c.plate, c.cnh, c.is_online AS isOnline
@@ -517,7 +584,7 @@ async function api(request, response, url) {
     return json(response, 200, { couriers: rows });
   }
   if (request.method === "POST" && pathname === "/api/company/couriers") {
-    const user = requireUser(request, ["company"]);
+    const user = requireCompanyResponsible(request);
     const body = await readJson(request);
     requireFields(body, ["fullName", "email", "cpf", "phone", "vehicleType", "password"]);
     assertPassword(body.password);
@@ -531,6 +598,7 @@ async function api(request, response, url) {
       db.prepare(`INSERT INTO couriers (user_id, vehicle_type, vehicle_identifier, plate, cnh)
                   VALUES (?, ?, ?, ?, ?)`)
         .run(id, body.vehicleType, String(body.vehicleIdentifier || "").trim(), String(body.plate || "").trim().toUpperCase(), onlyDigits(body.cnh));
+      recordCompanyAuditInTransaction(user.companyId, user.id, "courier_created", "user", id);
       return id;
     });
     return json(response, 201, { id: userId, message: "Motoboy vinculado à empresa." });

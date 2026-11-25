@@ -63,7 +63,7 @@ test("API de consulta de pedidos draft pela empresa", async (context) => {
     .get("empresa@ermes.local").value;
   const otherCompany = Number(db.prepare("INSERT INTO companies (name, cnpj, email) VALUES (?, ?, ?)")
     .run("Empresa isolada", "00000000000272", "isolada@ermes.local").lastInsertRowid);
-  db.prepare("INSERT INTO users (company_id, role, full_name, email, password_hash) VALUES (?, 'company', ?, ?, ?)")
+  db.prepare("INSERT INTO users (company_id, role, company_profile, full_name, email, password_hash) VALUES (?, 'company', 'RESPONSAVEL', ?, ?, ?)")
     .run(otherCompany, "Responsável isolado", "isolada.acesso@ermes.local", passwordHash);
   const otherProduct = Number(db.prepare("INSERT INTO products (company_id, name, price_cents, unit_weight_kg) VALUES (?, ?, ?, ?)")
     .run(otherCompany, "Produto isolado", 900, 0.25).lastInsertRowid);
@@ -71,7 +71,7 @@ test("API de consulta de pedidos draft pela empresa", async (context) => {
   const otherCompanyCookie = await login("isolada.acesso@ermes.local", "Ermes123!");
   const emptyCompany = Number(db.prepare("INSERT INTO companies (name, cnpj, email) VALUES (?, ?, ?)")
     .run("Empresa sem drafts", "00000000000353", "vazia@ermes.local").lastInsertRowid);
-  db.prepare("INSERT INTO users (company_id, role, full_name, email, password_hash) VALUES (?, 'company', ?, ?, ?)")
+  db.prepare("INSERT INTO users (company_id, role, company_profile, full_name, email, password_hash) VALUES (?, 'company', 'RESPONSAVEL', ?, ?, ?)")
     .run(emptyCompany, "Responsável vazio", "vazia.acesso@ermes.local", passwordHash);
   const emptyCompanyCookie = await login("vazia.acesso@ermes.local", "Ermes123!");
   db.prepare("INSERT INTO users (role, full_name, email, password_hash) VALUES ('platform_admin', ?, ?, ?)")

@@ -65,6 +65,25 @@ Não há dependências npm externas nesta etapa.
 - Pagamento simulado preserva lançamentos dos componentes conhecidos; frete `NULL` continua desconhecido, não zero. `payment_status` permanece restrito a `pending|paid`, enquanto `refundStatus` é derivado como `none|partial|full`. A migração idempotente recompõe apenas pedidos `confirmed` e `paid` com `payment_paid_at` válido, cliente/empresa existentes, itens e subtotal coerentes e valores seguros; efeitos terminais ainda exigem entrega, evento, horário e ator coerentes. Registros ambíguos são ignorados para reconciliação e nenhum estado é reescrito.
 - As projeções financeiras são específicas por papel: cliente vê somente pagamento e próprios reembolsos; empresa e motoboy veem apenas suas parcelas. A parcela do ERMES é persistida para histórico, mas não cria caso de uso administrativo pendente.
 - Empresa e usuário responsável são entidades distintas.
+- `users.role = 'company'` continua sendo o tipo técnico do ator nas sessões,
+  eventos, chats, ocorrências e triggers. `users.company_profile` é a permissão
+  interna (`RESPONSAVEL` ou `ATENDENTE`), obrigatória somente para empresa;
+  outros papéis têm `NULL`. CHECK e triggers protegem a regra em banco novo e
+  legado. A migração aditiva atribui `RESPONSAVEL` aos usuários empresariais
+  históricos com perfil ausente, dentro do bootstrap transacional e de modo
+  idempotente, preservando IDs, vínculos e sessões.
+- A sessão consulta o perfil atual do banco a cada requisição. A autorização
+  central valida papel, empresa e perfil; ações administrativas exigem
+  `RESPONSAVEL` e as rotas operacionais aceitam ambos os perfis. O servidor
+  sempre deriva `company_id` da sessão.
+- `company_audit_events` registra confirmação comercial, criação/alteração de
+  produto, criação de motoboy/usuário e mudança tarifária. Triggers validam
+  ator e entidade da mesma empresa, impedem a troca posterior da empresa do
+  ator auditado, restringem ações administrativas ao
+  responsável e proíbem UPDATE/DELETE. Índice único impede duas evidências de
+  confirmação para o mesmo Pedido. A gravação ocorre na mesma transação da ação;
+  falha da auditoria reverte a mudança de domínio. Chats, ocorrências, ajustes
+  e eventos de Entrega conservam os campos de ator já existentes.
 - O papel `platform_admin` existe no esquema, mas não possui casos de uso implementados porque suas permissões estão pendentes.
 - Motoboys são criados já vinculados a uma empresa; não existe cadastro autônomo.
 

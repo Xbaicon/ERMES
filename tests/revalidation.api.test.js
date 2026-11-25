@@ -41,8 +41,8 @@ test("impedimento externo e revalidação da Baseline 0.2", async (context) => {
   const company2 = Number(db.prepare("INSERT INTO companies (name, cnpj, email, address_json) VALUES (?, ?, ?, ?)")
     .run("Empresa 2", "22333444000181", "e2@ermes.local", destination).lastInsertRowid);
   const user = (role, email, companyId = null) => Number(db.prepare(`INSERT INTO users
-    (company_id, role, full_name, email, password_hash) VALUES (?, ?, ?, ?, ?)`)
-    .run(companyId, role, email, email, passwordHash).lastInsertRowid);
+    (company_id, role, company_profile, full_name, email, password_hash) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(companyId, role, role === "company" ? "RESPONSAVEL" : null, email, email, passwordHash).lastInsertRowid);
   const client1 = user("client", "cliente1@ermes.local");
   const client2 = user("client", "cliente2@ermes.local");
   const companyUser1 = user("company", "empresa1@ermes.local", company1);

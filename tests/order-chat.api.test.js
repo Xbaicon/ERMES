@@ -33,8 +33,8 @@ test("chat por Pedido entre cliente e empresa", async (context) => {
     (name, cnpj, email, address_json) VALUES (?, ?, ?, '{}')`)
     .run("Outra Empresa", "20202020000120", "outra.chat@ermes.local").lastInsertRowid);
   const createUser = (role, email, companyId = null) => Number(db.prepare(`INSERT INTO users
-    (company_id, role, full_name, email, password_hash) VALUES (?, ?, ?, ?, ?)`)
-    .run(companyId, role, email, email, passwordHash).lastInsertRowid);
+    (company_id, role, company_profile, full_name, email, password_hash) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(companyId, role, role === "company" ? "RESPONSAVEL" : null, email, email, passwordHash).lastInsertRowid);
   const client1 = createUser("client", "cliente.chat@ermes.local");
   const client2 = createUser("client", "cliente.outro.chat@ermes.local");
   const companyUser1 = createUser("company", "empresa.usuario.chat@ermes.local", company1);

@@ -171,8 +171,8 @@ test("destino e destinatário preservados no pedido", async (context) => {
     const otherCompanyId = Number(db.prepare(
       "INSERT INTO companies (name, cnpj, email) VALUES (?, ?, ?)",
     ).run("Empresa Alheia", "00000000000434", "empresa.alheia@ermes.local").lastInsertRowid);
-    db.prepare(`INSERT INTO users (company_id, role, full_name, email, password_hash)
-                VALUES (?, 'company', ?, ?, ?)`)
+    db.prepare(`INSERT INTO users (company_id, role, company_profile, full_name, email, password_hash)
+                VALUES (?, 'company', 'RESPONSAVEL', ?, ?, ?)`)
       .run(otherCompanyId, "Responsável Alheio", "acesso.alheio@ermes.local", passwordHash);
     const foreignCompanyCookie = await login("acesso.alheio@ermes.local", "Ermes123!");
     assert.equal((await request(`/api/company/orders/${manualOrder.id}`, {

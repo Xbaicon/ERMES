@@ -1,6 +1,6 @@
 import { adjustmentDetails } from "./order-adjustments.js";
 import { officialOrderStatus, terminalDeliveryEvent } from "./official-statuses.js";
-import { db, transaction } from "./database.js";
+import { db, recordCompanyAuditInTransaction, transaction } from "./database.js";
 import { MAX_ORDER_WEIGHT_KG } from "./freight.js";
 import { createDeliveryForEligibleOrderInTransaction } from "./delivery-creation.js";
 import { normalizeAddress } from "./address.js";
@@ -605,7 +605,7 @@ export function confirmSimulatedPayment(clientId, orderId, body) {
   });
 }
 
-export function confirmCompanyDraftOrder(companyId, orderId, body) {
+export function confirmCompanyDraftOrder(companyId, orderId, actorUserId, body) {
   const input = parseOrderConfirmation(body);
   return transaction(() => {
     const order = findCompanyOrderForConfirmation(companyId, orderId);
@@ -633,6 +633,7 @@ export function confirmCompanyDraftOrder(companyId, orderId, body) {
     if (Number(update.changes) !== 1) {
       throw orderError("O pedido foi alterado. Recarregue a vers\u00e3o atual antes de confirmar.", 409);
     }
+    recordCompanyAuditInTransaction(companyId, actorUserId, "order_confirmed", "order", order.id);
     const confirmed = findCompanyOrderForConfirmation(companyId, order.id);
     return mapConfirmedCompanyOrder(confirmed, confirmation);
   });

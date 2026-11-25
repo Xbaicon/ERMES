@@ -236,9 +236,9 @@ test("blocos persistem apenas JSON canônico e bootstrap exige reconciliação d
         VALUES (1,'Empresa','11222333000181','empresa@teste.local');
         INSERT INTO users(id,role,full_name,email,password_hash)
         VALUES (1,'client','Cliente','cliente@teste.local','hash');
-        INSERT INTO users(id,company_id,role,full_name,email,password_hash)
-        VALUES (2,1,'company','Empresa','usuario@teste.local','hash'),
-          (3,1,'courier','Motoboy','motoboy@teste.local','hash');`);
+        INSERT INTO users(id,company_id,role,company_profile,full_name,email,password_hash)
+        VALUES (2,1,'company','RESPONSAVEL','Empresa','usuario@teste.local','hash'),
+          (3,1,'courier',NULL,'Motoboy','motoboy@teste.local','hash');`);
       for (const [id, snapshot] of [[1, canonical], [2, reordered], [3, unicodeWhitespace]]) {
         db.prepare(`INSERT INTO orders(id,client_id,company_id,status,destination_snapshot_json)
           VALUES (?,1,1,'confirmed',?)`).run(id, snapshot);
@@ -347,7 +347,9 @@ test("bootstrap completo migra ocorrências legadas, reverte falha e repete sem 
       try {
         assertInitialized(db);
         for (const [table, rows] of Object.entries(beforeData)) {
-          assert.deepEqual(db.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all(), rows);
+          const expected = table === "users" ? rows.map((row) => Object.assign(Object.create(null),
+            row, { company_profile: row.role === "company" ? "RESPONSAVEL" : null })) : rows;
+          assert.deepEqual(db.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all(), expected);
         }
         assert.equal(db.prepare('SELECT COUNT(*) n FROM financial_entries').get().n, 0);
         const trigger = db.prepare("SELECT sql FROM sqlite_master WHERE name='financial_entry_valid_kind_insert'").get().sql;

@@ -41,17 +41,18 @@ import { setupOrderChat } from "./order-chat.js";
     }));
   }
 
-  async function loadProducts() {
+  async function loadProducts(canAdminister) {
     const list = document.querySelector("[data-products-list]");
     const { products } = await api("/api/company/products");
     list.innerHTML = products.length ? products.map((product) => `
       <article class="list-item">
         <div><strong>${escapeHtml(product.name)}</strong><small>${money(product.priceCents)} · ${product.unitWeightKg} kg</small></div>
-        <button class="status-pill ${product.isAvailable ? "active" : ""}" data-product-id="${product.id}" data-product-available="${product.isAvailable}">${product.isAvailable ? "Disponível" : "Indisponível"}</button>
+        ${canAdminister ? `<button class="status-pill ${product.isAvailable ? "active" : ""}" data-product-id="${product.id}" data-product-available="${product.isAvailable}">${product.isAvailable ? "Disponível" : "Indisponível"}</button>`
+    : `<span class="status-pill ${product.isAvailable ? "active" : ""}">${product.isAvailable ? "Disponível" : "Indisponível"}</span>`}
       </article>`).join("") : '<p class="empty-copy">Nenhum produto cadastrado.</p>';
     list.querySelectorAll("[data-product-id]").forEach((button) => button.addEventListener("click", async () => {
       await api(`/api/company/products/${button.dataset.productId}`, { method: "PATCH", body: JSON.stringify({ isAvailable: button.dataset.productAvailable !== "true" }) });
-      await loadProducts();
+      await loadProducts(canAdminister);
     }));
   }
 
@@ -68,10 +69,21 @@ import { setupOrderChat } from "./order-chat.js";
     Object.entries(freightConfig).forEach(([field, value]) => { form.elements[field].value = value; });
   }
 
-  async function setupCompany() {
+  async function loadCompanyUsers() {
+    const list = document.querySelector("[data-company-users-list]");
+    const { users } = await api("/api/company/users");
+    list.innerHTML = users.length ? users.map((user) => `
+      <article class="list-item"><div><strong>${escapeHtml(user.fullName)}</strong>
+      <small>${escapeHtml(user.email)} · ${user.companyProfile === "RESPONSAVEL" ? "Responsável" : "Atendente"}</small></div></article>`).join("")
+      : '<p class="empty-copy">Nenhum usuário cadastrado.</p>';
+  }
+
+  async function setupCompany(user) {
+    const canAdminister = user.companyProfile === "RESPONSAVEL";
     document.querySelectorAll("[data-company-panel]").forEach((element) => { element.hidden = false; });
+    document.querySelectorAll("[data-company-admin]").forEach((element) => { element.hidden = !canAdminister; });
     const productForm = document.querySelector("[data-product-form]");
-    productForm.addEventListener("submit", async (event) => {
+    if (canAdminister) productForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = Object.fromEntries(new FormData(productForm));
       const message = document.querySelector("[data-product-message]");
@@ -79,12 +91,12 @@ import { setupOrderChat } from "./order-chat.js";
         await api("/api/company/products", { method: "POST", body: JSON.stringify({ name: data.name, description: data.description, priceCents: Math.round(Number(data.price) * 100), unitWeightKg: Number(data.unitWeightKg) }) });
         productForm.reset();
         showMessage(message, "Produto cadastrado.", "success");
-        await loadProducts();
+        await loadProducts(canAdminister);
       } catch (error) { showMessage(message, error.message); }
     });
 
     const courierForm = document.querySelector("[data-courier-form]");
-    courierForm.addEventListener("submit", async (event) => {
+    if (canAdminister) courierForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const body = Object.fromEntries(new FormData(courierForm));
       const message = document.querySelector("[data-courier-message]");
@@ -97,7 +109,7 @@ import { setupOrderChat } from "./order-chat.js";
     });
 
     const freightConfigForm = document.querySelector("[data-freight-config-form]");
-    freightConfigForm.addEventListener("submit", async (event) => {
+    if (canAdminister) freightConfigForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const message = document.querySelector("[data-freight-config-message]");
       try {
@@ -107,10 +119,20 @@ import { setupOrderChat } from "./order-chat.js";
         showMessage(message, "Parâmetros tarifários atualizados.", "success");
       } catch (error) { showMessage(message, error.message); }
     });
+    if (canAdminister) document.querySelector("[data-company-user-form]").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const message = document.querySelector("[data-company-user-message]");
+      try {
+        await api("/api/company/users", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+        form.reset();
+        showMessage(message, "Usuário cadastrado.", "success");
+        await loadCompanyUsers();
+      } catch (error) { showMessage(message, error.message); }
+    });
     await Promise.all([
-      loadProducts(),
-      loadCouriers(),
-      loadFreightConfig(),
+      loadProducts(canAdminister),
+      ...(canAdminister ? [loadCouriers(), loadFreightConfig(), loadCompanyUsers()] : []),
       setupCompanyDrafts({ api, money, escapeHtml, showMessage }),
       setupDeliveryPanel({ role: "company", api, escapeHtml, showMessage, money }),
       setupOrderChat({ role: "company", api, escapeHtml, showMessage }),
@@ -208,14 +230,16 @@ import { setupOrderChat } from "./order-chat.js";
     if (!user) return window.location.replace("login.html");
     document.querySelector("[data-user-name]").textContent = user.fullName;
     const copy = {
-      company: ["ÁREA DA EMPRESA", "Operação da empresa", "Gerencie o catálogo e os motoboys vinculados ao estabelecimento."],
+      company: [user.companyProfile === "RESPONSAVEL" ? "RESPONSÁVEL DA EMPRESA" : "ATENDENTE",
+        "Operação da empresa", user.companyProfile === "RESPONSAVEL"
+          ? "Gerencie a operação e os cadastros da empresa." : "Acompanhe pedidos, chat e Entregas da empresa."],
       courier: ["ÁREA DO MOTOBOY", "Sua jornada de entregas", "Controle sua disponibilidade e acompanhe as próximas etapas do fluxo."],
       client: ["ÁREA DO CLIENTE", "Empresas e seus produtos", "Consulte o catálogo disponível e mantenha seu endereço padrão atualizado."],
     }[user.role] || ["PAINEL", "ERMES", "Acesso autenticado."];
     document.querySelector("[data-role-label]").textContent = copy[0];
     document.querySelector("[data-dashboard-title]").textContent = copy[1];
     document.querySelector("[data-dashboard-description]").textContent = copy[2];
-    if (user.role === "company") await setupCompany();
+    if (user.role === "company") await setupCompany(user);
     if (user.role === "courier") await setupCourier();
     if (user.role === "client") await setupClient(user);
   }
