@@ -308,8 +308,18 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
       cookie: cookies.client1, method: "POST", body: {},
     });
     assert.equal(cancelled.status, 200);
-    const client = (await cancelled.json()).delivery;
+    let client = (await cancelled.json()).delivery;
     assert.equal(client.status, "returning");
+    assert.equal(ledger(item.orderId).length, 2);
+    assert.equal(client.financial.refundedTotalCents, 0);
+    assert.equal((await postCourier(item.delivery.id, "report-return")).status, 200);
+    assert.equal(ledger(item.orderId).length, 2);
+    assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+      cookie: cookies.company1, method: 'POST', body: {},
+    })).status, 200);
+    client = (await (await request(`/api/client/deliveries/${item.delivery.id}`, {
+      cookie: cookies.client1,
+    })).json()).delivery;
     assert.equal(db.prepare("SELECT payment_status AS value FROM orders WHERE id = ?").get(item.orderId).value,
       "paid");
     assert.deepEqual(ledger(item.orderId).slice(2), [
@@ -327,14 +337,41 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
       cookie: cookies.client1, method: "POST", body: {},
     })).status, 409);
     assert.equal(ledger(item.orderId).length, 5);
-    assert.equal((await postCourier(item.delivery.id, "report-return")).status, 200);
-    assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
-      cookie: cookies.company1, method: "POST", body: {},
-    })).status, 200);
+    assert.equal((await postCourier(item.delivery.id, "report-return")).status, 404);
     assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
       cookie: cookies.company1, method: "POST", body: {},
     })).status, 409);
     assert.equal(ledger(item.orderId).length, 5);
+  });
+
+  await context.test('cancelamento em retorno bloqueia SQL direto e backfill antes do recebimento', async () => {
+    const item = createDelivery(); const id = item.delivery.id;
+    for (const action of ['accept', 'arrive-pickup', 'collect']) assert.equal((await postCourier(id, action)).status, 200);
+    assert.equal((await request(`/api/client/deliveries/${id}/cancel`, {
+      cookie: cookies.client1, method: 'POST', body: {},
+    })).status, 200);
+    for (const stage of ['returning', 'awaiting_return_confirmation']) {
+      const before = db.prepare('SELECT * FROM financial_entries WHERE order_id = ? ORDER BY id').all(item.orderId);
+      for (const [type, component, party, userId] of [
+        ['refund', 'products', 'client', client1], ['refund', 'freight', 'client', client1],
+        ['distribution', 'freight', 'courier', courier1],
+      ]) assert.throws(() => db.prepare(`INSERT INTO financial_entries
+        (order_id, delivery_id, entry_type, component, party_type, party_user_id, amount_cents, reason, idempotency_key)
+        VALUES (?, ?, ?, ?, ?, ?, 1, 'client_cancelled_after_pickup', ?)`)
+        .run(item.orderId, id, type, component, party, userId, `premature:${stage}:${type}:${component}`), /invalid financial entry kind/);
+      transaction(() => backfillFinancialEntries(db));
+      assert.deepEqual(db.prepare('SELECT * FROM financial_entries WHERE order_id = ? ORDER BY id').all(item.orderId), before);
+      assert.equal(db.prepare('SELECT status FROM deliveries WHERE id = ?').get(id).status, stage);
+      if (stage === 'returning') assert.equal((await postCourier(id, 'report-return')).status, 200);
+    }
+    assert.equal((await postCourier(id, 'report-return')).status, 409);
+    assert.equal((await request(`/api/company/deliveries/${id}/confirm-return`, {
+      cookie: cookies.company1, method: 'POST', body: {},
+    })).status, 200);
+    const before = ledger(item.orderId);
+    transaction(() => backfillFinancialEntries(db));
+    assert.deepEqual(ledger(item.orderId), before);
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
   });
 
   await context.test("produto indisponível gera reembolso integral conhecido sem distribuição", async () => {
@@ -518,26 +555,40 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
     for (const action of ["accept", "arrive-pickup", "collect"]) {
       assert.equal((await postCourier(item.delivery.id, action)).status, 200);
     }
+    assert.equal((await request(`/api/client/deliveries/${item.delivery.id}/cancel`, {
+      cookie: cookies.client1, method: 'POST', body: {},
+    })).status, 200);
+    assert.equal((await postCourier(item.delivery.id, 'report-return')).status, 200);
+    const before = {
+      delivery: db.prepare('SELECT * FROM deliveries WHERE id = ?').get(item.delivery.id),
+      attempts: db.prepare('SELECT * FROM delivery_attempts WHERE delivery_id = ?').all(item.delivery.id),
+      events: db.prepare('SELECT * FROM delivery_events WHERE delivery_id = ?').all(item.delivery.id),
+      ledger: ledger(item.orderId),
+    };
     db.exec(`CREATE TRIGGER fail_financial_refund_cancel BEFORE INSERT ON financial_entries
-      WHEN NEW.entry_type = 'refund'
+      WHEN NEW.entry_type = 'distribution' AND NEW.reason = 'client_cancelled_after_pickup'
       BEGIN SELECT RAISE(ABORT, 'forced cancellation financial failure'); END;`);
-    const response = await request(`/api/client/deliveries/${item.delivery.id}/cancel`, {
-      cookie: cookies.client1, method: "POST", body: {},
+    const response = await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
+      cookie: cookies.company1, method: "POST", body: {},
     });
     db.exec("DROP TRIGGER fail_financial_refund_cancel");
     assert.equal(response.status, 500);
     assert.deepEqual({ ...db.prepare(`SELECT status, return_reason AS returnReason
       FROM deliveries WHERE id = ?`).get(item.delivery.id) }, {
-      status: "in_transit", returnReason: null,
+      status: "awaiting_return_confirmation", returnReason: 'client_cancelled_after_pickup',
     });
     assert.equal(db.prepare(`SELECT COUNT(*) AS total FROM delivery_events
       WHERE delivery_id = ? AND event_type = 'client_cancelled_after_pickup'`)
-      .get(item.delivery.id).total, 0);
+      .get(item.delivery.id).total, 1);
+    assert.deepEqual({
+      delivery: db.prepare('SELECT * FROM deliveries WHERE id = ?').get(item.delivery.id),
+      attempts: db.prepare('SELECT * FROM delivery_attempts WHERE delivery_id = ?').all(item.delivery.id),
+      events: db.prepare('SELECT * FROM delivery_events WHERE delivery_id = ?').all(item.delivery.id),
+      ledger: ledger(item.orderId),
+    }, before);
     assert.equal(db.prepare("SELECT order_blocked_until AS value FROM users WHERE id = ?")
       .get(client1).value, null);
     assert.deepEqual(new Set(ledger(item.orderId).map(({ entryType }) => entryType)), new Set(["payment"]));
-    assert.equal((await postCourier(item.delivery.id, "fail", { reason: "encerramento do teste" })).status, 200);
-    assert.equal((await postCourier(item.delivery.id, "report-return")).status, 200);
     assert.equal((await request(`/api/company/deliveries/${item.delivery.id}/confirm-return`, {
       cookie: cookies.company1, method: "POST", body: {},
     })).status, 200);
@@ -678,13 +729,9 @@ test("financeiro, reembolsos e distribuições da Baseline 0.1", async (context)
       assert.equal(ledger(item.orderId).filter(({ entryType }) => entryType === "distribution").length, 0);
       assert.equal(ledger(item.orderId).filter(({ entryType }) => entryType === "payment").length, 2);
     }
-    assert.deepEqual(ledger(coherentCancellation.orderId).slice(2).map(({ entryType, reason }) => ({
-      entryType, reason,
-    })), [
-      { entryType: "refund", reason: "client_cancelled_after_pickup" },
-      { entryType: "refund", reason: "client_cancelled_after_pickup" },
-      { entryType: "distribution", reason: "client_cancelled_after_pickup" },
-    ]);
+    // Esse legado usa datas futuras e não possui TentativaEntrega: não prova
+    // recebimento físico válido para o fechamento financeiro da 0.2.
+    assert.deepEqual(ledger(coherentCancellation.orderId).slice(2), []);
     assert.equal(ledger(cancellationAfterConfirmationFailure.orderId).length, 2);
     assert.equal(ledger(invalidCancellation.orderId).length, 2);
     assert.equal(ledger(coherentUnavailable.orderId)

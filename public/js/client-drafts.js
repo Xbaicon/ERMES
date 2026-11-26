@@ -33,7 +33,7 @@ export function createDraftEditor(initialOrder) {
   };
   const totals = () => totalsFor(items);
   const replace = (nextOrder) => {
-    if (!nextOrder || !validPositiveInteger(nextOrder.id) || nextOrder.status !== "draft"
+    if (!nextOrder || !validPositiveInteger(nextOrder.id) || !["draft", "rejected"].includes(nextOrder.status)
       || !nextOrder.company || !validPositiveInteger(nextOrder.company.id)
       || !Array.isArray(nextOrder.items) || !nextOrder.items.length
       || !nextOrder.destinationSnapshot || typeof nextOrder.destinationSnapshot !== "object"
@@ -67,6 +67,10 @@ export function createDraftEditor(initialOrder) {
   replace(initialOrder);
   return {
     get id() { return order.id; },
+    get version() { return order.version; },
+    get editable() { return order.status === 'draft'; },
+    get officialStatus() { return order.officialStatus || 'EM_MONTAGEM'; },
+    get rejection() { return order.rejection; },
     get company() { return { ...order.company }; },
     get destinationSnapshot() { return { ...order.destinationSnapshot }; },
     get recipientSnapshot() { return { ...order.recipientSnapshot }; },
@@ -134,6 +138,7 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
   const products = document.querySelector("[data-client-draft-products]");
   const productsStatus = document.querySelector("[data-client-draft-products-status]");
   const saveButton = document.querySelector("[data-client-draft-save]");
+  const submitButton = document.querySelector("[data-client-draft-submit]");
   let drafts = [];
   let editor = null;
   let saver = null;
@@ -161,7 +166,7 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
       <button class="catalog-company-button${draft.id === selectedId() ? " selected" : ""}" type="button"
               data-client-draft-id="${draft.id}" aria-pressed="${draft.id === selectedId()}"
               ${busy() ? "disabled" : ""}>
-        <span>Pedido #${draft.id} · ${escapeHtml(draft.company.name)}</span>
+        <span>Pedido #${draft.id} · ${escapeHtml(draft.company.name)} · ${escapeHtml(draft.officialStatus || 'EM_MONTAGEM')}${draft.rejection ? ` · ${escapeHtml(draft.rejection.reason)}` : ''}</span>
         <small>${draft.itemCount} item(ns) · ${money(draft.itemsTotalCents)} · ${draft.weightKg.toLocaleString("pt-BR")} kg</small>
       </button>`).join("");
     reloadButton.disabled = busy();
@@ -173,6 +178,7 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
       itemCount: order.items.length,
       itemsTotalCents: order.itemsTotalCents,
       weightKg: order.weightKg,
+      officialStatus: order.officialStatus,
     });
   };
   const renderEditor = () => {
@@ -180,7 +186,7 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
     const lines = editor.lines();
     const totals = editor.totals();
     const exceedsLimit = totals.weightKg > WEIGHT_LIMIT_KG + Number.EPSILON * WEIGHT_LIMIT_KG;
-    title.textContent = `Pedido #${editor.id}`;
+    title.textContent = `Pedido #${editor.id} · ${editor.officialStatus}`;
     company.textContent = editor.company.name;
     address.textContent = formatAddress(editor.destinationSnapshot);
     recipient.textContent = editor.recipientSnapshot.type === "self"
@@ -211,7 +217,13 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
         <button class="button button-outline button-small" type="button" data-draft-add-product="${product.id}"
                 aria-label="Adicionar ${escapeAttribute(product.name)} ao pedido" ${saver.pending ? "disabled" : ""}>Adicionar ao pedido</button>
       </article>`).join("");
-    saveButton.disabled = saver.pending || !lines.length || exceedsLimit;
+    saveButton.disabled = !editor.editable || saver.pending || !lines.length || exceedsLimit;
+    if (submitButton) submitButton.disabled = saveButton.disabled || busy();
+    if (!editor.editable) {
+      products.innerHTML = '';
+      itemsContainer.querySelectorAll?.('button').forEach((button) => { button.disabled = true; });
+      setStatus(editorStatus, `Pedido recusado: ${editor.rejection?.reason || ''}`);
+    }
     saveButton.textContent = saver.pending ? "Salvando…" : "Salvar alterações";
     itemsContainer.setAttribute("aria-busy", String(saver.pending));
     renderList();
@@ -287,7 +299,7 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
   reloadButton.addEventListener("click", loadDrafts);
   itemsContainer.addEventListener("click", (event) => {
     const button = event.target.closest("[data-draft-action]");
-    if (!button || !editor || detailLoading || saver.pending) return;
+    if (!button || !editor || !editor.editable || detailLoading || saver.pending) return;
     const productId = Number(button.dataset.productId);
     const line = editor.lines().find((item) => item.productId === productId);
     if (!line) return;
@@ -301,7 +313,7 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
   });
   products.addEventListener("click", (event) => {
     const button = event.target.closest("[data-draft-add-product]");
-    if (!button || !editor || detailLoading || saver.pending) return;
+    if (!button || !editor || !editor.editable || detailLoading || saver.pending) return;
     const product = availableProducts.find(({ id }) => id === Number(button.dataset.draftAddProduct));
     if (!product) return;
     message.hidden = true;
@@ -309,7 +321,7 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
     catch (error) { showMessage(message, error.message); }
   });
   saveButton.addEventListener("click", async () => {
-    if (!editor || detailLoading || saver.pending || !editor.lines().length
+    if (!editor || !editor.editable || detailLoading || saver.pending || !editor.lines().length
       || editor.totals().weightKg > WEIGHT_LIMIT_KG + Number.EPSILON * WEIGHT_LIMIT_KG) return;
     message.hidden = true;
     const operation = saver.save();
@@ -318,7 +330,7 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
       const order = await operation;
       updateDraftSummary(order);
       renderEditor();
-      showMessage(message, `Pedido #${order.id} atualizado com sucesso.`, "success");
+      showMessage(message, `Pedido #${order.id} atualizado. ${order.officialStatus === 'EM_MONTAGEM' ? 'Envie a versão atual para confirmação.' : ''}`, "success");
     } catch (error) {
       if (error.status === 409 && /n\u00e3o est\u00e1 mais em estado draft/i.test(error.message)) {
         const orderId = editor.id;
@@ -342,5 +354,22 @@ export async function setupClientDrafts({ api, money, escapeHtml, showMessage })
     }
   });
 
+  submitButton?.addEventListener('click', async () => {
+    if (!editor?.editable || busy() || saveButton.disabled) return;
+    const operation = saver.save();
+    renderEditor();
+    try {
+      const saved = await operation;
+      detailLoading = true;
+      renderEditor();
+      const { order } = await api(`/api/client/orders/${saved.id}/submit`, {
+        method: 'POST', body: JSON.stringify({ version: saved.version }),
+      });
+      editor.replace(order);
+      updateDraftSummary(order);
+      showMessage(message, 'Pedido enviado para confirmação da empresa.', 'success');
+    } catch (error) { showMessage(message, error.message); }
+    finally { detailLoading = false; renderEditor(); }
+  });
   await loadDrafts();
 }

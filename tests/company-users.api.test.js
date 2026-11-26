@@ -173,6 +173,8 @@ test("perfis empresariais, isolamento e auditoria transacional", async (context)
       body: { companyId: companyA, items: [{ productId, quantity: 1 }] } });
     assert.equal(draft.status, 201);
     const order = (await draft.json()).order;
+    assert.equal((await request(`/api/client/orders/${order.id}/submit`, { cookie: client.cookie,
+      method: 'POST', body: { version: 1 } })).status, 200);
     assert.equal((await request("/api/company/orders/drafts", { cookie: attendant.cookie })).status, 200);
     assert.equal((await request(`/api/company/orders/${order.id}`, { cookie: attendant.cookie })).status, 200);
     assert.equal((await request("/api/company/order-chats", { cookie: attendant.cookie })).status, 200);
@@ -210,6 +212,8 @@ test("perfis empresariais, isolamento e auditoria transacional", async (context)
       body: { companyId: companyA, items: [{ productId, quantity: 1 }] } });
     assert.equal(draft.status, 201);
     const orderId = (await draft.json()).order.id;
+    assert.equal((await request(`/api/client/orders/${orderId}/submit`, { cookie: client.cookie,
+      method: 'POST', body: { version: 1 } })).status, 200);
     assert.equal((await request(`/api/company/orders/${orderId}/confirm`, { cookie: attendant.cookie,
       method: "POST", body: { version: 1 } })).status, 200);
     assert.equal((await request(`/api/client/orders/${orderId}/pay`, { cookie: client.cookie,

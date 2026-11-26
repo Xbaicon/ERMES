@@ -185,6 +185,9 @@ test("destino e destinatário preservados no pedido", async (context) => {
     assert.deepEqual(currentDraft.destinationSnapshot, normalizedManualAddress);
     assert.deepEqual(currentDraft.recipientSnapshot, { type: "other", name: "Pessoa Autorizada" });
 
+    assert.equal((await request(`/api/client/orders/${manualOrder.id}/submit`, {
+      cookie: clientCookie, method: 'POST', body: { version: currentDraft.version },
+    })).status, 200);
     const confirmation = await request(`/api/company/orders/${manualOrder.id}/confirm`, {
       cookie: companyCookie, method: "POST", body: { version: currentDraft.version },
     });

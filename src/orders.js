@@ -1,4 +1,5 @@
 import { adjustmentDetails } from "./order-adjustments.js";
+import { commercialEvidence } from "./order-commercial-schema.js";
 import { officialOrderStatus, terminalDeliveryEvent } from "./official-statuses.js";
 import { db, recordCompanyAuditInTransaction, transaction } from "./database.js";
 import { MAX_ORDER_WEIGHT_KG } from "./freight.js";
@@ -12,7 +13,7 @@ const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 function projectedOfficialOrderStatus(order) {
   const delivery = db.prepare("SELECT id, status FROM deliveries WHERE order_id = ?").get(order.id);
   return officialOrderStatus(order.status, delivery?.status,
-    delivery ? terminalDeliveryEvent(db, delivery.id) : null);
+    delivery ? terminalDeliveryEvent(db, delivery.id) : null, commercialEvidence(db, order.id));
 }
 
 function orderError(message, statusCode = 400) {
@@ -183,9 +184,10 @@ function priceSnapshot(value) {
   return BigInt(value);
 }
 
-function findOwnedOrder(clientId, orderId) {
+function findOwnedOrder(clientId, orderId, allowRejected = false) {
   const order = db.prepare(`SELECT o.id, o.client_id AS clientId, o.company_id AS companyId,
-                                   o.status, o.destination_snapshot_json AS destinationSnapshotJson,
+                                   o.status, CAST(o.items_total_cents AS TEXT) AS itemsTotalCents,
+                                   o.destination_snapshot_json AS destinationSnapshotJson,
                                    o.recipient_snapshot_json AS recipientSnapshotJson,
                                    o.version, o.created_at AS createdAt, o.updated_at AS updatedAt,
                                    c.name AS companyName
@@ -193,7 +195,9 @@ function findOwnedOrder(clientId, orderId) {
                             JOIN companies c ON c.id = o.company_id
                             WHERE o.id = ? AND o.client_id = ?`).get(orderId, clientId);
   if (!order) throw orderError("Pedido não encontrado.", 404);
-  if (order.status !== "draft") throw orderError("Este pedido não está mais em estado draft.", 409);
+  if (order.status !== "draft" && !(allowRejected && order.status === "rejected")) {
+    throw orderError("Este pedido não está mais em estado draft.", 409);
+  }
   return order;
 }
 
@@ -244,6 +248,8 @@ function mapDraftOrder(order, items) {
   const totals = calculateDraftTotals(items);
   return {
     id: order.id,
+    version: order.version,
+    ...commercialEvidence(db, order.id),
     status: order.status,
     officialStatus: projectedOfficialOrderStatus(order),
     company: { id: order.companyId, name: order.companyName },
@@ -263,13 +269,14 @@ export function listDraftOrders(clientId) {
                             c.name AS companyName
                      FROM orders o
                      JOIN companies c ON c.id = o.company_id
-                     WHERE o.client_id = ? AND o.status = 'draft'
+                     WHERE o.client_id = ? AND o.status IN ('draft', 'rejected')
                      ORDER BY o.updated_at DESC, o.id DESC`).all(clientId).map((order) => {
     const items = loadStoredItems(order.id);
     const totals = calculateDraftTotals(items);
     return {
       id: order.id,
       status: order.status,
+      ...commercialEvidence(db, order.id),
       officialStatus: projectedOfficialOrderStatus(order),
       company: { id: order.companyId, name: order.companyName },
       itemCount: items.length,
@@ -281,7 +288,7 @@ export function listDraftOrders(clientId) {
 }
 
 export function getDraftOrder(clientId, orderId) {
-  const order = findOwnedOrder(clientId, orderId);
+  const order = findOwnedOrder(clientId, orderId, true);
   return mapDraftOrder(order, loadStoredItems(order.id));
 }
 
@@ -316,6 +323,8 @@ export function listCompanyDraftOrders(companyId) {
   return db.prepare(`SELECT o.id, o.status, o.version
                      FROM orders o
                      WHERE o.company_id = ? AND o.status = 'draft'
+                       AND EXISTS (SELECT 1 FROM order_submissions s
+                         WHERE s.order_id = o.id AND s.version = o.version)
                      ORDER BY o.updated_at DESC, o.id DESC`).all(companyId).map((order) => {
     const items = loadStoredItems(order.id);
     const totals = calculateDraftTotals(items);
@@ -623,6 +632,9 @@ export function confirmCompanyDraftOrder(companyId, orderId, actorUserId, body) 
     if (order.version !== input.version) {
       throw orderError("O pedido foi alterado pelo cliente. Recarregue a vers\u00e3o atual antes de confirmar.", 409);
     }
+    if (commercialEvidence(db, order.id).submittedVersion !== order.version) {
+      throw orderError("O pedido precisa ser submetido pelo cliente na versão atual.", 409);
+    }
     const confirmation = confirmationSnapshot(order);
     requireProcessableSystemAddress(confirmation.snapshot);
     const update = db.prepare(`UPDATE orders
@@ -636,6 +648,43 @@ export function confirmCompanyDraftOrder(companyId, orderId, actorUserId, body) 
     recordCompanyAuditInTransaction(companyId, actorUserId, "order_confirmed", "order", order.id);
     const confirmed = findCompanyOrderForConfirmation(companyId, order.id);
     return mapConfirmedCompanyOrder(confirmed, confirmation);
+  });
+}
+
+export function submitClientOrder(clientId, orderId, body) {
+  const { version } = parseOrderConfirmation(body);
+  return transaction(() => {
+    const order = findOwnedOrder(clientId, orderId);
+    if (order.version !== version) throw orderError("A versão do pedido foi alterada.", 409);
+    const snapshot = confirmationSnapshot(order);
+    requireProcessableSystemAddress(snapshot.snapshot);
+    db.prepare(`INSERT INTO order_submissions (order_id, version, submitted_by_user_id)
+      VALUES (?, ?, ?) ON CONFLICT(order_id, version) DO NOTHING`).run(order.id, version, clientId);
+    return mapDraftOrder(order, loadStoredItems(order.id));
+  });
+}
+
+export function rejectCompanyOrder(companyId, orderId, actorUserId, body) {
+  if (!isObject(body)) throw orderError("Informe versão e motivo da recusa.");
+  allowOnly(body, ["version", "reason"]);
+  const version = positiveSafeInteger(body.version, "version");
+  if (typeof body.reason !== "string" || !body.reason.trim() || body.reason.trim().length > 500) {
+    throw orderError("Informe um motivo textual de recusa com até 500 caracteres.");
+  }
+  return transaction(() => {
+    const order = findCompanyOrderForConfirmation(companyId, orderId);
+    const evidence = commercialEvidence(db, order.id);
+    if (order.status === "rejected" && evidence.rejection?.version === version) {
+      return { id: order.id, status: order.status, officialStatus: "RECUSADO", ...evidence };
+    }
+    if (order.status !== "draft" || order.version !== version || evidence.submittedVersion !== version) {
+      throw orderError("Somente a versão atualmente submetida pode ser recusada.", 409);
+    }
+    db.prepare(`INSERT INTO order_rejections (order_id, version, company_id, actor_user_id, reason)
+      VALUES (?, ?, ?, ?, ?)`).run(order.id, version, companyId, actorUserId, body.reason.trim());
+    db.prepare("UPDATE orders SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(order.id);
+    return { id: order.id, status: "rejected", officialStatus: "RECUSADO", ...commercialEvidence(db, order.id) };
   });
 }
 

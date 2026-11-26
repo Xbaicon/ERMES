@@ -72,7 +72,7 @@
 
       <section class="dashboard-section" data-company-panel hidden>
         <div class="section-title">
-          <div><p class="eyebrow">PEDIDOS</p><h2>Pedidos em rascunho</h2></div>
+          <div><p class="eyebrow">PEDIDOS</p><h2>Pedidos aguardando confirmação</h2></div>
           <button class="button button-outline button-small" type="button" data-company-drafts-reload>Recarregar lista</button>
         </div>
         <div class="form-message" data-company-draft-message role="status" aria-live="polite" hidden></div>
@@ -90,6 +90,8 @@
             <div class="cart-totals"><span>Subtotal: <strong data-company-draft-subtotal>R$ 0,00</strong></span><span>Peso total: <strong data-company-draft-weight>0 kg</strong></span></div>
             <p class="form-copy">A confirma&ccedil;&atilde;o comercial congela a edi&ccedil;&atilde;o direta dos itens. Ela n&atilde;o cria entrega, pagamento ou frete.</p>
             <button class="button button-dark" type="button" data-company-draft-confirm hidden>Confirmar pedido</button>
+            <label>Motivo da recusa <input data-company-draft-reason maxlength="500" placeholder="Informe o motivo da recusa"></label>
+            <button class="button button-outline" type="button" data-company-draft-reject hidden>Recusar pedido</button>
           </div>
         </div>
       </section>
@@ -263,6 +265,7 @@
             </div>
             <div class="form-message" data-client-draft-message role="status" aria-live="polite" hidden></div>
             <button class="button button-dark" type="button" data-client-draft-save disabled>Salvar alterações</button>
+            <button class="button button-outline" type="button" data-client-draft-submit disabled>Enviar para confirmação</button>
           </div>
         </div>
       </section>

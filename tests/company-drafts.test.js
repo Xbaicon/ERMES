@@ -79,7 +79,7 @@ test("confirmacao envia a versao analisada, bloqueia duplo clique e atualiza a l
   const confirmButton = elements.get("[data-company-draft-confirm]");
   const message = elements.get("[data-company-draft-message]");
   const order = {
-    id: 7, status: "draft", version: 3,
+    id: 7, status: "draft", officialStatus: 'AGUARDANDO_CONFIRMACAO', version: 3,
     items: [{ productId: 1, name: "Produto", quantity: 2, unitPriceCents: 1000, unitWeightKg: 0.5 }],
     itemsTotalCents: 2000, weightKg: 1,
     destinationSnapshot: { postalCode: "01001000", state: "SP", city: "Sao Paulo",
@@ -155,7 +155,7 @@ test("conflito recarrega a versao atual antes de permitir nova confirmacao", asy
         if (path === "/api/company/orders/drafts") return { drafts: [{ id: 8, status: "draft",
           version: detailVersion, itemCount: 1, itemsTotalCents: 1000, weightKg: 1 }] };
         if (path === "/api/company/orders/8") return { order: {
-          id: 8, status: "draft", version: detailVersion,
+          id: 8, status: "draft", officialStatus: 'AGUARDANDO_CONFIRMACAO', version: detailVersion,
           items: [{ productId: 1, name: "Produto", quantity: detailVersion,
             unitPriceCents: 1000, unitWeightKg: 1 }],
           itemsTotalCents: 1000 * detailVersion, weightKg: detailVersion,

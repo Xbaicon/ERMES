@@ -11,6 +11,8 @@ export async function setupCompanyDrafts({ api, money, escapeHtml, showMessage }
   const weight = document.querySelector("[data-company-draft-weight]");
   const message = document.querySelector("[data-company-draft-message]");
   const confirmButton = document.querySelector("[data-company-draft-confirm]");
+  const rejectButton = document.querySelector("[data-company-draft-reject]");
+  const rejectionReason = document.querySelector("[data-company-draft-reason]");
   let drafts = [];
   let selectedId = null;
   let selectedOrder = null;
@@ -33,9 +35,11 @@ export async function setupCompanyDrafts({ api, money, escapeHtml, showMessage }
   ].filter(Boolean).join(" · ");
 
   function renderConfirmation() {
-    confirmButton.hidden = !selectedOrder || selectedOrder.status !== "draft";
+    confirmButton.hidden = !selectedOrder || selectedOrder.status !== "draft"
+      || selectedOrder.officialStatus !== 'AGUARDANDO_CONFIRMACAO';
     confirmButton.disabled = busy() || confirmButton.hidden;
     confirmButton.textContent = confirmationLoading ? "Confirmando pedido..." : "Confirmar pedido";
+    if (rejectButton) { rejectButton.hidden = confirmButton.hidden; rejectButton.disabled = confirmButton.disabled; }
   }
 
   function renderList() {
@@ -130,7 +134,7 @@ export async function setupCompanyDrafts({ api, money, escapeHtml, showMessage }
   }
 
   async function confirmDraft() {
-    if (busy() || !selectedOrder || selectedOrder.status !== "draft") return;
+    if (busy() || !selectedOrder || confirmButton.hidden) return;
     const { id, version } = selectedOrder;
     confirmationLoading = true;
     detail.setAttribute("aria-busy", "true");
@@ -171,6 +175,23 @@ export async function setupCompanyDrafts({ api, money, escapeHtml, showMessage }
   });
   reloadButton.addEventListener("click", loadDrafts);
   confirmButton.addEventListener("click", confirmDraft);
+  rejectButton?.addEventListener('click', async () => {
+    if (busy() || !selectedOrder || rejectButton.hidden) return;
+    const reason = rejectionReason.value.trim();
+    if (!reason) { showMessage(message, 'Informe o motivo da recusa.'); return; }
+    const { id, version } = selectedOrder;
+    confirmationLoading = true;
+    renderList();
+    try {
+      await api(`/api/company/orders/${id}/reject`, {
+        method: 'POST', body: JSON.stringify({ version, reason }),
+      });
+      selectedId = null; selectedOrder = null; detail.hidden = true;
+      rejectionReason.value = '';
+      showMessage(message, `Pedido #${id} recusado.`, 'success');
+    } catch (error) { showMessage(message, error.message); }
+    finally { confirmationLoading = false; await loadDrafts(); }
+  });
 
   await loadDrafts();
 }

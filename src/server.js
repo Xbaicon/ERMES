@@ -8,7 +8,7 @@ import { db, recordCompanyAuditInTransaction, seedDevelopmentData, transaction }
 import { calculateFreight, splitNormalFreight } from "./freight.js";
 import { listCourierFinancialEntries } from "./finance.js";
 import { getOrderChat, listOrderChats, sendOrderChatMessage } from "./order-chat.js";
-import { confirmCompanyDraftOrder, confirmSimulatedPayment, createDraftOrder, getClientConfirmedOrder, getCompanyDraftOrder, getDraftOrder, listClientConfirmedOrders, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
+import { submitClientOrder, rejectCompanyOrder, confirmCompanyDraftOrder, confirmSimulatedPayment, createDraftOrder, getClientConfirmedOrder, getCompanyDraftOrder, getDraftOrder, listClientConfirmedOrders, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
 import {
   classifyDeliveryOccurrence, listCompanyDeliveryOccurrences, parseDeliveryOccurrenceId,
@@ -333,6 +333,12 @@ async function api(request, response, url) {
     const order = getClientConfirmedOrder(user.id, parseOrderId(clientConfirmedOrderMatch[1]));
     return json(response, 200, { order });
   }
+  const submitOrderMatch = pathname.match(/^\/api\/client\/orders\/([^/]+)\/submit$/);
+  if (request.method === "POST" && submitOrderMatch) {
+    const user = requireUser(request, ["client"]);
+    return json(response, 200, { order: submitClientOrder(user.id,
+      parseOrderId(submitOrderMatch[1]), await readJson(request)) });
+  }
   const clientOrderMatch = pathname.match(/^\/api\/client\/orders\/([^/]+)$/);
   if (request.method === "GET" && clientOrderMatch) {
     const user = requireUser(request, ["client"]);
@@ -420,6 +426,12 @@ async function api(request, response, url) {
     const message = sendOrderChatMessage(user, parseOrderId(companyOrderChatMatch[1]),
       await readJson(request));
     return json(response, 201, { message });
+  }
+  const rejectOrderMatch = pathname.match(/^\/api\/company\/orders\/([^/]+)\/reject$/);
+  if (request.method === "POST" && rejectOrderMatch) {
+    const user = requireUser(request, ["company"]);
+    return json(response, 200, { order: rejectCompanyOrder(user.companyId,
+      parseOrderId(rejectOrderMatch[1]), user.id, await readJson(request)) });
   }
   const companyOrderConfirmationMatch = pathname.match(/^\/api\/company\/orders\/([^/]+)\/confirm$/);
   if (request.method === "POST" && companyOrderConfirmationMatch) {

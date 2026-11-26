@@ -1749,8 +1749,6 @@ test("acompanhamento operacional completo de entregas", async (context) => {
       await post(cookies.courier1, afterPickup.delivery.id, action);
     }
     db.prepare("UPDATE users SET order_blocked_until = '2099-01-01 00:00:00' WHERE id = ?").run(client1);
-    db.prepare("UPDATE deliveries SET collected_at = datetime('now', '-4 minutes') WHERE id = ?")
-      .run(afterPickup.delivery.id);
     const cancelledAfterPickup = await request(`/api/client/deliveries/${afterPickup.delivery.id}/cancel`,
       { cookie: cookies.client1, method: "POST", body: {} });
     const cancelledAfterPickupDelivery = (await cancelledAfterPickup.json()).delivery;
@@ -2227,6 +2225,9 @@ test("acompanhamento operacional completo de entregas", async (context) => {
     db.prepare(`INSERT INTO order_items
       (order_id, product_id, quantity, unit_price_cents, unit_weight_kg)
       VALUES (?, ?, 1, 1000, 1)`).run(otherDraft, product);
+    assert.equal((await request(`/api/client/orders/${otherDraft}/submit`, {
+      cookie: cookies.client1, method: 'POST', body: { version: 1 },
+    })).status, 200);
     assert.equal((await request(`/api/company/orders/${otherDraft}/confirm`, {
       cookie: cookies.company1, method: "POST", body: { version: 1 },
     })).status, 200);

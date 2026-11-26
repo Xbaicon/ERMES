@@ -45,7 +45,11 @@ test("API de consulta de pedidos draft pela empresa", async (context) => {
       cookie, method: "POST", body: { companyId, items },
     });
     assert.equal(response.status, 201);
-    return (await response.json()).order;
+    const order = (await response.json()).order;
+    assert.equal((await request(`/api/client/orders/${order.id}/submit`, {
+      cookie, method: "POST", body: { version: 1 },
+    })).status, 200);
+    return order;
   }
 
   const clientCookie = await registerClient("empresa-drafts.cliente@ermes.local");

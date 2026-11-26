@@ -478,31 +478,126 @@ test("impedimento externo e revalidação da Baseline 0.2", async (context) => {
     assert.deepEqual(snapshot(id), after);
   });
 
-  await context.test('cancelamento e revalidação concorrentes têm apenas um vencedor', async () => {
+  await context.test('cancelamento concorrente com revalidação preserva fechamento único', async () => {
     const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
     const responses = await race([
       { name: 'cancelClientDelivery', args: [id, client1, {}] },
       { name: 'revalidateDelivery', args: [id, companyUser1, company1, releaseBody(id)] },
     ]);
-    assert.deepEqual(responses.map(r => r.status).sort(), [200, 409], JSON.stringify(responses));
+    assert.equal(responses[0].status, 200, JSON.stringify(responses));
+    assert.ok([200, 409].includes(responses[1].status), JSON.stringify(responses));
     const state = snapshot(id);
     const cancelled = state.delivery.status === 'cancelled';
-    assert.ok(cancelled || state.delivery.status === 'available');
-    assert.equal(state.revalidations[0].verified_at === null, cancelled);
+    assert.equal(cancelled, true);
+    assert.equal(state.revalidations[0].verified_at === null, responses[1].status === 409);
     assert.equal(state.events.filter(e => e.event_type === 'client_cancelled_after_external_obstruction').length,
       cancelled ? 1 : 0);
     assert.equal(state.finances.filter(e => e.entry_type === 'refund').length, cancelled ? 2 : 0);
   });
 
-  await context.test('revalidação vencedora bloqueia o cancelamento especial posterior', async () => {
+  await context.test('revalidação liberada permite cancelamento integral sem nova coleta', async () => {
     const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
     assert.equal((await companyAction(id, 'revalidate', releaseBody(id))).status, 200);
     const before = snapshot(id);
-    assert.equal((await cancel(id)).status, 409);
-    assert.deepEqual(snapshot(id), before);
+    assert.equal((await cancel(id)).status, 200);
+    const after = snapshot(id);
+    assert.equal(after.delivery.status, 'cancelled');
+    assert.deepEqual(after.revalidations, before.revalidations);
+    assert.equal(after.finances.filter(e => e.entry_type === 'distribution').length, 0);
+    assert.equal(after.finances.filter(e => e.entry_type === 'refund').length, 2);
     assert.equal(before.delivery.status, 'available');
     assert.ok(before.revalidations[0].verified_at);
     assert.equal(before.finances.filter(e => e.entry_type === 'refund').length, 0);
+  });
+
+  await context.test('available sem liberação empresarial não usa ciclo externo pendente', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    db.prepare("UPDATE deliveries SET status = 'available' WHERE id = ?").run(id);
+    const before = snapshot(id);
+    assert.equal(before.revalidations[0].verified_at, null);
+    assert.equal(before.events.some(e => e.event_type === 'delivery_revalidated'), false);
+    assert.equal((await cancel(id)).status, 500);
+    assert.throws(() => cancelClientDelivery(id, client1, {}),
+      { code: 'FINANCIAL_RECONCILIATION_REQUIRED' });
+    assert.deepEqual(snapshot(id), before);
+    assert.equal(before.finances.filter(e => e.entry_type === 'refund' || e.entry_type === 'distribution').length, 0);
+  });
+
+  await context.test('liberação antiga não valida available com novo ciclo pendente', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    assert.equal((await companyAction(id, 'revalidate', releaseBody(id))).status, 200);
+    for (const action of ['accept', 'arrive-pickup', 'collect', 'arrive-destination']) {
+      assert.equal((await post(cookies.courier1, id, action)).status, 200);
+    }
+    await obstruct(item);
+    assert.equal((await post(cookies.courier1, id, 'report-return')).status, 200);
+    assert.equal((await companyAction(id, 'confirm-return')).status, 200);
+    db.prepare("UPDATE deliveries SET status = 'available' WHERE id = ?").run(id);
+    const before = snapshot(id);
+    assert.ok(before.revalidations[0].verified_at);
+    assert.equal(before.revalidations[1].verified_at, null);
+    assert.equal((await cancel(id)).status, 500);
+    assert.deepEqual(snapshot(id), before);
+    assert.equal(before.finances.filter(e => e.entry_type === 'refund' || e.entry_type === 'distribution').length, 0);
+  });
+
+  await context.test('atribuição após revalidação sem nova coleta mantém cancelamento integral', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    assert.equal((await companyAction(id, 'revalidate', releaseBody(id))).status, 200);
+    const before = snapshot(id);
+    assert.equal((await post(cookies.courier1, id, 'accept')).status, 200);
+    assert.equal((await post(cookies.courier1, id, 'arrive-pickup')).status, 200);
+    assert.equal((await cancel(id)).status, 200);
+    const after = snapshot(id);
+    assert.equal(after.delivery.status, 'cancelled');
+    assert.equal(after.delivery.courier_id, null);
+    assert.deepEqual(after.attempts, before.attempts);
+    assert.deepEqual(after.revalidations, before.revalidations);
+    assert.deepEqual(after.finances.filter(e => e.entry_type === 'refund').map(e => e.amount_cents), [1000, 101]);
+    assert.equal(after.finances.filter(e => e.entry_type === 'distribution').length, 0);
+  });
+
+  await context.test('nova coleta após liberação usa retorno e financeiro 50/50 somente no recebimento', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    assert.equal((await companyAction(id, 'revalidate', releaseBody(id))).status, 200);
+    const previous = snapshot(id);
+    for (const action of ['accept', 'arrive-pickup', 'collect']) {
+      assert.equal((await post(cookies.courier1, id, action)).status, 200);
+    }
+    assert.equal((await cancel(id)).status, 200);
+    let state = snapshot(id);
+    assert.equal(state.attempts.length, 2);
+    assert.deepEqual(state.attempts[0], previous.attempts[0]);
+    assert.deepEqual(state.finances, previous.finances);
+    assert.equal(state.delivery.status, 'returning');
+    assert.equal((await post(cookies.courier1, id, 'report-return')).status, 200);
+    assert.deepEqual(snapshot(id).finances, previous.finances);
+    const responses = await race([
+      { name: 'confirmReturn', args: [id, companyUser1, company1, {}] },
+      { name: 'confirmReturn', args: [id, companyUser1, company1, {}] },
+    ]);
+    assert.deepEqual(responses.map(r => r.status).sort(), [200, 409]);
+    state = snapshot(id);
+    assert.equal(state.delivery.status, 'returned');
+    assert.equal(state.attempts[1].end_nature, 'terminal');
+    assert.deepEqual(state.finances.filter(e => e.entry_type !== 'payment').map(e =>
+      [e.entry_type, e.component, e.amount_cents]), [['refund', 'products', 1000], ['refund', 'freight', 51], ['distribution', 'freight', 50]]);
+    assert.equal(state.events.filter(e => e.event_type === 'return_confirmed').length, 1);
+    assert.deepEqual(state.revalidations, previous.revalidations);
+  });
+
+  await context.test('ciclo liberado inconsistente não permite refund nem mutação', async () => {
+    const item = await awaiting({ freightCents: 101 }), id = item.delivery.id;
+    assert.equal((await companyAction(id, 'revalidate', releaseBody(id))).status, 200);
+    // Duplicidade artificial no histórico não equivale a novo retorno legítimo.
+    db.prepare(`INSERT INTO delivery_events (delivery_id, actor_user_id, event_type)
+      VALUES (?, ?, 'return_reported')`).run(id, courier1);
+    const before = snapshot(id);
+    const response = await cancel(id);
+    assert.equal(response.status, 500);
+    assert.throws(() => cancelClientDelivery(id, client1, {}),
+      { code: 'FINANCIAL_RECONCILIATION_REQUIRED' });
+    assert.deepEqual(snapshot(id), before);
   });
 
   await context.test('bootstrap repetido atualiza trigger sem criar dinheiro no banco existente', async () => {

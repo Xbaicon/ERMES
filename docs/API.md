@@ -36,9 +36,10 @@ persistido no banco, não o perfil enviado pelo navegador.
 | GET/POST | `/company/couriers` | Listar ou vincular motoboys |
 | GET | `/company/freight-config` | Consultar os parâmetros tarifários da própria empresa |
 | PATCH | `/company/freight-config` | Alterar os parâmetros tarifários da própria empresa |
-| GET | `/company/orders/drafts` | Listar os pedidos `draft` da própria empresa |
+| GET | `/company/orders/drafts` | Listar as versões submetidas (`AGUARDANDO_CONFIRMACAO`) da própria empresa |
 | GET | `/company/orders/:orderId` | Consultar o detalhe de um pedido `draft` da própria empresa |
 | POST | `/company/orders/:orderId/confirm` | Confirmar comercialmente um `draft` da própria empresa |
+| POST | `/company/orders/:orderId/reject` | Recusar comercialmente a versão submetida de um Pedido |
 | GET | `/company/order-chats` | Listar os Pedidos da empresa disponíveis no painel de chat |
 | GET/POST | `/company/orders/:orderId/chat` | Consultar o histórico ou enviar mensagem no chat do Pedido |
 | GET | `/company/deliveries` | Listar Entregas da própria empresa |
@@ -176,6 +177,34 @@ As duas rotas de parâmetros tarifários exigem sessão com papel `company`. A e
 
 O limite máximo por pedido é uma regra fixa de 12 kg. Ele não é retornado nem editável nessas rotas, e a cotação aplica esse limite independentemente da coluna legada `max_weight_kg`.
 
+### Submissão e decisão comercial — incremento final 0.2
+
+- `POST /client/orders/:orderId/submit`, corpo `{ "version": 1 }`: somente
+  proprietário; versão atual válida em `draft`. Retorna `200` com `{ order }`,
+  `version`, `submittedVersion`, `submittedAt` e `officialStatus`.
+  Repetição da mesma versão preserva timestamp e registro; versão antiga retorna `409`.
+- `draft` sem submissão vigente projeta `EM_MONTAGEM`; com submissão vigente,
+  `AGUARDANDO_CONFIRMACAO`. Edição material dos itens continua permitida, incrementa
+  a versão e invalida a submissão anterior sem apagar o histórico. Edição sem
+  mudança não invalida. A nova versão precisa ser enviada novamente pelo cliente.
+- `POST /company/orders/:orderId/confirm` exige a versão atualmente submetida.
+  A fila empresarial mostra somente essas versões; o detalhe de um draft em
+  montagem continua consultável para contexto, mas não permite confirmação.
+- `POST /company/orders/:orderId/reject`, corpo
+  `{ "version": 1, "reason": "Não podemos atender este pedido" }`: aceita
+  RESPONSAVEL e ATENDENTE da empresa. Motivo textual obrigatório, de 1 a 500
+  caracteres após trim. Retorna `200` com `status: rejected`,
+  `officialStatus: RECUSADO` e `rejection` contendo empresa, ator, versão, motivo
+  e horário. Outra empresa recebe `404`; estado incompatível recebe `409`.
+  Retry da mesma versão retorna a decisão original, sem trocar motivo ou autor.
+- A recusa não cria Entrega, tentativa, pagamento, refund ou distribuição.
+  Bloqueia edição, submissão, confirmação e escrita no chat; histórico continua
+  consultável. Confirmação e recusa concorrem em transações serializadas: somente
+  uma decisão vence. A consulta de drafts do cliente inclui recusados para exibir o motivo.
+- Drafts legados sem submissão continuam `EM_MONTAGEM`; nenhum envio histórico
+  é inferido. Os demais estados oficiais são `CONFIRMADO`, `CONCLUIDO`,
+  `ENCERRADO` e `CANCELADO`, conforme evidência logística existente.
+
 ### Consulta de pedidos draft
 
 As rotas de consulta exigem sessão com papel `company`. A empresa é
@@ -183,7 +212,7 @@ identificada exclusivamente pelo `companyId` da sessão no servidor; nenhum
 identificador de empresa ou cliente é recebido do navegador.
 
 `GET /company/orders/drafts` retorna HTTP `200` com os resumos dos pedidos
-em estado `draft` cujo `company_id` pertence à sessão. A resposta é
+em estado `draft`, com submissão da versão atual, cujo `company_id` pertence à sessão. A resposta é
 `{ "drafts": [] }` quando não existem pedidos para análise.
 
 `GET /company/orders/:orderId` exige identificador decimal inteiro, positivo e
@@ -396,7 +425,7 @@ Pedido, subtotal, endereço, destinatário e snapshots unitários dos itens são
 
 ### Consulta e edição de pedidos draft
 
-`GET /client/orders/drafts` retorna somente pedidos com estado `draft` cujo `client_id` corresponde ao usuário da sessão. A listagem contém dados resumidos para seleção:
+`GET /client/orders/drafts` retorna pedidos com estado `draft` ou `rejected` cujo `client_id` corresponde ao usuário da sessão. A listagem contém dados resumidos para seleção:
 
 ```json
 {
@@ -432,7 +461,7 @@ Quando não há rascunhos, a resposta é HTTP `200` com `drafts: []`.
 
 O corpo aceita somente `items`, e cada item aceita somente `productId` e `quantity`. A lista não pode ser vazia, produtos não podem se repetir e todos os identificadores e quantidades devem ser inteiros positivos seguros. Campos de proprietário, empresa, preço, peso, status, endereço, subtotal, frete, rota ou snapshots são rejeitados com `400`.
 
-O cliente e a empresa do pedido não são recebidos do navegador. As consultas combinam o `orderId` com o `client_id` da sessão. Pedido inexistente ou pertencente a outro cliente retorna `404`, sem revelar a existência do recurso alheio. Pedido próprio que não está mais em `draft` retorna `409`. Ausência de sessão retorna `401`, e empresa, motoboy ou administrador recebem `403`.
+O cliente e a empresa do pedido não são recebidos do navegador. As consultas combinam o `orderId` com o `client_id` da sessão. Pedido inexistente ou pertencente a outro cliente retorna `404`, sem revelar a existência do recurso alheio. A consulta também permite `rejected`, com motivo e ator da recusa; a edição aceita somente `draft`. Outros estados retornam `409`. Ausência de sessão retorna `401`, e empresa, motoboy ou administrador recebem `403`.
 
 Na atualização, itens que já estavam persistidos no draft mantêm seus `unit_price_cents` e `unit_weight_kg`, mesmo que o cadastro atual do produto tenha mudado; alterar sua quantidade recalcula os totais com esses snapshots. Um produto realmente novo precisa existir, pertencer à empresa imutável do pedido e estar disponível, e recebe preço e peso atuais do banco como novos snapshots. Se um item foi removido e salvo, uma inclusão posterior é uma nova adição e captura os valores vigentes naquele momento.
 
@@ -733,7 +762,7 @@ Na conclusão normal, a mesma transação que grava `delivery_completed` persist
 parcelas sempre coincide com o frete preservado. O cálculo usa aritmética inteira,
 trunca as três parcelas e distribui resíduos pela maior fração, com desempate na
 ordem motoboy, empresa e ERMES. No cancelamento do cliente após
-a coleta, a mesma transação registra reembolso integral dos produtos, metade do
+a coleta, somente a transação de `confirm-return` registra reembolso integral dos produtos, metade do
 frete ao cliente e o restante do frete ao motoboy; em frete ímpar, a metade do
 cliente é arredondada para o centavo superior e o motoboy recebe o restante.
 Produto indisponível registra reembolso integral somente dos componentes
@@ -747,8 +776,8 @@ IDs internos não alteram essa equivalência. UPDATE e DELETE são rejeitados.
 Quando `freight_total_cents` é `NULL`, nenhum valor de frete é criado: os efeitos
 sobre o frete ficam indicados em `financial.pending`. O fechamento operacional
 por destinatário ausente ou recusa aplica o reembolso acumulado de produtos
-e a divisão do frete 70/25/5 descritos abaixo. Endereço incorreto e três códigos
-inválidos não recebem distribuição interna nova nesta etapa. Cancelamento pré-coleta
+e a divisão do frete 70/25/5 descritos abaixo. Endereço CLIENTE também possui
+70/25/5; três códigos inválidos não recebem distribuição interna presumida. Cancelamento pré-coleta
 com evidência coerente aplica reembolso integral, conforme a seção abaixo.
 Se o frete estiver preservado, mas faltar o lançamento de pagamento correspondente,
 a conclusão aborta com reconciliação financeira e não mantém estado, evento ou
@@ -898,7 +927,7 @@ O motoboy usa o endpoint existente `report-return`; a empresa usa `confirm-retur
 
 As novas rotas usam `400` para corpo/ID inválido, `401` sem sessão, `403` para papel incorreto, `404` para recurso alheio e `409` para transição/dados legados incompatíveis. Cliente e motoboy não liberam a Entrega. Mensagem de chat não altera estado. Duas liberações concorrentes geram uma única transição; aceite que disputa cedo demais é rejeitado.
 
-A revalidação não altera classificação, financeiro ou código e não cria tentativa. Nova coleta cria a próxima tentativa com contador zero. Painéis mostram o novo estado e bloqueiam ações incompatíveis; os comandos novos estão disponíveis somente via API neste incremento. O cancelamento pelo cliente enquanto aguarda revalidação está descrito abaixo. Erro do ERMES e estados terminais completos permanecem para incrementos próprios.
+A revalidação não altera classificação, financeiro ou código e não cria tentativa. Nova coleta cria a próxima tentativa com contador zero. Painéis mostram o novo estado e bloqueiam ações incompatíveis; os comandos novos estão disponíveis somente via API neste incremento. O cancelamento pelo cliente enquanto aguarda revalidação está descrito abaixo. Erro do ERMES e estados terminais completos estão implementados nas seções específicas.
 
 ## Fechamento terminal por ausência ou recusa (0.2)
 
@@ -944,8 +973,8 @@ Em retorno terminal histórico com lançamentos incompletos, a projeção
 financeira exige reconciliação em vez de informar distribuição concluída.
 
 Produto indisponível e ajuste excepcional no modelo 0.2 estão implementados
-conforme as rotas descritas acima; RF-025 permanece parcial enquanto faltam
-distância e tempo operacionais autoritativos para recálculo do frete. Endereço
+conforme as rotas descritas acima; RF-0.2-25 tem subtotal/peso e ajuste implementados. A parte dependente de
+distância/tempo autoritativos é limitação futura permitida, não gap bloqueante. Endereço
 incorreto do cliente e erro do ERMES seguem os fluxos documentados. As consequências financeiras do cliente
 em `confirmation_failed` são aplicadas na classificação, conforme seção abaixo;
 a distribuição interna/custo operacional continua futura.
@@ -1035,6 +1064,23 @@ infere esses refunds. Estados `returned/NAO_REALIZADA/ENCERRADO`, tentativa,
 contador, código e marcos operacionais permanecem inalterados.
 
 
+### Cancelamento pós-coleta — retorno antes do financeiro
+
+`POST /client/deliveries/:id/cancel` inicia `returning`, marca a tentativa
+`returning` e preserva a intenção no evento `client_cancelled_after_pickup`.
+Pedido continua `CONFIRMADO`; Entrega projeta `RETORNO_AO_ESTABELECIMENTO`.
+Nem a solicitação nem `report-return` criam refunds ou distribuição.
+
+Somente `POST /company/deliveries/:id/confirm-return`, com evidência íntegra do
+ciclo atual, fecha a tentativa terminal, grava o retorno e projeta
+`CANCELADA/CANCELADO`, completando refund de produtos e aplicando 50% do frete
+ao cliente e 50% ao motoboy. Tudo ocorre na mesma transação. Falha financeira
+reverte estado, tentativa, eventos e todos os lançamentos anteriores da transação.
+Retry/concorrência não duplicam efeitos: repetição incompatível retorna `409`
+(ou `404` para motoboy já desatribuído). O ledger também rejeita SQL antecipado.
+Frete desconhecido não é inventado; chaves financeiras existentes são preservadas.
+Após nova coleta de uma Entrega revalidada, esta regra volta a se aplicar.
+
 ### Financeiro do cancelamento do cliente antes da coleta — Baseline 0.2
 
 `POST /api/client/deliveries/:id/cancel`, com corpo `{}`, completa o financeiro
@@ -1082,8 +1128,9 @@ somente em `awaiting_revalidation`, após `temporary_external_obstruction`,
 externa correspondente, ciclo único pendente e nenhuma tentativa aberta. Antes do
 retorno confirmado retorna `409`. Sem sessão retorna `401`, outro papel `403`,
 outro cliente `404`; repetição após cancelamento retorna `409`. Após a empresa
-revalidar, o cancelamento especial deixa de estar disponível; a política para
-esse estado posterior permanece pendente.
+revalidar, o cancelamento integral continua disponível enquanto não houver nova coleta,
+mediante ocorrência externa, tentativa recuperável encerrada, retorno confirmado e
+liberação empresarial coerentes. Nenhum novo retorno ou distribuição é criado.
 
 O cancelamento grava `cancelled`, `cancelled_at` e evento
 `client_cancelled_after_external_obstruction` com `revalidationId` e
