@@ -1,4 +1,6 @@
 import { AUTHORIZED_ADJUSTMENT_ENTRY, evolveOrderAdjustmentSchema } from "./order-adjustment-schema.js";
+import { evolveOrderCommercialSchema } from "./order-commercial-schema.js";
+import { CANCELLATION_CLOSED_SQL } from "./cancellation-evidence.js";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,7 +11,7 @@ import {
 } from "./security.js";
 import {
   backfillFinancialEntries, isCanonicalTimestamp, CLIENT_CANCELLATION_BEFORE_PICKUP_EVIDENCE_SQL,
-  EXTERNAL_OBSTRUCTION_CYCLE_SQL,
+  EXTERNAL_OBSTRUCTION_CYCLE_SQL, EXTERNAL_OBSTRUCTION_RELEASED_SQL,
 } from "./finance.js";
 import { evolveRevalidationSchema } from "./revalidation-schema.js";
 import { migrateLegacyInvalidCodeAttempts } from "./delivery-attempts.js";
@@ -64,7 +66,9 @@ const financialEntryKindTrigger = `
       OR EXISTS (${AUTHORIZED_ADJUSTMENT_ENTRY.replaceAll('ENTRY.', 'NEW.')})
       OR (NEW.entry_type = 'refund' AND NEW.party_type = 'client'
         AND NEW.delivery_id IS NOT NULL
-        AND (NEW.reason IN ('client_cancelled_after_pickup', 'product_unavailable')
+        AND (NEW.reason = 'product_unavailable'
+          OR (NEW.reason = 'client_cancelled_after_pickup' AND EXISTS (${CANCELLATION_CLOSED_SQL}
+            AND d.id = NEW.delivery_id AND o.id = NEW.order_id))
           OR (NEW.reason = 'client_cancelled_before_pickup'
             AND NEW.component IN ('products', 'freight')
             AND EXISTS (${CLIENT_CANCELLATION_BEFORE_PICKUP_EVIDENCE_SQL}
@@ -77,6 +81,17 @@ const financialEntryKindTrigger = `
               AND o.payment_status = 'paid'
               AND is_canonical_timestamp(d.cancelled_at) = 1
               AND d.cancelled_at >= d.returned_at AND d.cancelled_at <= CURRENT_TIMESTAMP
+              AND (SELECT COUNT(*) FROM delivery_events e WHERE e.delivery_id = d.id
+                AND e.event_type = 'client_cancelled_after_external_obstruction') = 1
+              AND EXISTS (SELECT 1 FROM delivery_events e WHERE e.delivery_id = d.id
+                AND e.event_type = 'client_cancelled_after_external_obstruction'
+                AND e.actor_user_id = o.client_id AND e.occurred_at = d.cancelled_at)))
+          OR (NEW.reason = 'client_cancelled_after_external_obstruction'
+            AND NEW.component IN ('products', 'freight')
+            AND EXISTS (${EXTERNAL_OBSTRUCTION_RELEASED_SQL.replace("d.status = ?", "d.status = 'cancelled'")}
+              AND d.id = NEW.delivery_id AND o.id = NEW.order_id AND o.payment_status = 'paid'
+              AND is_canonical_timestamp(d.cancelled_at) = 1
+              AND d.cancelled_at >= r.verified_at AND d.cancelled_at <= CURRENT_TIMESTAMP
               AND (SELECT COUNT(*) FROM delivery_events e WHERE e.delivery_id = d.id
                 AND e.event_type = 'client_cancelled_after_external_obstruction') = 1
               AND EXISTS (SELECT 1 FROM delivery_events e WHERE e.delivery_id = d.id
@@ -129,7 +144,9 @@ const financialEntryKindTrigger = `
         AND NEW.delivery_id IS NOT NULL
         AND ((NEW.reason = 'delivery_completed'
               AND NEW.party_type IN ('courier', 'company', 'ermes'))
-          OR (NEW.reason = 'client_cancelled_after_pickup' AND NEW.party_type = 'courier')
+          OR (NEW.reason = 'client_cancelled_after_pickup' AND NEW.party_type = 'courier'
+            AND EXISTS (${CANCELLATION_CLOSED_SQL} AND d.id = NEW.delivery_id
+              AND o.id = NEW.order_id AND a.courier_id = NEW.party_user_id))
           OR (NEW.reason IN ('recipient_absent', 'recipient_refused')
             AND NEW.party_type IN ('courier', 'company', 'ermes'))
           OR (NEW.reason = 'address_problem'
@@ -758,6 +775,7 @@ export function recordCompanyAuditInTransaction(companyId, actorUserId, action, 
     JSON.stringify(details));
 }
 
+transaction(() => evolveOrderCommercialSchema(db));
 transaction(() => backfillFinancialEntries(db));
 
 export function seedDevelopmentData() {

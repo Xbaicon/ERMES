@@ -49,7 +49,11 @@ test("confirmacao comercial de pedido pela empresa", async (context) => {
       cookie, method: "POST", body: { companyId, items },
     });
     assert.equal(response.status, 201);
-    return (await response.json()).order;
+    const order = (await response.json()).order;
+    assert.equal((await request(`/api/client/orders/${order.id}/submit`, {
+      cookie, method: "POST", body: { version: 1 },
+    })).status, 200);
+    return order;
   }
   const confirm = (cookie, orderId, version, body = { version }) => request(
     `/api/company/orders/${orderId}/confirm`, { cookie, method: "POST", body },
@@ -140,6 +144,9 @@ test("confirmacao comercial de pedido pela empresa", async (context) => {
   });
 
   await context.test("confirma o snapshot atual sem depender da disponibilidade posterior do produto", async () => {
+    assert.equal((await request(`/api/client/orders/${ownDraft.id}/submit`, {
+      cookie: clientCookie, method: 'POST', body: { version: 2 },
+    })).status, 200);
     const detail = (await (await request(`/api/company/orders/${ownDraft.id}`, {
       cookie: companyCookie,
     })).json()).order;

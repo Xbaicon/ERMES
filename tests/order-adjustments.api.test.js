@@ -920,9 +920,11 @@ test("ajustes comerciais antes da coleta", async (context) => {
     const cancelled = await request(clientPath(delivery) + "/cancel", client, {});
     assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
     assert.deepEqual(ledger(delivery).filter(({ type }) => type === "refund").map(({ amount }) => amount),
-      [1, 99, 11]);
+      [1]);
     assert.equal((await ride(delivery, "report-return")).status, 200);
     assert.equal((await request(companyPath(delivery, "confirm-return"), owner, {})).status, 200);
+    assert.deepEqual(ledger(delivery).filter(({ type }) => type === "refund").map(({ amount }) => amount),
+      [1, 99, 11]);
   });
 
   await context.test("bootstrap repetido preserva ajustes e verifica chaves estrangeiras", async () => {

@@ -50,7 +50,11 @@ test("pagamento simulado de pedido confirmado pelo cliente", async (context) => 
       cookie, method: "POST", body: { companyId, items: [{ productId, quantity }] },
     });
     assert.equal(response.status, 201);
-    return (await response.json()).order;
+    const order = (await response.json()).order;
+    assert.equal((await request(`/api/client/orders/${order.id}/submit`, {
+      cookie, method: "POST", body: { version: 1 },
+    })).status, 200);
+    return order;
   }
   async function confirmDraft(cookie, order) {
     const response = await request(`/api/company/orders/${order.id}/confirm`, {

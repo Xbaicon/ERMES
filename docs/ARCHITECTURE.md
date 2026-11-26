@@ -95,7 +95,7 @@ Não há dependências npm externas nesta etapa.
 - O SQLite atende ao desenvolvimento e demonstração local. Uma futura mudança de banco exigirá migrações e testes de concorrência equivalentes.
 - `delivery_attempts.invalid_code_attempts` é a única fonte operacional do contador. A coluna em `deliveries` permanece temporariamente como legado físico para evitar reconstrução invasiva, sem leitura, incremento ou sincronização pelo fluxo operacional.
 - `order_blocked_until` também permanece como coluna legado física, mas não é gravada nem aplicada. A Baseline 0.2 não possui tolerância fixa de três minutos ou suspensão automática de duas horas.
-- A migração completa dos estados de Pedido e Entrega para a nomenclatura da 0.2 permanece pendente; este incremento preserva valores como `completed` por compatibilidade.
+- Os estados oficiais da 0.2 são projetados; valores físicos como `completed` são preservados por compatibilidade, sem necessidade de migração global.
 
 ## Portabilidade durante a fase SQLite
 
@@ -119,7 +119,7 @@ aplicação para MySQL agora.
 
 ## Próxima etapa técnica
 
-1. Evoluir em incrementos separados os demais cenários e consequências financeiras ainda pendentes da 0.2, preservando os fluxos de endereço já implementados.
+1. Submeter o incremento final à revisão independente antes do fechamento oficial da 0.2.
 2. Definir, se necessária, estratégia auditável de reconciliação de Entregas legadas pós-coleta sem `TentativaEntrega`, sem backfill heurístico.
 3. Após regressão funcional completa da 0.2, migrar SQLite → MySQL como etapa técnica isolada em ambiente apropriado, com plano próprio para integridade, transações e concorrência; repetir regressão automatizada e smoke completo.
 
@@ -130,7 +130,7 @@ histórico e referência para comportamentos herdados.
 
 ## Estados oficiais e revalidação incremental
 
-`src/official-statuses.js` centraliza os nomes oficiais e projeta os valores legados, sem armazenar uma segunda fonte de verdade. Pedidos continuam `draft|confirmed`; Entregas adicionam apenas `awaiting_revalidation`. A projeção `officialStatus` de Pedido consulta a Entrega e exige evidência histórica explícita para os resultados terminais. `returned + client_cancelled_after_pickup` permanece `CANCELADA/CANCELADO`; `returned + recipient_absent|recipient_refused` e `confirmation_failed` com evidência coerente passam a `NAO_REALIZADA/ENCERRADO`. `returned` não é convertido globalmente: quando falta causa comprovada a projeção é `null`. `AGUARDANDO_CONFIRMACAO` de Pedido, `RECUSADO` e os demais cenários terminais ainda não receberam operações novas.
+`src/official-statuses.js` centraliza os nomes oficiais e projeta os valores legados, sem armazenar uma segunda fonte de verdade. Pedidos usam `draft|confirmed|rejected`; Entregas adicionam apenas `awaiting_revalidation`. A projeção `officialStatus` de Pedido consulta a Entrega e exige evidência histórica explícita para os resultados terminais. `returned + client_cancelled_after_pickup` permanece `CANCELADA/CANCELADO`; `returned + recipient_absent|recipient_refused` e `confirmation_failed` com evidência coerente passam a `NAO_REALIZADA/ENCERRADO`. `returned` não é convertido globalmente: quando falta causa comprovada a projeção é `null`. `AGUARDANDO_CONFIRMACAO` exige submissão persistida da versão atual; `RECUSADO` exige decisão empresarial auditada. Montagem não é inferida como submissão.
 
 No fluxo de ausência/recusa, a ocorrência e a mudança para retorno continuam na
 transação original. A confirmação empresarial de recebimento fecha a tentativa
@@ -311,14 +311,44 @@ refunds completos e retiram a antiga pendência apenas quando reconciliados;
 Pedido pago com frete desconhecido mantém `freight_amount_unavailable`. Histórico sem causa
 continua pendente, e cancelamento histórico sem refunds exige reconciliação explícita.
 
+## Submissão versionada e recusa comercial
+
+`order_submissions` usa chave `(order_id, version)` e registra cliente e horário.
+A edição material incrementa `orders.version`; a evidência antiga fica intacta,
+mas deixa de autorizar decisão empresarial. Não há coluna de status oficial
+duplicada nem submissão heurística de drafts legados. A migração cria tabelas e
+triggers idempotentemente, sem reconstruir `orders` ou alterar snapshots.
+
+`order_rejections` é a evidência de domínio da decisão empresarial: empresa,
+UsuarioEmpresa, versão submetida, motivo e horário. Evita duplicação em auditoria
+genérica. O FK composto exige submissão e os triggers validam ator e vínculo e
+impedem alteração da decisão. `orders.status = rejected` projeta `RECUSADO`;
+o chat fica somente leitura. Submissão, edição, confirmação e recusa usam
+`BEGIN IMMEDIATE`; confirmação × recusa e edição × confirmação são exclusivas.
+O cliente pode editar até a confirmação, mas deve reenviar a versão modificada.
+
+## Temporalidade do financeiro no cancelamento pós-coleta
+
+O evento imutável de cancelamento registra a intenção, sem terminalizar a
+operação. `src/cancellation-evidence.js` delimita o ciclo pela última coleta e
+valida tentativa, atores, cardinalidade e cronologia dos eventos. A mesma
+evidência de fechamento protege helper financeiro e trigger do ledger.
+`confirmReturn` valida antes de mutar, fecha a tentativa e grava recebimento,
+refund de produtos, refund de metade do frete e distribuição da outra metade
+na mesma transação. Uma falha na distribuição desfaz também os dois refunds.
+As chaves idempotentes e o arredondamento histórico são preservados.
+O bootstrap não antecipa lançamentos enquanto a mercadoria está em retorno;
+legados sem evidência válida de fechamento permanecem para reconciliação.
+
 ## Cancelamento após impedimento externo: refund integral atômico
 
 O ramo `awaiting_revalidation` de `cancelClientDelivery` verifica Entrega,
 Pedido, retorno físico, última tentativa recuperável, ocorrência externa e ciclo
 único pendente antes da transição. `BEGIN IMMEDIATE` serializa a disputa com
-`revalidateDelivery`: um dos comandos consome o estado, e o outro falha. Se a
-revalidação venceu, o estado `available` com ciclo anterior não é tratado como
-cancelamento pré-coleta; a política pós-revalidação segue pendente.
+`revalidateDelivery`: cancelamento vencedor bloqueia a liberação; liberação vencedora
+preserva o direito de cancelar integralmente antes de nova coleta. O estado
+`available` sozinho não prova elegibilidade: a ocorrência externa, tentativa
+recuperável, recebimento e verificação do mesmo ciclo devem concordar.
 
 Na mesma transação, a Entrega passa a `cancelled`, registra o evento específico
 do cliente e chama `recordClientCancellationAfterExternalObstructionInTransaction`.

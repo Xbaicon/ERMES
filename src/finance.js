@@ -1,5 +1,6 @@
 import { AUTHORIZED_ADJUSTMENT_ENTRY, PRODUCT_UNAVAILABLE_EVIDENCE } from "./order-adjustment-schema.js";
 import { splitNormalFreight } from "./freight.js";
+import { requireCancellationEvidence } from "./cancellation-evidence.js";
 import { clientAddressEvidence } from "./client-address-evidence.js";
 import { systemAddressEvidence } from "./system-address-evidence.js";
 
@@ -415,7 +416,8 @@ const LATEST_COLLECTION_EVENT_ID_SQL = `(SELECT MAX(collected.id) FROM delivery_
   WHERE collected.delivery_id = d.id AND collected.event_type = 'order_collected')`;
 export const EXTERNAL_OBSTRUCTION_CYCLE_SQL = `
   SELECT r.id AS revalidationId, oc.id AS occurrenceId,
-    d.id AS deliveryId, d.order_id AS orderId, d.cancelled_at AS cancelledAt
+    d.id AS deliveryId, d.order_id AS orderId, d.cancelled_at AS cancelledAt,
+    r.received_at AS receivedAt
   FROM deliveries d JOIN orders o ON o.id = d.order_id
   JOIN users client ON client.id = o.client_id AND client.role = 'client'
   JOIN delivery_revalidations r ON r.delivery_id = d.id
@@ -490,9 +492,53 @@ export const EXTERNAL_OBSTRUCTION_CYCLE_SQL = `
       AND verified.id > ${LATEST_COLLECTION_EVENT_ID_SQL})
 `;
 
+// Após a liberação, os campos operacionais da Entrega são limpos. A evidência
+// física permanece na tentativa, na revalidação e nos eventos do mesmo ciclo.
+export const EXTERNAL_OBSTRUCTION_RELEASED_SQL = EXTERNAL_OBSTRUCTION_CYCLE_SQL
+  .replace('d.courier_id IS NULL AND d.completed_at IS NULL', `(d.courier_id IS NULL
+    OR (d.status IN ('heading_to_pickup', 'awaiting_pickup') AND EXISTS (
+      SELECT 1 FROM users assigned WHERE assigned.id = d.courier_id
+        AND assigned.role = 'courier' AND assigned.company_id = o.company_id)))
+    AND d.completed_at IS NULL`)
+  .replace("r.verified_at IS NULL", "r.verified_at IS NOT NULL")
+  .replace("AND d.return_reason = 'temporary_external_obstruction'", "")
+  .replaceAll("d.collected_at", "a.started_at")
+  .replaceAll("d.return_reported_at", `(SELECT e.occurred_at FROM delivery_events e
+    WHERE e.delivery_id = d.id AND e.event_type = 'return_reported'
+      AND e.id > ${LATEST_COLLECTION_EVENT_ID_SQL} LIMIT 1)`)
+  .replaceAll("d.returned_at", "r.received_at")
+  .replace("r.verified_by_user_id IS NULL AND r.verification_result IS NULL", `
+    is_canonical_timestamp(r.verified_at) = 1 AND r.verified_at >= r.received_at
+    AND r.verified_at <= CURRENT_TIMESTAMP AND length(trim(r.verification_result)) > 0
+    AND EXISTS (SELECT 1 FROM users verifier WHERE verifier.id = r.verified_by_user_id
+      AND verifier.role = 'company' AND verifier.company_id = o.company_id)
+    AND d.collected_at IS NULL AND d.return_reason IS NULL
+    AND d.return_reported_at IS NULL AND d.returned_at IS NULL`)
+  .replace("pending.verified_at IS NULL) = 1", "pending.verified_at IS NULL) = 0")
+  .replace(`AND NOT EXISTS (SELECT 1 FROM delivery_events verified WHERE verified.delivery_id = d.id
+      AND verified.event_type = 'delivery_revalidated'
+      AND verified.id > ${LATEST_COLLECTION_EVENT_ID_SQL})`, `
+    AND (SELECT COUNT(*) FROM delivery_events verified WHERE verified.delivery_id = d.id
+      AND verified.event_type = 'delivery_revalidated'
+      AND verified.id > ${LATEST_COLLECTION_EVENT_ID_SQL}) = 1
+    AND EXISTS (SELECT 1 FROM delivery_events verified WHERE verified.delivery_id = d.id
+      AND verified.event_type = 'delivery_revalidated' AND verified.id > ${LATEST_COLLECTION_EVENT_ID_SQL}
+      AND verified.actor_user_id = r.verified_by_user_id AND verified.occurred_at = r.verified_at
+      AND json_valid(verified.details_json)
+      AND json_extract(verified.details_json, '$.revalidationId') = r.id
+      AND json_extract(verified.details_json, '$.occurrenceId') = oc.id)`);
+
 export function externalObstructionCycle(database, deliveryId, status = "awaiting_revalidation") {
-  const cycles = database.prepare(`${EXTERNAL_OBSTRUCTION_CYCLE_SQL} AND d.id = ?`)
-    .all(status, deliveryId);
+  const cycles = [];
+  // O ciclo ainda pendente só autoriza cancelamento enquanto a Entrega aguarda
+  // revalidação; status available exige a liberação empresarial persistida.
+  if (['awaiting_revalidation', 'cancelled'].includes(status)) {
+    cycles.push(...database.prepare(`${EXTERNAL_OBSTRUCTION_CYCLE_SQL} AND d.id = ?`)
+      .all(status, deliveryId));
+  }
+  if (['available', 'heading_to_pickup', 'awaiting_pickup', 'cancelled'].includes(status)) {
+    cycles.push(...database.prepare(`${EXTERNAL_OBSTRUCTION_RELEASED_SQL} AND d.id = ?`).all(status, deliveryId));
+  }
   if (cycles.length !== 1) {
     throw financialError("O impedimento externo e o ciclo pendente exigem reconciliação.");
   }
@@ -518,8 +564,7 @@ function readExternalObstructionRefundPlan(database, deliveryId) {
     FROM delivery_events e WHERE e.delivery_id = ?
       AND e.event_type = 'client_cancelled_after_external_obstruction'`).all(deliveryId);
   if (!delivery || !isCanonicalTimestamp(delivery.cancelledAt)
-    || delivery.cancelledAt < database.prepare("SELECT returned_at AS value FROM deliveries WHERE id = ?")
-      .get(deliveryId).value
+    || delivery.cancelledAt < cycle.receivedAt
     || delivery.cancelledAt > database.prepare("SELECT CURRENT_TIMESTAMP AS now").get().now
     || cancellation.length !== 1 || cancellation[0].actorId !== delivery.clientId
     || cancellation[0].occurredAt !== delivery.cancelledAt || cycle.orderId !== delivery.orderId) {
@@ -699,6 +744,8 @@ export function recordClientCancellationBeforePickupInTransaction(database, deli
 }
 
 export function recordClientCancellationAfterPickupInTransaction(database, delivery, occurredAt = null) {
+  const closed = requireCancellationEvidence(database, delivery.id, 'closed');
+  occurredAt = closed.returnedAt;
   if (!delivery.courierId) throw financialError("O cancelamento pós-coleta não possui motoboy responsável.");
   const payments = paidComponents(database, delivery.orderId, delivery.clientId);
   const paidProducts = payments.get(FINANCIAL_COMPONENTS.PRODUCTS);
@@ -1111,6 +1158,9 @@ function hasAuthorizedProductUnavailableEvent(database, delivery) {
 
 function pendingFinancialEffects(database, delivery, entries) {
   const pending = [];
+  const externalCancellation = Boolean(database.prepare(`SELECT 1 FROM delivery_events
+    WHERE delivery_id = ? AND event_type = 'client_cancelled_after_external_obstruction'`)
+    .get(delivery.id));
   const paidFreight = entries.some((entry) => entry.entryType === FINANCIAL_ENTRY_TYPES.PAYMENT
     && entry.component === FINANCIAL_COMPONENTS.FREIGHT);
   if (delivery.status === "completed" && !paidFreight) {
@@ -1124,7 +1174,7 @@ function pendingFinancialEffects(database, delivery, entries) {
   if (PENDING_DISTRIBUTION_REASONS.has(delivery.returnReason)) {
     pending.push("freight_distribution_rule_undefined");
   }
-  if (delivery.returnReason === "temporary_external_obstruction"
+  if ((delivery.returnReason === "temporary_external_obstruction" || externalCancellation)
     && ["awaiting_revalidation", "cancelled"].includes(delivery.status)) {
     // Refere-se somente ao custo interno futuro da tentativa malsucedida.
     pending.push("freight_distribution_rule_undefined");
@@ -1242,7 +1292,7 @@ function pendingFinancialEffects(database, delivery, entries) {
     if (delivery.paymentStatus === "paid" && delivery.freightTotalCents === null) {
       pending.push("freight_amount_unavailable");
     }
-  } else if (delivery.status === "cancelled" && delivery.returnReason === null && !productUnavailable) {
+  } else if (delivery.status === "cancelled" && delivery.returnReason === null && !productUnavailable && !externalCancellation) {
     pending.push("client_cancellation_before_pickup_refund_rule_undefined");
   }
   return pending;
@@ -1643,13 +1693,14 @@ export function backfillFinancialEntries(database) {
     d.return_reason AS returnReason, d.return_reported_at AS returnReportedAt,
     d.returned_at AS returnedAt
     FROM deliveries d
-    WHERE d.status IN ('returning', 'awaiting_return_confirmation', 'returned')
+    WHERE d.status = 'returned'
       AND d.return_reason = 'client_cancelled_after_pickup'`).all();
   for (const outcome of cancellations) {
     const order = eligibleOrders.get(outcome.orderId);
     if (!order) continue;
     const evidence = cancellationEvidence(database, outcome, order);
     if (!evidence) continue;
+    try { requireCancellationEvidence(database, outcome.id, 'closed'); } catch { continue; }
     recordClientCancellationAfterPickupInTransaction(database, {
       ...outcome, ...order, id: outcome.id, orderId: outcome.orderId,
       courierId: evidence.courierId,

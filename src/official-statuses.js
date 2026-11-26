@@ -124,8 +124,9 @@ export function officialDeliveryStatus(status, terminalEvent = null) {
   if (status === "returned" && unsuccessfulReturnEvents.has(terminalEvent)) return "NAO_REALIZADA";
   return Object.hasOwn(deliveryStatuses, status) ? deliveryStatuses[status] : null;
 }
-export function officialOrderStatus(status, deliveryStatus = null, terminalEvent = null) {
-  if (status === "draft") return "EM_MONTAGEM";
+export function officialOrderStatus(status, deliveryStatus = null, terminalEvent = null, commercial = {}) {
+  if (status === "rejected") return commercial.rejection ? "RECUSADO" : null;
+  if (status === "draft") return commercial.submittedAt ? "AGUARDANDO_CONFIRMACAO" : "EM_MONTAGEM";
   if (status !== "confirmed") return null;
   if (deliveryStatus === "completed") return "CONCLUIDO";
   if (deliveryStatus === "cancelled" && terminalEvent === "product_unavailable") return "ENCERRADO";

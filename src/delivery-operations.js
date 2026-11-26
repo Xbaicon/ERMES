@@ -4,6 +4,7 @@ import {
   productUnavailability, requireAdjustmentUnblocked,
 } from "./order-adjustments.js";
 import { db, transaction } from "./database.js";
+import { requireCancellationEvidence } from "./cancellation-evidence.js";
 import { normalizeAddress } from "./address.js";
 import { clientAddressEvidence, validAddressEvidence } from "./client-address-evidence.js";
 import {
@@ -597,6 +598,9 @@ export function reportReturn(id, courierId, companyId, body) {
   return courierTransition(id, courierId, companyId, body, DELIVERY_STATES.RETURNING,
     DELIVERY_STATES.AWAITING_RETURN_CONFIRMATION, DELIVERY_EVENT_TYPES.RETURN_REPORTED,
     "return_reported_at", (delivery) => {
+      if (delivery.returnReason === 'client_cancelled_after_pickup') {
+        requireCancellationEvidence(db, id, 'returning');
+      }
       if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.ADDRESS_PROBLEM) {
         const clientEvidence = clientAddressEvidence(db, id, "returning");
         const systemEvidence = systemAddressEvidence(db, id, "returning");
@@ -756,6 +760,10 @@ export function confirmReturn(id, companyUserId, companyId, body) {
     if (delivery.status !== DELIVERY_STATES.AWAITING_RETURN_CONFIRMATION) {
       throw deliveryError("A entrega não está aguardando confirmação de retorno.");
     }
+    if (delivery.returnReason === 'client_cancelled_after_pickup') {
+      requireCompanyParticipant(companyUserId, companyId);
+      requireCancellationEvidence(db, id, 'reported');
+    }
     if (delivery.returnReason === DELIVERY_OCCURRENCE_TYPES.CONFIRMATION_FAILED) {
       requireCompanyParticipant(companyUserId, companyId);
       if (!hasConfirmationFailureEvidence(db, id)) {
@@ -838,6 +846,9 @@ export function confirmReturn(id, companyUserId, companyId, body) {
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, returned_at = CURRENT_TIMESTAMP
                   WHERE id = ?`).run(DELIVERY_STATES.RETURNED, id);
       event(id, companyUserId, DELIVERY_EVENT_TYPES.RETURN_CONFIRMED, { reason: delivery.returnReason });
+      if (delivery.returnReason === 'client_cancelled_after_pickup') {
+        recordClientCancellationAfterPickupInTransaction(db, delivery);
+      }
       if (recipientTerminal) {
         recordRecipientTerminalFailureInTransaction(db, delivery, attempt.id, delivery.returnReason);
       }
@@ -864,7 +875,13 @@ export function cancelClientDelivery(id, clientId, body) {
     if (!BEFORE_PICKUP.has(delivery.status)) requireAdjustmentUnblocked(id);
     if (BEFORE_PICKUP.has(delivery.status)) {
       if (db.prepare("SELECT 1 FROM delivery_revalidations WHERE delivery_id = ? LIMIT 1").get(id)) {
-        throw deliveryError("Cancelamento após revalidação exige regra específica futura.");
+        const cycle = externalObstructionCycle(db, id, delivery.status);
+        db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL,
+          cancelled_at = CURRENT_TIMESTAMP WHERE id = ?`).run(DELIVERY_STATES.CANCELLED, id);
+        event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_AFTER_EXTERNAL_OBSTRUCTION,
+          { revalidationId: cycle.revalidationId, occurrenceId: cycle.occurrenceId });
+        recordClientCancellationAfterExternalObstructionInTransaction(db, delivery);
+        return clientView(requireDelivery(id));
       }
       cancelOpenAdjustmentInTransaction(delivery, clientId);
       db.prepare(`UPDATE deliveries SET status = ?, courier_id = NULL, cancelled_at = CURRENT_TIMESTAMP
@@ -881,7 +898,7 @@ export function cancelClientDelivery(id, clientId, body) {
       db.prepare("UPDATE deliveries SET status = ?, return_reason = ? WHERE id = ?")
         .run(DELIVERY_STATES.RETURNING, "client_cancelled_after_pickup", id);
       event(id, clientId, DELIVERY_EVENT_TYPES.CLIENT_CANCELLED_AFTER_PICKUP);
-      recordClientCancellationAfterPickupInTransaction(db, delivery);
+      requireCancellationEvidence(db, id, 'returning');
     } else if (delivery.status === DELIVERY_STATES.AWAITING_REVALIDATION) {
       if (db.prepare(`SELECT 1 FROM system_address_resolutions
         WHERE delivery_id = ? AND resolution = 'pending'`).get(id)) {
