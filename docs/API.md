@@ -1160,3 +1160,56 @@ nesse ciclo indica apenas política interna futura de custo/remuneração da ten
 não há valor pendente de devolução ao cliente depois do cancelamento. Não há
 backfill automático de casos legados. O cancelamento pós-coleta comum segue a
 regra 50/50 já documentada.
+
+## Baseline 0.3 — contratos do backend geográfico
+
+Todas as rotas abaixo usam a sessão `ermes_session`, respondem com
+`Cache-Control: no-store` e recebem um identificador positivo de Entrega.
+Captura automática, solicitação de permissão e polling da interface pertencem
+ao incremento 2.
+
+| Método | Rota | Acesso | Resposta |
+| --- | --- | --- | --- |
+| POST | `/courier/deliveries/:id/positions` | Motoboy autenticado, ativo, atualmente atribuído e em período rastreável | `201` com `{ position, duplicate: false }`; repetição da mesma leitura: `200` com `{ position, duplicate: true }` |
+| GET | `/courier/deliveries/:id/tracking-state` | Motoboy atual enquanto a Entrega não é terminal | `{ tracking: { deliveryId, state, activePeriodId } }`; não expõe histórico |
+| GET | `/client/deliveries/:id/tracking` | Cliente proprietário enquanto a Entrega não foi encerrada definitivamente | `{ tracking }` |
+| GET | `/company/deliveries/:id/tracking` | RESPONSAVEL ou ATENDENTE da empresa da Entrega, inclusive após o encerramento | `{ tracking }` |
+
+O POST exige corpo JSON sem campos extras:
+
+```json
+{
+  "latitude": -23.55,
+  "longitude": -46.63,
+  "capturedAt": "2026-11-27T12:00:00.000Z",
+  "accuracyMeters": 8
+}
+```
+
+`accuracyMeters` é opcional e, quando presente, deve ser numérico, finito e
+não negativo. Latitude e longitude devem ser números finitos dentro de
+`[-90,90]` e `[-180,180]`. `capturedAt` usa UTC ISO 8601 com milissegundos,
+é preservado sem correção e não pode anteceder o período atual nem superar o
+horário do servidor em mais de 30 segundos. O servidor grava `receivedAt`.
+Posições atrasadas só entram se o mesmo período ainda estiver ativo e o
+motoboy continuar atribuído no recebimento. Repetição não altera `receivedAt`.
+A sessão é revalidada dentro da transação de gravação, inclusive para leituras
+duplicadas; expiração ou logout durante o envio do corpo impedem a operação.
+
+`tracking` contém `deliveryId`, `state`, `activePeriodId`, `latestPosition` e
+`periods`. Cada período informa `id`, `courierId`, `courierName`, `startedAt`,
+`endedAt`, `endKind` (`paused`, `ended` ou `null`) e `positions` ordenadas por
+captura. Cada posição contém `id`, `periodId`, `courierId`, `latitude`,
+`longitude`, `accuracyMeters`, `capturedAt` e `receivedAt`. `latestPosition`
+é a maior captura aceita, independentemente da ordem de recebimento.
+Os estados de contrato são `updated`, `stale`, `unavailable`, `paused` e
+`ended`. `stale` ocorre após 120 segundos durante rastreamento ativo,
+calculados pelo menor entre captura e recebimento da posição corrente.
+Um novo período sem leitura própria fica `unavailable`, preservando a última
+posição do período anterior apenas como contexto histórico.
+Não há expiração automática do histórico.
+
+Falhas de autenticação retornam `401`; papel inadequado, `403`; Entrega de
+outro participante ou motoboy anterior, `404`; payload e captura inválidos,
+`400`; período pausado ou encerrado para o motoboy ainda atribuído, `409`.
+Ausência de localização nunca bloqueia as operações existentes da Entrega.

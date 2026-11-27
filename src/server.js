@@ -10,6 +10,7 @@ import { listCourierFinancialEntries } from "./finance.js";
 import { getOrderChat, listOrderChats, sendOrderChatMessage } from "./order-chat.js";
 import { submitClientOrder, rejectCompanyOrder, confirmCompanyDraftOrder, confirmSimulatedPayment, createDraftOrder, getClientConfirmedOrder, getCompanyDraftOrder, getDraftOrder, listClientConfirmedOrders, listCompanyDraftOrders, listDraftOrders, parseOrderId, updateDraftOrderItems } from "./orders.js";
 import { hashPassword, hashToken, newSessionToken, verifyPassword } from "./security.js";
+import { getCourierTrackingState, getTrackingForParticipant, recordTrackingPosition } from "./delivery-tracking.js";
 import {
   classifyDeliveryOccurrence, listCompanyDeliveryOccurrences, parseDeliveryOccurrenceId,
 } from "./delivery-occurrences.js";
@@ -368,6 +369,11 @@ async function api(request, response, url) {
     const user = requireUser(request, ["client"]);
     return json(response, 200, { delivery: getClientDelivery(user.id, parseDeliveryId(clientDeliveryMatch[1])) });
   }
+  const clientTrackingMatch = pathname.match(/^\/api\/client\/deliveries\/([^/]+)\/tracking$/);
+  if (request.method === "GET" && clientTrackingMatch) {
+    const user = requireUser(request, ["client"]);
+    return json(response, 200, { tracking: getTrackingForParticipant(parseDeliveryId(clientTrackingMatch[1]), user) });
+  }
   const clientDeliveryCancelMatch = pathname.match(/^\/api\/client\/deliveries\/([^/]+)\/cancel$/);
   if (request.method === "POST" && clientDeliveryCancelMatch) {
     const user = requireUser(request, ["client"]);
@@ -471,6 +477,11 @@ async function api(request, response, url) {
   if (request.method === "GET" && companyDeliveryMatch) {
     const user = requireUser(request, ["company"]);
     return json(response, 200, { delivery: getCompanyDelivery(user.companyId, parseDeliveryId(companyDeliveryMatch[1])) });
+  }
+  const companyTrackingMatch = pathname.match(/^\/api\/company\/deliveries\/([^/]+)\/tracking$/);
+  if (request.method === "GET" && companyTrackingMatch) {
+    const user = requireUser(request, ["company"]);
+    return json(response, 200, { tracking: getTrackingForParticipant(parseDeliveryId(companyTrackingMatch[1]), user) });
   }
   const adjustmentMatch = pathname.match(/^\/api\/(company|client)\/deliveries\/([^/]+)\/adjustment$/);
   if (adjustmentMatch && request.method === "GET") {
@@ -637,6 +648,20 @@ async function api(request, response, url) {
   if (request.method === "GET" && pathname === "/api/courier/deliveries/current") {
     const user = requireUser(request, ["courier"]);
     return json(response, 200, { delivery: getCourierCurrentDelivery(user.id, user.companyId) });
+  }
+  const courierTrackingStateMatch = pathname.match(/^\/api\/courier\/deliveries\/([^/]+)\/tracking-state$/);
+  if (request.method === "GET" && courierTrackingStateMatch) {
+    const user = requireUser(request, ["courier"]);
+    return json(response, 200, { tracking: getCourierTrackingState(
+      parseDeliveryId(courierTrackingStateMatch[1]), user.id, user.companyId,
+    ) });
+  }
+  const courierPositionMatch = pathname.match(/^\/api\/courier\/deliveries\/([^/]+)\/positions$/);
+  if (request.method === "POST" && courierPositionMatch) {
+    const user = requireUser(request, ["courier"]);
+    const result = recordTrackingPosition(parseDeliveryId(courierPositionMatch[1]),
+      user.id, user.companyId, await readJson(request), () => sessionUser(request));
+    return json(response, result.duplicate ? 200 : 201, result);
   }
   if (request.method === "GET" && pathname === "/api/courier/financial-entries") {
     const user = requireUser(request, ["courier"]);

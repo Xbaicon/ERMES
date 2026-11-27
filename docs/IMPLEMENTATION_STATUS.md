@@ -7,14 +7,36 @@ Atualize este documento sempre que uma funcionalidade mudar de estado.
 | Marco | Estado | Observação |
 | --- | --- | --- |
 | Baseline 0.1 | Encerrada e congelada | Checkpoint oficial na tag `baseline-0.1`; código, testes e contratos abaixo descrevem esse checkpoint |
-| Baseline 0.2 | Em implementação incremental | Incrementos funcionais implementados, incluindo submissão/recusa comercial e fechamento financeiro pós-retorno; aguardando revisão independente, sem checkpoint ou tag de fechamento |
+| Baseline 0.2 | Encerrada | Referência funcional preservada durante a implementação da 0.3 |
+| Baseline 0.3 | Em implementação incremental | Backend de rastreamento geográfico em revisão; captura no navegador e mapa pertencem ao incremento 2 |
 | Auditoria técnica 0.1 → 0.2 | Concluída | A análise técnica antecedeu a decisão de manter SQLite durante a implementação funcional |
-| Incremento atual | Fechamento funcional — aguardando revisão | Submissão versionada, recusa comercial, financeiro pós-retorno e cancelamento após revalidação liberada |
-| Próximo passo técnico | Revisão independente | Revisar o incremento final antes de qualquer commit ou fechamento oficial |
-| Persistência da 0.2 | SQLite ativo | Desenvolvimento e testes funcionais da 0.2 prosseguem sobre SQLite após auditoria; MySQL não é gate |
-| Persistência futura | Etapa técnica posterior | Migrar SQLite → MySQL isoladamente, em ambiente apropriado, após regressão funcional da 0.2; repetir regressão automatizada e smoke completo |
+| Incremento atual | Backend de rastreamento 0.3 — aguardando revisão | Períodos, posições, autorização, estados e APIs sobre SQLite |
+| Próximo passo técnico | Revisão independente | Revisar este incremento antes do frontend da 0.3 |
+| Persistência atual | SQLite ativo | O backend da 0.3 evolui o SQLite sem migrar para MySQL |
+| Persistência futura | Etapa técnica separada | Eventual mudança de banco exige plano e regressão próprios; não é gate deste incremento |
+
+## Baseline 0.3 — incremento 1: backend geográfico
+
+- `RN-0.3-01–13` e `RF-0.3-01–11`, `RF-0.3-13–16`, `RF-0.3-20–21`,
+  `RF-0.3-23–30`, `RF-0.3-32–33`, `RF-0.3-35–42`: suporte de backend
+  implementado para períodos, posições, estados e autorização. Requisitos
+  compartilhados com a interface só poderão ser considerados completos após o
+  incremento 2 e revisão integrada.
+- `RN-0.3-14`, `RF-0.3-12`, `RF-0.3-17–19`, `RF-0.3-22`, `RF-0.3-31`,
+  `RF-0.3-34`, `RF-0.3-37`, `RF-0.3-43–48`: dependem de captura automática,
+  polling, apresentação cartográfica e estados visuais no frontend; pendentes.
+- `DA-0.3-02` está atendida no backend por HTTP. `DA-0.3-01` depende da
+  escolha e integração da camada cartográfica no incremento 2.
+- A coluna legada `deliveries.last_location_json` não é lida nem escrita pelo
+  rastreamento. SQLite permanece o banco deste incremento.
+- O POST revalida a sessão na transação de persistência, inclusive em leitura
+  duplicada. A identidade histórica dos períodos é imutável; seu fechamento
+  operacional continua permitido.
 
 ## Incrementos funcionais da Baseline 0.2
+
+Os registros abaixo documentam a implementação histórica da 0.2; a seção acima
+indica o marco atual do projeto.
 
 | Regra | Estado | Observação |
 | --- | --- | --- |

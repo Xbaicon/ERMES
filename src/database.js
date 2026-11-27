@@ -14,6 +14,7 @@ import {
   EXTERNAL_OBSTRUCTION_CYCLE_SQL, EXTERNAL_OBSTRUCTION_RELEASED_SQL,
 } from "./finance.js";
 import { evolveRevalidationSchema } from "./revalidation-schema.js";
+import { evolveDeliveryTrackingSchema } from "./delivery-tracking-schema.js";
 import { migrateLegacyInvalidCodeAttempts } from "./delivery-attempts.js";
 import { CLIENT_ADDRESS_CLOSED_SQL } from "./client-address-evidence.js";
 import {
@@ -669,6 +670,7 @@ transaction(() => {
   evolveRevalidationSchema(db, { inTransaction: true });
   evolveSystemAddressSchema(db);
   evolveOrderAdjustmentSchema(db);
+  evolveDeliveryTrackingSchema(db);
   db.exec(financialEntryKindTrigger);
 });
 

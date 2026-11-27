@@ -1,17 +1,57 @@
-# Arquitetura técnica atual — implementação incremental da Baseline 0.2
+# Arquitetura técnica — evolução para a Baseline 0.3
+
+## Incremento 1 da Baseline 0.3: rastreamento no backend
+
+`src/delivery-tracking-schema.js` cria, em bootstrap SQLite transacional e
+idempotente, períodos de rastreamento e posições vinculados à Entrega. Triggers
+na atualização de `deliveries.status` ou `courier_id` encerram ou pausam o
+período anterior e abrem outro quando o novo estado representa deslocamento:
+`heading_to_pickup`, `in_transit` ou `returning`. Espera pela coleta,
+confirmação no destino, confirmação do retorno e revalidação não recebem
+posições. Redisponibilização e troca de motoboy mantêm o histórico da mesma
+Entrega. Bancos legados com Entrega já em deslocamento recebem apenas um período
+novo a partir do bootstrap; não se inventam posições anteriores.
+Transporte e retorno exigem também tentativa aberta coerente com o motoboy;
+um status `returning` isolado não autoriza rastreamento.
+
+`src/delivery-tracking.js` valida coordenadas finitas, faixas geográficas,
+precisão opcional não negativa e captura UTC com milissegundos. A captura deve
+pertencer ao período atual e não exceder o relógio do servidor em mais de 30
+segundos. `BEGIN IMMEDIATE` serializa gravação de posição com as transições
+operacionais. O índice único evita repetir a mesma leitura; o horário de
+recebimento não é atualizado em uma repetição. A posição corrente vem da maior
+captura aceita, e sua atualidade usa o menor entre captura e recebimento.
+Na mesma transação, o POST reconsulta a sessão pelo mecanismo existente,
+incluindo expiração e revogação. Gatilhos SQLite impedem alteração de ID,
+Entrega, motoboy e início do período, bem como exclusão de períodos; o
+fechamento legítimo atualiza fim e motivo. Esses gatilhos e a validação de
+vínculo posição/período precisam de equivalente em eventual migração de banco.
+Durante período ativo, 120 segundos sem posição atual classificam como `stale`.
+O início de outro período sem posição própria apresenta `unavailable`, mesmo
+que uma posição do período anterior continue disponível como última conhecida.
+
+`src/server.js` expõe POST de posição ao motoboy atribuído, GET de histórico ao
+cliente e empresa autorizados, e GET de estado ao motoboy atual. Após o
+encerramento definitivo, o cliente e o motoboy perdem acesso geográfico; a
+empresa da Entrega mantém consulta. As APIs usam HTTP e `Cache-Control:
+no-store`. `deliveries.last_location_json` é legado sem uso como fonte.
+
+Captura automática, polling no navegador, estados visuais e mapa ficam para o
+incremento 2. SQLite continua sendo a persistência deste incremento; o arquivo
+local não constitui arquitetura de banco persistente para funções efêmeras da
+Vercel. As seções abaixo registram a arquitetura histórica anterior.
 
 ## Estado da transição
 
-O checkpoint `baseline-0.1` permanece congelado. O desenvolvimento da Baseline
-0.2 avança incrementalmente sobre SQLite após a conclusão da auditoria técnica
-0.1 → 0.2. Este documento inclui os incrementos de `TentativaEntrega` e da
+O checkpoint `baseline-0.1` permanece congelado. A Baseline 0.2 está encerrada;
+as seções históricas abaixo registram sua implementação sobre SQLite após a
+auditoria técnica 0.1 → 0.2. Este documento inclui os incrementos de `TentativaEntrega` e da
 fundação persistente de `OcorrenciaEntrega`/classificação de responsabilidade,
 o fluxo de impedimento externo com revalidação pela empresa, o erro de apresentação
 de endereço atribuído ao ERMES e o fechamento operacional terminal por ausência,
 recusa do destinatário e três códigos inválidos.
-Isso não declara implementado o ciclo completo da 0.2 nem altera a baseline
-normativa. MySQL permanece uma etapa técnica posterior e não é gate para as
-funcionalidades da 0.2.
+O backend da 0.3 usa a mesma base SQLite. MySQL permanece uma etapa técnica
+separada e não é gate deste incremento.
 
 ## Objetivo
 
