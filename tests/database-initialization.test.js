@@ -90,7 +90,8 @@ function data(db) {
 function assertInitialized(db) {
   for (const table of ["companies", "users", "orders", "order_items", "deliveries", "delivery_attempts",
     "delivery_events", "delivery_occurrences", "delivery_revalidations", "system_address_resolutions",
-    "system_address_blocks", "financial_entries", "sessions"]) {
+    "system_address_blocks", "financial_entries", "sessions",
+    "delivery_tracking_periods", "delivery_tracking_positions"]) {
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table);
   }
   for (const table of ["system_address_resolutions", "system_address_blocks"]) {
